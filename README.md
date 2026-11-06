@@ -30,14 +30,12 @@ DCX 是一套用 Rust 编写的 Windows 11 桌面增强平台。它把三件事�
 <p align="center">
   <img src="docs/images/box.png" alt="桌面收纳盒" width="520">
 </p>
-<p align="center"><sub>桌面收纳盒：按分类浏览收纳库</sub></p>
+<p align="center"><sub>桌面收纳盒：应用分类视图</sub></p>
 
 <p align="center">
   <img src="docs/images/search.png" alt="文件检索" width="100%">
 </p>
 <p align="center"><sub>文件检索：名称 / 路径 / 大小 / 修改时间</sub></p>
-
-> 截图中的文件名和路径为脱敏后的示例，不代表真实文件。
 
 ## 功能
 
