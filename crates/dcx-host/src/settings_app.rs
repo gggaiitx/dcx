@@ -565,7 +565,9 @@ impl Palette {
             // levels of that, so the accent bar and the label carry the
             // selection instead of a grey block.
             nav_selected: Color32::from_rgb(0xEA, 0xEA, 0xEA),
-            nav_hover: Color32::from_rgb(0xF2, 0xF2, 0xF2),
+            // 4 levels below the window gradient would be invisible; 6 keeps the
+            // hover readable while staying lighter than the old #EDEDED.
+            nav_hover: Color32::from_rgb(0xF0, 0xF0, 0xF0),
             scroll_thumb: Color32::from_rgb(0x9A, 0x9A, 0x9A),
             scroll_thumb_hover: Color32::from_rgb(0x7A, 0x7A, 0x7A),
         }
