@@ -79,7 +79,7 @@ fn main() {
 /// numbers cannot drift from `Cargo.toml`.
 fn resource_script(ico: &Path) -> String {
     let ico = ico.display().to_string().replace('\\', "\\\\");
-    let version = std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.1.0".to_owned());
+    let version = std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.0.0".to_owned());
     let mut parts = version
         .split('.')
         .map(|p| p.split(['-', '+']).next().unwrap_or("0").parse::<u32>().unwrap_or(0));

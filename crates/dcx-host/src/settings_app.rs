@@ -82,6 +82,9 @@ const ROW_ACTION_W: f32 = 132.0;
 const ROW_SWITCH_W: f32 = 52.0;
 /// Space a status dot / short word needs (see [`row_info`]).
 const ROW_INFO_W: f32 = 16.0;
+/// Project page shown on the「关于」page. Keep it in sync with `repository` in
+/// the workspace `Cargo.toml` / the README badge.
+const GITHUB_URL: &str = "https://github.com/gggaiitx/dcx";
 
 extern "system" {
     fn GetSystemMetrics(index: i32) -> i32;
@@ -557,8 +560,12 @@ impl Palette {
             ok: Color32::from_rgb(0x0F, 0x7B, 0x0F),
             warn: Color32::from_rgb(0x9D, 0x5D, 0x00),
             danger: Color32::from_rgb(0xC4, 0x2B, 0x1C),
-            nav_selected: Color32::from_rgb(0xE6, 0xE6, 0xE6),
-            nav_hover: Color32::from_rgb(0xED, 0xED, 0xED),
+            // The sidebar has no fill of its own: nav items sit straight on the
+            // window gradient (≈#F6F6F6 up here). Keep both states within a few
+            // levels of that, so the accent bar and the label carry the
+            // selection instead of a grey block.
+            nav_selected: Color32::from_rgb(0xEA, 0xEA, 0xEA),
+            nav_hover: Color32::from_rgb(0xF2, 0xF2, 0xF2),
             scroll_thumb: Color32::from_rgb(0x9A, 0x9A, 0x9A),
             scroll_thumb_hover: Color32::from_rgb(0x7A, 0x7A, 0x7A),
         }
@@ -585,8 +592,9 @@ impl Palette {
             ok: Color32::from_rgb(0x6C, 0xCB, 0x5F),
             warn: Color32::from_rgb(0xF0, 0xC6, 0x74),
             danger: Color32::from_rgb(0xFF, 0x99, 0xA4),
-            nav_selected: Color32::from_rgb(0x38, 0x38, 0x38),
-            nav_hover: Color32::from_rgb(0x2F, 0x2F, 0x2F),
+            // Same idea on the dark gradient (≈#26 at the top): darker = calmer.
+            nav_selected: Color32::from_rgb(0x31, 0x31, 0x31),
+            nav_hover: Color32::from_rgb(0x2B, 0x2B, 0x2B),
             scroll_thumb: Color32::from_rgb(0x6A, 0x6A, 0x6A),
             scroll_thumb_hover: Color32::from_rgb(0x8A, 0x8A, 0x8A),
         }
@@ -1258,6 +1266,12 @@ impl SettingsApp {
                     ui.label(RichText::new("").size(12.0).color(p.secondary));
                 },
             );
+            row_separator(ui, p);
+            row(ui, p, RowIcon::Link, "项目主页", GITHUB_URL, |ui| {
+                if standard_button(ui, p, "打开", true).clicked() {
+                    open_url(GITHUB_URL);
+                }
+            });
         });
     }
 
@@ -2910,6 +2924,33 @@ fn reveal_settings() {
     }
 }
 
+/// Hand a URL to the user's default browser.
+///
+/// `ShellExecuteW("open", …)` rather than `Command::new("explorer", url)`: the
+/// shell resolves the protocol handler itself, so an `http`/`https` URL never
+/// passes through a process argv where it could be read as a file path.
+fn open_url(url: &str) {
+    let op = dcx_win32::wide("open");
+    let target = dcx_win32::wide(url);
+    const SW_SHOWNORMAL: i32 = 1;
+    let code = unsafe {
+        dcx_win32::ShellExecuteW(
+            0,
+            op.as_ptr(),
+            target.as_ptr(),
+            core::ptr::null(),
+            core::ptr::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    // ShellExecuteW returns a value > 32 on success; otherwise it is a legacy
+    // SE_ERR_* code. Nothing to recover from, but a silent no-op would look
+    // like a broken button, so it goes to the log.
+    if code <= 32 {
+        eprintln!("[dcx-host] ShellExecuteW({url}) returned {code}");
+    }
+}
+
 #[repr(C)]
 struct BrowseInfoW {
     hwnd_owner: isize,
@@ -3311,6 +3352,8 @@ enum RowIcon {
     Doc,
     Info,
     Exit,
+    /// Box with an arrow leaving it — an external web link.
+    Link,
 }
 
 /// 20 px line glyphs, drawn with the same thin stroke Win11 uses.
@@ -3474,6 +3517,26 @@ fn row_icon(ui: &mut egui::Ui, p: &Palette, kind: RowIcon) {
             );
             painter.line_segment(
                 [egui::pos2(c.x + 6.5, c.y), egui::pos2(c.x + 3.0, c.y + 3.2)],
+                st,
+            );
+        }
+        RowIcon::Link => {
+            // Box with an arrow leaving it: "opens outside DCX".
+            let r = Rect::from_min_max(
+                egui::pos2(c.x - 7.5, c.y - 2.0),
+                egui::pos2(c.x + 3.0, c.y + 7.5),
+            );
+            painter.rect_stroke(r, Rounding::same(2.0), st);
+            painter.line_segment(
+                [egui::pos2(c.x - 0.5, c.y + 1.5), egui::pos2(c.x + 6.5, c.y - 6.5)],
+                st,
+            );
+            painter.line_segment(
+                [egui::pos2(c.x + 2.0, c.y - 6.5), egui::pos2(c.x + 6.5, c.y - 6.5)],
+                st,
+            );
+            painter.line_segment(
+                [egui::pos2(c.x + 6.5, c.y - 6.5), egui::pos2(c.x + 6.5, c.y - 2.0)],
                 st,
             );
         }

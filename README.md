@@ -18,7 +18,7 @@
 
 DCX 是一套用 Rust 编写的 Windows 11 桌面增强平台。它把三件事做成彼此独立的进程：**任务栏主题**、**桌面收纳盒**、**文件检索**。宿主常驻托盘，负责注入看门狗、应用生命周期、全局热键和统一设置中心；应用崩溃不会带走宿主，宿主退出会统一停止应用。
 
-> 当前版本 **v0.1.0**，已在 Windows 11 `10.0.26200` x64 实机验证。任务栏引擎针对当前 Win11 视觉树实现，Windows 大版本更新后可能需要重新核对元素路径。
+> 当前版本 **v0.1.1**，已在 Windows 11 `10.0.26200` x64 实机验证。任务栏引擎针对当前 Win11 视觉树实现，Windows 大版本更新后可能需要重新核对元素路径。
 
 ## 效果
 
@@ -81,7 +81,7 @@ DCX 是一套用 Rust 编写的 Windows 11 桌面增强平台。它把三件事�
 
 从 [Releases](https://github.com/gggaiitx/dcx/releases/latest) 下载：
 
-- `DCX-v0.1.0-win64.zip` — 便携包
+- `DCX-v0.1.1-win64.zip` — 便携包
 - `SHA256SUMS.txt` — 二进制校验和
 
 1. 解压整个 `DCX` 文件夹到任意位置（不要只取出 exe，宿主按同目录查找 `dcx-box.exe`、`dcx-search.exe`、`dcx_engine.dll` 和 `wh_injector.exe`）。
