@@ -28,7 +28,7 @@ DCX 是一套用 Rust 编写的 Windows 11 桌面增强平台。它把三件事�
 <p align="center"><sub>任务栏主题与桌面收纳盒按钮</sub></p>
 
 <p align="center">
-  <img src="docs/images/box.png" alt="桌面收纳盒" width="520">
+  <img src="docs/images/box.png" alt="桌面收纳盒" width="100%">
 </p>
 <p align="center"><sub>桌面收纳盒：应用分类视图</sub></p>
 
