@@ -923,6 +923,10 @@ impl RuleEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // `TargetStyles` is defined in `theme` and re-exported from the crate root,
+    // so `use super::*` does not bring it in. Without this line the whole test
+    // target fails with 25 × E0422 and `cargo test --workspace` never runs.
+    use crate::TargetStyles;
     use std::collections::HashMap;
 
     // -- mock ElementLookup -------------------------------------------------
@@ -1095,16 +1099,25 @@ mod tests {
     #[test]
     fn theme_has_all_entries_and_constants() {
         // The reference theme (lines 3595-3788) has 45 `ThemeTargetStyles`
-        // entries and 20 style constants.
-        assert_eq!(crate::theme::WINDOW_GLASS_SPLIT.target_styles.len(), 45);
-        assert_eq!(crate::theme::WINDOW_GLASS_SPLIT.style_constants.len(), 20);
+        // entries and 20 style constants. This port adds one entry:
+        // `Taskbar.TaskbarBackground#BackgroundControl, Taskbar.TaskbarBackground`
+        // → `Visibility=Collapsed`, which removes the full-width shell background
+        // that shows up as a grey line above the floating dock.
+        assert_eq!(crate::theme::WINDOW_GLASS_SPLIT.target_styles.len(), 46);
+        // 19, not the reference's 20: the port keeps the constants the ported
+        // rules actually resolve (`$Background`, `$BorderBrush`,
+        // `$BorderThickness`, `$CornerRadius`, `$Element*`, `$Glass`,
+        // `$TaskbarFrameMaxWidth`, `$TrayPadding`). The runtime theme adds
+        // `IconGapBetween` / `IconGapEdge` on top (see `build_runtime_theme`).
+        // This assertion never ran before the test target compiled.
+        assert_eq!(crate::theme::WINDOW_GLASS_SPLIT.style_constants.len(), 19);
 
         let engine = engine();
-        assert_eq!(engine.style_constants.len(), 20);
+        assert_eq!(engine.style_constants.len(), 19);
 
-        // Two entries have comma-separated target lists (2 and 4 targets), so
-        // 45 entries parse into 43 + 2 + 4 = 49 element customization rules.
-        assert_eq!(engine.rules.len(), 49);
+        // Three entries have comma-separated target lists (2, 2 and 4 targets),
+        // so 46 entries parse into 43 + 2 + 2 + 4 = 51 customization rules.
+        assert_eq!(engine.rules.len(), 51);
 
         // Style constants are sorted by name length, longest first.
         let lengths: Vec<usize> = engine
@@ -1182,7 +1195,10 @@ mod tests {
         assert_eq!(rules.value_rules[0].value, "10,2,3,2");
         assert!(!rules.value_rules[0].is_xaml_value);
         assert_eq!(rules.value_rules[1].property_name, "BorderThickness");
-        assert_eq!(rules.value_rules[1].value, "0.5,1,0.5,1");
+        // Deliberate deviation from the reference (`0.5,1,0.5,1`): the hairline
+        // renders as a grey border around the floating dock. See the comment in
+        // `theme::WINDOW_GLASS_SPLIT`.
+        assert_eq!(rules.value_rules[1].value, "0");
         assert_eq!(rules.value_rules[2].property_name, "CornerRadius");
         assert_eq!(rules.value_rules[2].value, "25,5,5,25");
         assert_eq!(rules.value_rules[3].property_name, "Background");
@@ -1423,7 +1439,8 @@ mod tests {
         );
         assert_eq!(
             one_override(&matched, "BorderThickness").value,
-            ValueSpec::Literal("0.5,1,0.5,1".into())
+            // The reference hairline is deliberately dropped (see the theme).
+            ValueSpec::Literal("0".into())
         );
         assert_eq!(
             one_override(&matched, "Padding").value,
@@ -2356,7 +2373,9 @@ mod tests {
             TREE_ROOT_GRID,
             vec![
                 literal("Margin", "10,2,3,2"),
-                literal("BorderThickness", "0.5,1,0.5,1"),
+                // The reference hairline is deliberately dropped: it draws a
+                // grey line around the floating dock.
+                literal("BorderThickness", "0"),
                 literal("CornerRadius", "25,5,5,25"),
                 xaml("Background", GOLDEN_GLASS),
                 literal("Padding", "10,0,0,0"),
@@ -2520,7 +2539,6 @@ mod tests {
             TREE_ROOT_SV,
             TREE_SCP,
             TREE_BORDER,
-            TREE_BACKGROUND_CONTROL,
             TREE_BACKGROUND_GRID,
             TREE_CONTROL_CENTER_GRID,
             TREE_NOTIFICATION_CENTER_GRID,
@@ -2533,6 +2551,21 @@ mod tests {
         ] {
             assert_not_matched(&engine, &lookup, handle);
         }
+    }
+
+    /// The full-width shell background is collapsed on purpose: its fill is the
+    /// grey line that shows above/behind the floating dock.
+    #[test]
+    fn golden_taskbar_background_is_collapsed() {
+        let engine = engine();
+        let lookup = golden_taskbar_lookup();
+        assert_matched(
+            &engine,
+            &lookup,
+            TREE_BACKGROUND_CONTROL,
+            vec![literal("Visibility", "Collapsed")],
+            vec![],
+        );
     }
 
     /// The `:root > ScrollViewer > ...` part of the theme only matches when the
