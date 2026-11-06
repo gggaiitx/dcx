@@ -237,12 +237,14 @@ impl Config {
         if self.activation.hotkey.trim().is_empty() {
             self.activation.hotkey = "Alt+s".to_string();
         }
-        // Relative or non-existent custom roots are never walked: `WalkBuilder`
-        // and `notify` would either fail silently or watch an unintended path.
-        self.scope.custom_roots.retain(|r| {
-            let p = std::path::Path::new(r);
-            p.is_absolute() && p.is_dir()
-        });
+        // Relative roots are meaningless to `WalkBuilder` (they resolve against
+        // whatever cwd the app happens to have) and were never intended. An
+        // absolute root that is *temporarily* missing — a sleeping network
+        // drive, an unplugged disk — is kept: dropping it here would be saved
+        // back and the user's scope would be lost for good.
+        self.scope
+            .custom_roots
+            .retain(|r| std::path::Path::new(r).is_absolute());
     }
 
     /// Atomic, cross-process-safe replace. Callers must `load()` immediately
