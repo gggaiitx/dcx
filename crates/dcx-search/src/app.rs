@@ -291,10 +291,13 @@ impl Engine {
     /// snapshot was written recently — the few seconds of session changes are
     /// not worth rewriting the whole file on every close.
     pub fn save_blocking(&mut self) {
-        if !self.dirty.swap(false, Ordering::SeqCst) {
+        // Throttle *before* consuming the dirty flag. The old order cleared it
+        // and returned, so a snapshot skipped by the 10-minute throttle was
+        // never written in this session at all.
+        if self.last_save_attempt.elapsed() < Duration::from_secs(600) {
             return;
         }
-        if self.last_save_attempt.elapsed() < Duration::from_secs(600) {
+        if !self.dirty.swap(false, Ordering::SeqCst) {
             return;
         }
         self.last_save_attempt = Instant::now();

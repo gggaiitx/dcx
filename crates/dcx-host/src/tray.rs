@@ -57,10 +57,12 @@ pub fn build_tray() -> tray_icon::TrayIcon {
                 println!("DCX restoring taskbar by tray request");
                 crate::shutdown::restore_taskbar_and_quit();
             } else if event.id() == &quit_id {
+                // Signal only. `main` posts WM_QUIT, `Platform::run` returns and
+                // the teardown runs in order; `process::exit` here skipped the
+                // timer/hook cleanup and could race the app watchdog into
+                // launching one more child.
                 crate::QUIT.store(true, Ordering::SeqCst);
                 println!("DCX quitting by user request");
-                crate::apps::stop_all();
-                std::process::exit(0);
             }
         }
     });

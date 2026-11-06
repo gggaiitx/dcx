@@ -189,9 +189,22 @@ fn main() {
                 settings_app::open_settings();
                 println!("  settings window opened\n");
             }
+            // One shutdown path. The tray's 「退出」 only sets `QUIT`; this
+            // watcher turns it into `WM_QUIT` so `platform.run()` returns and
+            // every teardown step (high-res timer, WinEvent hook, effect
+            // shutdown, app children, settings process) actually runs.
+            // `process::exit` used to skip all of it.
+            let main_thread = unsafe { dcx_win32::GetCurrentThreadId() };
+            std::thread::spawn(move || {
+                while !crate::QUIT.load(std::sync::atomic::Ordering::SeqCst) {
+                    std::thread::sleep(std::time::Duration::from_millis(150));
+                }
+                unsafe { dcx_win32::PostThreadMessageW(main_thread, dcx_win32::WM_QUIT, 0, 0) };
+            });
             // Corner-effect loop owns the main thread until the process exits.
             platform.run();
             apps::stop_all();
+            settings_app::close_settings_window();
             println!("DCX stopped");
         }
     }

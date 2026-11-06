@@ -173,11 +173,15 @@ pub unsafe fn watch(element: *mut c_void, dp: *mut c_void, value: *mut c_void) -
         Err(_) => false,
     };
 
-    // XAML took its own reference on success; drop the one we created with.
+    // XAML takes its own reference on success; drop the one we created with.
+    //
+    // On failure `refs` is still 1, so this release drops the callback to zero
+    // and `cb_release` frees the box **and** releases `dp`/`value`. The old code
+    // then released `dp` and `value` a second time, underflowing their COM
+    // reference counts inside Explorer — objects freed while XAML still used
+    // them. Which is exactly the path taken when
+    // `RegisterPropertyChangedCallback` fails after a Windows update changes the
+    // visual tree.
     ComPtr(cb_ptr).release();
-    if !registered {
-        ComPtr(dp).release();
-        ComPtr(value).release();
-    }
     registered
 }

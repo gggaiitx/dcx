@@ -191,6 +191,14 @@ dcx/
 
 这些文件不在仓库里；仓库只包含源码、品牌资源和生成脚本。
 
+### 写入协议
+
+四个文件都是多进程读写，因此写入遵循同一套规则（实现见 `dcx-win32/src/config_file.rs`）：
+
+- **跨进程互斥**：按文件全路径派生的命名互斥体保护整个「读—改—写」，`dcx-host.exe`、`dcx-host.exe --settings`、`dcx-box.exe`、`dcx-search.exe` 不会互相覆盖。
+- **原子替换**：先写带 PID 与序号的临时文件并 `flush`，再用 `ReplaceFileW` / `MoveFileExW` 换入；**没有**「rename 失败就直接覆盖」的回退分支，换入失败时旧文件保持原样。
+- **损坏即只读**：文件存在但解析失败时，进程只使用内存默认值，并拒绝再把默认值写回磁盘；修好或删除该文件后自动恢复可写。设置窗口会显示保存失败的原因。
+
 ## 从源码构建
 
 要求：
@@ -222,8 +230,8 @@ cargo build --release
 仓库没有 CI；Windows 相关行为（注入、XAML、DPI、任务栏）需要实机验证。可先运行：
 
 ```powershell
-cargo test -p dcx-organizer
-cargo test -p dcx-search
+cargo test --workspace
+cargo clippy --workspace --all-targets
 ```
 
 完整的验证项目、历史踩坑和实现细节见 [`docs/engineering-notes.md`](docs/engineering-notes.md)。
@@ -232,6 +240,7 @@ cargo test -p dcx-search
 
 - 任务栏引擎只匹配当前 Windows 11 任务栏 XAML 视觉树；系统大版本更新后可能需要重新核对元素路径。
 - `dcx_engine.dll` 注入 `explorer.exe`，属于系统级改动；升级引擎请使用 `update-engine.bat`，不要在 Explorer 运行时直接覆盖 DLL。
+- **不要对 `dcx_engine.dll` 调用 `FreeLibrary`**。XAML 持有注入期间注册的 TAP 对象与元素句柄，卸载镜像会让 Explorer 跳进已释放的代码页（0xc000027b）。唯一受支持的卸载方式是结束并重启 Explorer——「恢复任务栏」做的就是这件事。
 - 构建与发布包均未签名，SmartScreen/杀毒软件可能提示；请只从本仓库的 Releases 下载。
 - 只处理主任务栏；多任务栏/第三方任务栏壳未适配。
 - 不提供安装器；DCX 是便携应用，配置与索引都在 `%LOCALAPPDATA%\dcx\`。

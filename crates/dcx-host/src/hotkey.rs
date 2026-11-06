@@ -40,6 +40,9 @@ const SEARCH_ERROR_FILE: &str = "search_hotkey_error.txt";
 
 static BOUND_BOX: Mutex<Option<(String, bool)>> = Mutex::new(None);
 static BOUND_SEARCH: Mutex<Option<(String, bool)>> = Mutex::new(None);
+/// Last message written per error file, so the retry loop does not rewrite an
+/// unchanged error every second.
+static LAST_ERROR: Mutex<Option<(String, String)>> = Mutex::new(None);
 
 #[repr(C)]
 struct WndClassW {
@@ -130,11 +133,29 @@ pub fn last_box_error() -> Option<String> {
 }
 
 fn note_error(file: &str, text: &str) {
+    // The 1 s retry loop calls this every tick while a key is taken. Writing
+    // the file (and the log line) only on a change keeps the disk quiet and
+    // the log readable.
+    if let Ok(mut slot) = LAST_ERROR.lock() {
+        if slot
+            .as_ref()
+            .map(|(f, t)| f == file && t == text)
+            .unwrap_or(false)
+        {
+            return;
+        }
+        *slot = Some((file.to_string(), text.to_string()));
+    }
     let _ = std::fs::write(error_path(file), text);
     println!("[dcx-hotkey] {text}");
 }
 
 fn clear_error(file: &str) {
+    if let Ok(mut slot) = LAST_ERROR.lock() {
+        if slot.as_ref().map(|(f, _)| f == file).unwrap_or(false) {
+            *slot = None;
+        }
+    }
     let _ = std::fs::remove_file(error_path(file));
 }
 
@@ -170,35 +191,78 @@ fn box_hotkey_setting() -> (String, bool) {
 }
 
 /// `"Alt+s"` / `"Ctrl+Shift+F"` → (modifiers, virtual key).
-fn parse_hotkey(s: &str) -> Option<(u32, u32)> {
+///
+/// A global hotkey **must** carry a modifier and exactly one base key. The old
+/// parser accepted `"s"` and bound `RegisterHotKey(hwnd, id, 0x4000, 'S')`,
+/// which takes the S key away from every program on the machine until the
+/// setting is changed — a system-wide keyboard hijack triggered by a typo.
+fn parse_hotkey(s: &str) -> Result<(u32, u32), String> {
     let mut mods = 0u32;
     let mut vk: Option<u32> = None;
-    for part in s.split('+').map(str::trim) {
+    let mut parts = 0usize;
+    for part in s.split('+').map(str::trim).filter(|p| !p.is_empty()) {
+        parts += 1;
         match part.to_ascii_lowercase().as_str() {
             "alt" => mods |= MOD_ALT,
             "ctrl" | "control" => mods |= MOD_CONTROL,
             "shift" => mods |= MOD_SHIFT,
             "win" | "super" => mods |= MOD_WIN,
-            "space" => vk = Some(0x20),
-            "enter" => vk = Some(0x0D),
-            "tab" => vk = Some(0x09),
-            "esc" | "escape" => vk = Some(0x1B),
+            "space" => set_key(&mut vk, 0x20, part, s)?,
+            "enter" => set_key(&mut vk, 0x0D, part, s)?,
+            "tab" => set_key(&mut vk, 0x09, part, s)?,
+            "esc" | "escape" => set_key(&mut vk, 0x1B, part, s)?,
             other => {
                 let upper = other.to_ascii_uppercase();
-                if upper.len() == 1 {
+                let code = if upper.len() == 1 {
                     let c = upper.as_bytes()[0];
-                    if c.is_ascii_alphabetic() || c.is_ascii_digit() {
-                        vk = Some(c as u32);
+                    if c.is_ascii_alphanumeric() {
+                        Some(c as u32)
+                    } else {
+                        None
                     }
                 } else if let Some(n) = upper.strip_prefix('F').and_then(|n| n.parse::<u32>().ok()) {
                     if (1..=24).contains(&n) {
-                        vk = Some(0x70 + n - 1);
+                        Some(0x70 + n - 1)
+                    } else {
+                        None
                     }
+                } else {
+                    None
+                };
+                match code {
+                    Some(code) => set_key(&mut vk, code, part, s)?,
+                    // Silently ignoring an unknown token turned `"Alt+Ctrl"` or
+                    // a typo into a bare-key registration.
+                    None => return Err(format!("快捷键 {s} 中的「{part}」无法识别")),
                 }
             }
         }
     }
-    vk.map(|v| (mods | MOD_NOREPEAT, v))
+    if parts == 0 {
+        return Err("快捷键为空，示例：Alt+d".to_string());
+    }
+    let vk = vk.ok_or_else(|| format!("快捷键 {s} 缺少主键，示例：Alt+d"))?;
+    if mods & (MOD_ALT | MOD_CONTROL | MOD_SHIFT | MOD_WIN) == 0 {
+        return Err(format!(
+            "快捷键 {s} 必须包含 Alt / Ctrl / Shift / Win 之一，否则会独占该按键"
+        ));
+    }
+    Ok((mods | MOD_NOREPEAT, vk))
+}
+
+fn set_key(slot: &mut Option<u32>, code: u32, part: &str, whole: &str) -> Result<(), String> {
+    if slot.is_some() {
+        return Err(format!("快捷键 {whole} 包含多个主键（重复的是「{part}」）"));
+    }
+    *slot = Some(code);
+    Ok(())
+}
+
+/// Check a user-entered hotkey without registering it. Used by the settings
+/// window so an invalid combination is explained at the field, not only after
+/// it silently failed to register.
+pub fn validate(key: &str) -> Result<(), String> {
+    parse_hotkey(key).map(|_| ())
 }
 
 fn touch_show_marker(name: &str) {
@@ -218,30 +282,43 @@ fn bind(
     error_file: &str,
 ) {
     let mut state = bound.lock().unwrap_or_else(|e| e.into_inner());
-    if state.as_ref() == Some(&(key.clone(), enabled)) {
+    let already = state
+        .as_ref()
+        .map(|(k, on)| *on == enabled && (k == &key || !enabled))
+        .unwrap_or(false);
+    if already {
         return;
     }
     unsafe { UnregisterHotKey(hwnd, id) };
     if !enabled {
         clear_error(error_file);
-        *state = Some((key, enabled));
+        *state = Some((key, false));
         return;
     }
     match parse_hotkey(&key) {
-        Some((mods, vk)) => unsafe {
-            if RegisterHotKey(hwnd, id, mods, vk) != 0 {
+        Ok((mods, vk)) => {
+            if unsafe { RegisterHotKey(hwnd, id, mods, vk) } != 0 {
                 clear_error(error_file);
                 println!("[dcx-hotkey] registered {key}");
+                *state = Some((key, true));
             } else {
+                // Do **not** record the key as bound. The 1 s timer retries,
+                // so a hotkey that was taken at startup starts working as soon
+                // as the other program releases it — the old code stored the
+                // key unconditionally and the retry then short-circuited,
+                // leaving the hotkey dead for the rest of the session.
+                *state = None;
                 note_error(
                     error_file,
                     &format!("快捷键 {key} 已被其他程序占用，请在设置中心改键"),
                 );
             }
-        },
-        None => note_error(error_file, &format!("无法解析快捷键 {key}，示例：Alt+d")),
+        }
+        Err(why) => {
+            *state = None;
+            note_error(error_file, &why);
+        }
     }
-    *state = Some((key, enabled));
 }
 
 fn rebind(hwnd: isize) {
@@ -265,35 +342,43 @@ fn rebind(hwnd: isize) {
     );
 }
 
+fn fire(id: i32) {
+    match id {
+        BOX_HOTKEY_ID => {
+            let (_, enabled) = box_hotkey_setting();
+            // The master switch really means "no box": a disabled app must not
+            // be resurrected from the keyboard.
+            if enabled && crate::apps::is_enabled("box") {
+                if let Err(e) = crate::apps::launch_on_demand("box") {
+                    note_error(BOX_ERROR_FILE, &e);
+                }
+                touch_show_marker("box_show");
+            }
+        }
+        SEARCH_HOTKEY_ID => {
+            let (_, enabled) = search_hotkey_setting();
+            if enabled {
+                // Start first, then signal. A running instance sees the marker
+                // change and raises its window; a fresh instance shows itself
+                // on its first frame anyway.
+                if let Err(e) = crate::apps::launch_on_demand("search") {
+                    note_error(SEARCH_ERROR_FILE, &e);
+                }
+                touch_show_marker("search_show");
+            }
+        }
+        _ => {}
+    }
+}
+
 unsafe extern "system" fn wnd_proc(hwnd: isize, msg: u32, wparam: usize, lparam: isize) -> isize {
     match msg {
         WM_HOTKEY => {
-            match wparam as i32 {
-                BOX_HOTKEY_ID => {
-                    let (_, enabled) = box_hotkey_setting();
-                    // The master switch really means "no box": a disabled app
-                    // must not be resurrected from the keyboard.
-                    if enabled && crate::apps::is_enabled("box") {
-                        if let Err(e) = crate::apps::launch_on_demand("box") {
-                            note_error(BOX_ERROR_FILE, &e);
-                        }
-                        touch_show_marker("box_show");
-                    }
-                }
-                SEARCH_HOTKEY_ID => {
-                    let (_, enabled) = search_hotkey_setting();
-                    if enabled {
-                        // Start first, then signal. A running instance sees the
-                        // marker change and raises its window; a fresh instance
-                        // shows itself on its first frame anyway.
-                        if let Err(e) = crate::apps::launch_on_demand("search") {
-                            note_error(SEARCH_ERROR_FILE, &e);
-                        }
-                        touch_show_marker("search_show");
-                    }
-                }
-                _ => {}
-            }
+            // Never do IO or `CreateProcess` here. This window procedure is the
+            // only message pump for the hotkey thread: a slow spawn would delay
+            // the 1 s rebind timer and every later hotkey press.
+            let id = wparam as i32;
+            std::thread::spawn(move || fire(id));
             0
         }
         WM_TIMER if wparam == TIMER_ID => {
@@ -371,4 +456,48 @@ pub fn start() {
             KillTimer(hwnd, TIMER_ID);
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parsed(s: &str) -> (u32, u32) {
+        parse_hotkey(s).unwrap_or_else(|e| panic!("{s} should parse: {e}"))
+    }
+
+    #[test]
+    fn defaults_parse() {
+        assert_eq!(parsed("Alt+d").1, 'D' as u32);
+        assert_eq!(parsed("ctrl+shift+f").1, 'F' as u32);
+        assert_eq!(parsed("win+F12").1, 0x7B);
+        assert_eq!(parsed("Alt+space").1, 0x20);
+    }
+
+    #[test]
+    fn a_modifier_is_mandatory() {
+        // `RegisterHotKey(hwnd, id, MOD_NOREPEAT, 'S')` takes the S key away
+        // from every program on the machine; a typo must not do that.
+        for bare in ["s", "S", "F5", "space", "5"] {
+            assert!(parse_hotkey(bare).is_err(), "{bare} must be refused");
+        }
+    }
+
+    #[test]
+    fn exactly_one_base_key() {
+        assert!(parse_hotkey("Alt+s+t").is_err());
+        assert!(parse_hotkey("Alt+Ctrl").is_err());
+        assert!(parse_hotkey("").is_err());
+    }
+
+    #[test]
+    fn unknown_tokens_are_refused_instead_of_ignored() {
+        assert!(parse_hotkey("Alt+Hyper+s").is_err());
+        assert!(parse_hotkey("Alt+F25").is_err());
+    }
+
+    #[test]
+    fn norepeat_is_always_set() {
+        assert_ne!(parsed("Alt+d").0 & MOD_NOREPEAT, 0);
+    }
 }

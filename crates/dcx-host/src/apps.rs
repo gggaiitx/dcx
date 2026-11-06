@@ -17,8 +17,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::{Child, Command};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use dcx_win32::config_file;
 
 /// 一个独立应用在平台里的登记信息。
 pub struct AppEntry {
@@ -81,13 +83,12 @@ pub struct AppsConfig {
 
 #[derive(Serialize, Deserialize)]
 pub struct AppState {
-    #[serde(default = "default_enabled")]
-    pub enabled: bool,
-}
-
-/// 文件缺失 / 新装应用的默认值：随平台一起启动，保持拆分前的行为。
-fn default_enabled() -> bool {
-    true
+    /// `None` means "the document has no opinion". Resolving it to `true` in
+    /// serde (the old `default_enabled`) contradicted `AppEntry::default_on`,
+    /// so hand-editing `apps.toml` without `enabled` silently started the
+    /// search app and its full-disk index even though it defaults to off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
 }
 
 fn local_dir() -> PathBuf {
@@ -104,33 +105,54 @@ pub fn config_path() -> PathBuf {
 }
 
 pub fn load() -> AppsConfig {
-    std::fs::read_to_string(config_path())
-        .ok()
-        .and_then(|text| toml::from_str(&text).ok())
-        .unwrap_or_default()
+    let p = config_path();
+    match std::fs::read_to_string(&p) {
+        Ok(text) => match toml::from_str(&text) {
+            Ok(c) => {
+                config_file::note_parse_ok(&p);
+                c
+            }
+            Err(e) => {
+                eprintln!("[dcx-apps] parse {p:?} failed ({e}); using defaults (read-only)");
+                config_file::note_parse_error(&p);
+                AppsConfig::default()
+            }
+        },
+        Err(_) => AppsConfig::default(),
+    }
 }
 
-/// 原子替换，避免设置窗口写到一半时看门狗读到半截 TOML。
+/// Atomic, locked replacement. Errors are returned instead of silently
+/// truncating the document: the old direct write could leave half a TOML for
+/// the watchdog to read.
 fn save(cfg: &AppsConfig) -> Result<(), String> {
-    let text = toml::to_string_pretty(cfg).map_err(|e| format!("序列化失败：{e}"))?;
     let path = config_path();
-    let tmp = path.with_extension("toml.tmp");
-    std::fs::write(&tmp, text).map_err(|e| format!("写入失败：{e}"))?;
-    std::fs::rename(&tmp, &path).map_err(|e| format!("替换失败：{e}"))
+    let _guard = config_file::FileLock::acquire(&path, config_file::LOCK_TIMEOUT)
+        .map_err(|e| format!("配置文件被占用：{e}"))?;
+    if config_file::is_poisoned(&path) {
+        return Err(config_file::poisoned_error(&path).to_string());
+    }
+    let text = toml::to_string_pretty(cfg).map_err(|e| format!("序列化失败：{e}"))?;
+    config_file::write_atomic(&path, text.as_bytes()).map_err(|e| format!("写入失败：{e}"))
 }
 
 pub fn is_enabled(id: &str) -> bool {
     load()
         .apps
         .get(id)
-        .map(|s| s.enabled)
+        .and_then(|s| s.enabled)
         .unwrap_or_else(|| find(id).map(|e| e.default_on).unwrap_or(false))
 }
 
 /// 设置中心的开关：写文件 + 立刻起／停进程，不要求重启平台。
 pub fn set_enabled(id: &str, on: bool) -> Result<(), String> {
     let mut cfg = load();
-    cfg.apps.insert(id.to_owned(), AppState { enabled: on });
+    cfg.apps.insert(
+        id.to_owned(),
+        AppState {
+            enabled: Some(on),
+        },
+    );
     save(&cfg)?;
     if on {
         launch(id).map_err(|e| format!("启动应用失败：{e}"))?;
@@ -189,6 +211,12 @@ fn exe_path(entry: &AppEntry) -> Result<PathBuf, String> {
 }
 
 pub fn launch(id: &str) -> Result<(), String> {
+    // `launch` is reachable from the tray, the hotkey thread, the settings
+    // window and the watchdog. Two of them can see "not running" before either
+    // records its child, which starts the app twice; the lock makes the
+    // check-and-spawn atomic.
+    static LAUNCH_LOCK: Mutex<()> = Mutex::new(());
+    let _guard = LAUNCH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let entry = find(id).ok_or_else(|| format!("未登记的应用：{id}"))?;
     if is_running(id) {
         return Ok(());
@@ -234,8 +262,19 @@ pub fn stop(id: &str) {
     }
 }
 
+/// Set by [`stop_all`]. The watchdog checks it every 100 ms, so shutdown never
+/// has to wait a full tick and cannot start one more app after the stop.
+static WATCHDOG_STOP: AtomicBool = AtomicBool::new(false);
+static WATCHDOG: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
+
+const WATCHDOG_TICK: Duration = Duration::from_secs(5);
+/// After this many consecutive launch failures the app is retried slowly
+/// instead of being respawned every 5 s for the rest of the session.
+const MAX_FAILURES: u32 = 6;
+
 /// 平台启动时调用：拉起所有启用的应用，并开一条看门狗。
 pub fn spawn_enabled() {
+    WATCHDOG_STOP.store(false, Ordering::SeqCst);
     for entry in REGISTRY {
         if is_enabled(entry.id) {
             if let Err(e) = launch(entry.id) {
@@ -243,18 +282,75 @@ pub fn spawn_enabled() {
             }
         }
     }
-    std::thread::spawn(|| loop {
-        std::thread::sleep(Duration::from_secs(5));
-        for entry in REGISTRY {
-            if is_enabled(entry.id) && !is_running(entry.id) {
-                let _ = launch(entry.id);
+    let handle = std::thread::spawn(|| {
+        // Per app: when the next attempt is due, and how many runs in a row
+        // failed. A crash loop used to restart every 5 s forever, forever
+        // appending to `host.log` and fighting the user's task manager.
+        let mut retry: BTreeMap<&'static str, (Instant, u32)> = BTreeMap::new();
+        loop {
+            for _ in 0..(WATCHDOG_TICK.as_millis() / 100) as u32 {
+                if WATCHDOG_STOP.load(Ordering::SeqCst) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            if WATCHDOG_STOP.load(Ordering::SeqCst) {
+                return;
+            }
+            for entry in REGISTRY {
+                if !is_enabled(entry.id) {
+                    retry.remove(entry.id);
+                    continue;
+                }
+                if is_running(entry.id) {
+                    retry.remove(entry.id);
+                    continue;
+                }
+                let now = Instant::now();
+                let (due, failures) = match retry.get(entry.id) {
+                    Some(v) => *v,
+                    None => (now, 0),
+                };
+                if now < due {
+                    continue;
+                }
+                match launch(entry.id) {
+                    Ok(()) => {
+                        retry.remove(entry.id);
+                    }
+                    Err(e) => {
+                        let failures = failures.saturating_add(1);
+                        let delay = if failures >= MAX_FAILURES {
+                            Duration::from_secs(600)
+                        } else {
+                            Duration::from_secs(5u64 << failures.min(5))
+                        };
+                        println!(
+                            "[dcx-apps] cannot start {} (failure {failures}): {e}; retry in {} s",
+                            entry.name,
+                            delay.as_secs()
+                        );
+                        retry.insert(entry.id, (now + delay, failures));
+                    }
+                }
             }
         }
     });
+    if let Ok(mut slot) = WATCHDOG.lock() {
+        *slot = Some(handle);
+    }
 }
 
 /// 平台退出前调用：所有独立应用随宿主一起停止，不留孤进程。
 pub fn stop_all() {
+    // Signal first: the watchdog must not launch anything between the stop
+    // loop and `process::exit`, which is how orphan processes appeared.
+    WATCHDOG_STOP.store(true, Ordering::SeqCst);
+    if let Ok(mut slot) = WATCHDOG.lock() {
+        if let Some(handle) = slot.take() {
+            let _ = handle.join();
+        }
+    }
     for entry in REGISTRY {
         stop(entry.id);
     }

@@ -58,6 +58,13 @@ static START_PAGE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::ne
 /// Set when the tray is clicked while the window already exists, so the running
 /// window can raise itself instead of silently ignoring the click.
 static FOCUS_REQUEST: AtomicBool = AtomicBool::new(false);
+/// Result of a background 「重新应用」 injection, picked up by the next frame.
+static REAPPLY_RESULT: std::sync::Mutex<Option<Result<(), String>>> =
+    std::sync::Mutex::new(None);
+/// Result of a background library migration: `(new root, outcome)`.
+static MIGRATE_RESULT: std::sync::Mutex<
+    Option<(std::path::PathBuf, std::io::Result<dcx_organizer::MigrateReport>)>,
+> = std::sync::Mutex::new(None);
 
 const WIN_W: f32 = 900.0;
 const WIN_H: f32 = 700.0;
@@ -137,10 +144,177 @@ pub fn open_settings_at(page: u8) {
     let Ok(exe) = std::env::current_exe() else {
         return;
     };
-    let _ = std::process::Command::new(exe)
+    match spawn_settings(&exe, page) {
+        Ok(child) => {
+            if let Ok(mut slot) = SETTINGS_CHILD.lock() {
+                // Reap the previous window if it has already exited; replacing
+                // the handle without `try_wait` leaked one process handle per
+                // open (a second launch raises the existing window and exits).
+                if let Some(mut old) = slot.take() {
+                    let _ = old.try_wait();
+                }
+                *slot = Some(child);
+            }
+        }
+        Err(e) => eprintln!("[dcx-host] cannot start the settings window: {e}"),
+    }
+}
+
+/// The one settings process this host owns. Kept so quitting the platform can
+/// take it down: it used to keep running (and keep writing the same TOML and
+/// `host.log`) after the tray's 「退出」.
+static SETTINGS_CHILD: std::sync::Mutex<Option<std::process::Child>> =
+    std::sync::Mutex::new(None);
+
+/// Terminate the spawned settings window, if it is still alive.
+///
+/// `WM_CLOSE` first: eframe then runs `on_exit` → `flush`, so an edit still
+/// inside the 220 ms debounce is not thrown away. `kill` is only the fallback
+/// for a window that does not answer.
+pub fn close_settings_window() {
+    let mut child = match SETTINGS_CHILD.lock() {
+        Ok(mut slot) => match slot.take() {
+            Some(c) => c,
+            None => return,
+        },
+        Err(_) => return,
+    };
+    post_close("DCX 设置");
+    let deadline = Instant::now() + Duration::from_millis(1500);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return,
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            _ => break,
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[link(name = "user32")]
+extern "system" {
+    fn PostMessageW(hwnd: isize, msg: u32, wparam: usize, lparam: isize) -> i32;
+}
+
+fn post_close(title: &str) {
+    const WM_CLOSE: u32 = 0x0010;
+    let t = dcx_win32::wide(title);
+    let hwnd = unsafe { dcx_win32::FindWindowW(core::ptr::null(), t.as_ptr()) };
+    if hwnd != 0 {
+        unsafe { PostMessageW(hwnd, WM_CLOSE, 0, 0) };
+    }
+}
+
+// -- settings process in a kill-on-close job --------------------------------
+
+const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: u32 = 0x2000;
+const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION: u32 = 9;
+
+#[repr(C)]
+#[derive(Default)]
+struct BasicLimitInformation {
+    per_process_user_time: i64,
+    per_job_user_time: i64,
+    limit_flags: u32,
+    minimum_working_set: usize,
+    maximum_working_set: usize,
+    active_process_limit: u32,
+    affinity: usize,
+    priority_class: u32,
+    scheduling_class: u32,
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct IoCounters {
+    read_operation_count: u64,
+    write_operation_count: u64,
+    other_operation_count: u64,
+    read_transfer_count: u64,
+    write_transfer_count: u64,
+    other_transfer_count: u64,
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct ExtendedLimitInformation {
+    basic: BasicLimitInformation,
+    io: IoCounters,
+    process_memory_limit: usize,
+    job_memory_limit: usize,
+    peak_process_memory_used: usize,
+    peak_job_memory_used: usize,
+}
+
+#[link(name = "kernel32")]
+extern "system" {
+    fn CreateJobObjectW(attrs: *mut core::ffi::c_void, name: *const u16) -> isize;
+    fn SetInformationJobObject(
+        job: isize,
+        class: u32,
+        info: *mut core::ffi::c_void,
+        len: u32,
+    ) -> i32;
+    fn AssignProcessToJobObject(job: isize, process: isize) -> i32;
+    fn CloseHandle(handle: isize) -> i32;
+}
+
+/// One kill-on-close job for every settings child. Created once; the handle is
+/// intentionally leaked for the process lifetime (the OS closes it on exit,
+/// including an abnormal one, which is what makes the child go away with us).
+static SETTINGS_JOB: std::sync::Mutex<isize> = std::sync::Mutex::new(0);
+
+fn settings_job() -> isize {
+    let mut slot = SETTINGS_JOB.lock().unwrap_or_else(|e| e.into_inner());
+    if *slot == 0 {
+        unsafe {
+            let job = CreateJobObjectW(std::ptr::null_mut(), std::ptr::null());
+            if job == 0 {
+                return 0;
+            }
+            let mut info = ExtendedLimitInformation::default();
+            info.basic.limit_flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let ok = SetInformationJobObject(
+                job,
+                JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+                &mut info as *mut _ as *mut core::ffi::c_void,
+                core::mem::size_of::<ExtendedLimitInformation>() as u32,
+            );
+            if ok == 0 {
+                CloseHandle(job);
+                return 0;
+            }
+            *slot = job;
+        }
+    }
+    *slot
+}
+
+/// Spawn the settings process inside a job that kills it when the host dies.
+///
+/// `std::process::exit` now also calls [`close_settings_window`], but that only
+/// covers an orderly quit; a crash or a task-manager kill leaves the child
+/// running with no owner (two writers for every TOML, two `host.log`
+/// appenders). The job handle is deliberately leaked for the process lifetime:
+/// the OS closes it on exit — including an abnormal one — and the child goes
+/// with it.
+fn spawn_settings(exe: &std::path::Path, page: u8) -> std::io::Result<std::process::Child> {
+    use std::os::windows::io::AsRawHandle;
+    let mut command = std::process::Command::new(exe);
+    command
         .arg("--settings")
-        .env("DCX_SETTINGS_PAGE", page.to_string())
-        .spawn();
+        .env("DCX_SETTINGS_PAGE", page.to_string());
+    let child = command.spawn()?;
+    let job = settings_job();
+    if job != 0 {
+        unsafe {
+            AssignProcessToJobObject(job, child.as_raw_handle() as isize);
+        }
+    }
+    Ok(child)
 }
 
 
@@ -654,10 +828,24 @@ fn search_doc_path() -> std::path::PathBuf {
 }
 
 fn read_search_doc() -> toml::Value {
-    std::fs::read_to_string(search_doc_path())
-        .ok()
-        .and_then(|s| s.parse::<toml::Value>().ok())
-        .unwrap_or_else(|| toml::Value::Table(Default::default()))
+    let path = search_doc_path();
+    match std::fs::read_to_string(&path) {
+        Ok(s) => match s.parse::<toml::Value>() {
+            Ok(v) => {
+                dcx_win32::config_file::note_parse_ok(&path);
+                v
+            }
+            Err(e) => {
+                // The search app reads the same file with its own schema. An
+                // unparseable document must not be rewritten from these defaults
+                // — that reset the other side's scope and exclusion rules.
+                eprintln!("[dcx-host] parse {path:?} failed ({e}); keeping it read-only");
+                dcx_win32::config_file::note_parse_error(&path);
+                toml::Value::Table(Default::default())
+            }
+        },
+        Err(_) => toml::Value::Table(Default::default()),
+    }
 }
 
 fn search_set(doc: &mut toml::Value, section: &str, key: &str, value: toml::Value) {
@@ -840,9 +1028,18 @@ fn save_search_values(v: &SearchValues, prev_enabled: bool) -> Result<(), String
     );
     let text = toml::to_string_pretty(&doc).map_err(|e| format!("序列化失败：{e}"))?;
     let path = search_doc_path();
-    let tmp = path.with_extension("toml.tmp");
-    std::fs::write(&tmp, text).map_err(|e| format!("写入失败：{e}"))?;
-    std::fs::rename(&tmp, &path).map_err(|e| format!("替换失败：{e}"))?;
+    {
+        let _guard = dcx_win32::config_file::FileLock::acquire(
+            &path,
+            dcx_win32::config_file::LOCK_TIMEOUT,
+        )
+        .map_err(|e| format!("配置文件被占用：{e}"))?;
+        if dcx_win32::config_file::is_poisoned(&path) {
+            return Err(dcx_win32::config_file::poisoned_error(&path).to_string());
+        }
+        dcx_win32::config_file::write_atomic(&path, text.as_bytes())
+            .map_err(|e| format!("写入失败：{e}"))?;
+    }
     if v.enabled != prev_enabled {
         crate::apps::set_enabled("search", v.enabled)?;
     }
@@ -862,6 +1059,19 @@ struct SettingsApp {
     /// Whether the current user's Run key points at this exe. Also outside `s`:
     /// the value is machine state (see `autostart`), not a DCX setting.
     autostart: bool,
+    /// When `auto_hide` / `autostart` were last re-read from the shell.
+    /// `SHAppBarMessage` is a synchronous shell call; doing it per frame froze
+    /// the whole window while Explorer was busy or restarting.
+    shell_state_at: Instant,
+    /// 「重新应用」 is injecting on a worker thread.
+    reapply_busy: bool,
+    /// A library migration is running on a worker thread.
+    migrate_busy: bool,
+    /// Per-category counts shown on the rule card. `counts()` scans the whole
+    /// library; running it on every frame made this page the slowest one.
+    bx_counts: Vec<(String, usize, u64)>,
+    /// `None` = refresh on the next frame.
+    bx_counts_at: Option<Instant>,
     /// When the current unsaved edit started (debounce clock).
     dirty_since: Option<Instant>,
     /// Earliest time we will retry after a failed write.
@@ -883,6 +1093,13 @@ struct SettingsApp {
     /// Debounce clock for the box document — separate from the taskbar one so a
     /// slider drag and a rule edit do not fight over the same timer.
     bx_dirty: Option<Instant>,
+    /// Set by the three actions that edit the path-keyed manifest
+    /// (`overrides` / `hidden` / `excluded`): 「清除手动分类」, deleting a category
+    /// and migrating the library. Those are the only edits this window makes to
+    /// keys `dcx-box.exe` also writes, so `persist_box` refreshes the manifest
+    /// from disk unless this is set. Without it the stale copy loaded in `new()`
+    /// was written back and wiped every manual classification made in the panel.
+    bx_manifest_dirty: bool,
     /// Result of the last「立即整理」/「立即归档」, shown for a few seconds.
     bx_result: Option<(String, Instant)>,
     /// Theme the native caption has been tinted for. `None` until the first
@@ -918,6 +1135,11 @@ impl SettingsApp {
             saved: s.clone(),
             auto_hide: crate::auto_hide::is_enabled(),
             autostart: crate::autostart::is_enabled(),
+            shell_state_at: Instant::now(),
+            reapply_busy: false,
+            migrate_busy: false,
+            bx_counts: Vec::new(),
+            bx_counts_at: None,
             s,
             dirty_since: None,
             retry_after: Instant::now(),
@@ -926,6 +1148,7 @@ impl SettingsApp {
             bx_saved: bx.clone(),
             bx_rows: RuleRow::from_cfg(&bx),
             bx_dirty: None,
+            bx_manifest_dirty: false,
             bx_result: None,
             caption_tint: None,
             search_saved: search.clone(),
@@ -1435,12 +1658,15 @@ impl SettingsApp {
                 p,
                 RowIcon::Info,
                 "全局快捷键",
-                "示例 Alt+s、Ctrl+Shift+F；改键约 1 秒后生效，被占用时下方会提示",
+                "示例 Alt+s、Ctrl+Shift+F；必须带 Alt / Ctrl / Shift / Win 之一，改键约 1 秒后生效",
                 |ui| {
                     ui.add(
                         egui::TextEdit::singleline(&mut sv.hotkey)
                             .desired_width(130.0),
                     );
+                    if let Err(why) = crate::hotkey::validate(&sv.hotkey) {
+                        ui.label(RichText::new(why).size(11.0).color(p.danger));
+                    }
                 },
             );
             row_separator(ui, p);
@@ -1802,9 +2028,9 @@ impl SettingsApp {
     /// Writes the box document. Same atomic-replace trick as the taskbar file:
     /// the panel polls it, and a half-written TOML would reset every category.
     fn persist_box(&mut self) {
-        // `dcx-box.exe` owns the view preferences (sort, view mode, panel size,
-        // hidden toggle, last tab). Merge them from disk before writing so an
-        // edit made here cannot roll back a change just made in the panel.
+        // `dcx-box.exe` also writes this document. Re-read the keys this window
+        // does not own — the view preferences *and* the path-keyed manifest —
+        // so an edit made here cannot roll back what the panel just did.
         let disk = BoxConfig::load();
         self.bx.sort_by = disk.sort_by;
         self.bx.sort_desc = disk.sort_desc;
@@ -1817,10 +2043,18 @@ impl SettingsApp {
         self.bx.remember_tab = disk.remember_tab;
         self.bx.last_tab = disk.last_tab.clone();
         self.bx.confirm_delete = disk.confirm_delete;
+        if !self.bx_manifest_dirty {
+            // The panel files documents into `overrides` on every drop; the copy
+            // loaded in `new()` is minutes old by the time a slider is moved.
+            self.bx.overrides = disk.overrides.clone();
+            self.bx.hidden = disk.hidden.clone();
+            self.bx.excluded = disk.excluded.clone();
+        }
         match self.bx.save() {
             Ok(()) => {
                 self.bx_saved = self.bx.clone();
                 self.bx_dirty = None;
+                self.bx_manifest_dirty = false;
             }
             Err(e) => {
                 self.error = Some(format!("收纳盒配置保存失败：{e}"));
@@ -1852,6 +2086,7 @@ impl SettingsApp {
             return;
         }
         let _ = self.bx.overrides.clear();
+        self.bx_manifest_dirty = true;
         self.bx_result = Some((format!("已清除 {n} 项手动分类"), Instant::now()));
     }
 
@@ -1860,6 +2095,7 @@ impl SettingsApp {
     /// keep the manifest clean.
     fn prune_overrides_of(&mut self, key: &str) {
         self.bx.overrides.retain(|_, k| k != key);
+        self.bx_manifest_dirty = true;
     }
 
     /// Point the collection at a new folder and move the existing files there.
@@ -1867,6 +2103,9 @@ impl SettingsApp {
     /// A failure leaves the document untouched — the box keeps reading the old
     /// root — and `migrate_library` puts back whatever it had already moved.
     fn set_library_dir(&mut self, picked: &str) {
+        if self.migrate_busy {
+            return;
+        }
         let new = std::path::PathBuf::from(picked.trim());
         let old = self.bx.library_dir();
         if dcx_organizer::same_path(&old, &new) {
@@ -1906,7 +2145,33 @@ impl SettingsApp {
                 return;
             }
         }
-        match dcx_organizer::migrate_library(&old, &new) {
+        // The walk can take minutes on a network drive or a large library, and it
+        // used to run inside the frame: the window stopped painting and the move
+        // could not be cancelled. Do it on a worker and apply the result on the
+        // UI thread.
+        self.migrate_busy = true;
+        self.bx_result = Some(("正在迁移收纳库…".to_string(), Instant::now()));
+        if let Ok(mut slot) = MIGRATE_RESULT.lock() {
+            *slot = None;
+        }
+        let target = new.clone();
+        std::thread::spawn(move || {
+            let r = dcx_organizer::migrate_library(&old, &target);
+            if let Ok(mut slot) = MIGRATE_RESULT.lock() {
+                *slot = Some((target, r));
+            }
+        });
+    }
+
+    /// Apply a finished `migrate_library` run. Runs on the UI thread because it
+    /// rewrites this window's copy of the manifest and writes the document.
+    fn finish_migration(
+        &mut self,
+        new: std::path::PathBuf,
+        result: std::io::Result<dcx_organizer::MigrateReport>,
+    ) {
+        self.migrate_busy = false;
+        match result {
             Ok(report) => {
                 // Manual categories and legacy manifests are keyed by absolute
                 // path: follow the files, or every hand-sorted document would
@@ -1935,6 +2200,7 @@ impl SettingsApp {
                 };
                 // Commit now, not on the 220 ms debounce: the files already
                 // moved, so the box must switch roots before it scans again.
+                self.bx_manifest_dirty = true;
                 self.persist_box();
                 let mut msg = if report.moved == 0 {
                     "收纳库目录已更新".to_string()
@@ -2121,7 +2387,7 @@ impl SettingsApp {
                     if standard_button(ui, p, "打开", true).clicked() {
                         action = Some(3);
                     }
-                    if standard_button(ui, p, "更改…", true).clicked() {
+                    if standard_button(ui, p, "更改…", !self.migrate_busy).clicked() {
                         want_library = true;
                     }
                 },
@@ -2178,7 +2444,18 @@ impl SettingsApp {
 
         ui.add_space(18.0);
         caption(ui, p, "分类规则");
-        let counts = BoxOrganizer::new(self.bx.clone()).counts();
+        // `counts()` walks the whole library and stats every entry. It used to
+        // run once per frame; 5 s is fresh enough for a rule card and keeps the
+        // page responsive on a large collection.
+        let stale = self
+            .bx_counts_at
+            .map(|at| at.elapsed() >= Duration::from_secs(5))
+            .unwrap_or(true);
+        if stale {
+            self.bx_counts = BoxOrganizer::new(self.bx.clone()).counts();
+            self.bx_counts_at = Some(Instant::now());
+        }
+        let counts = self.bx_counts.clone();
         let mut rows = std::mem::take(&mut self.bx_rows);
         let mut changed = false;
         let mut remove: Option<usize> = None;
@@ -2256,15 +2533,23 @@ impl SettingsApp {
                 self.reset();
             }
             ui.add_space(2.0);
-            if standard_button(ui, p, "重新应用", true).clicked() {
+            if standard_button(ui, p, "重新应用", !self.reapply_busy).clicked() {
                 // Rewrites the file, which bumps mtime and forces a reload even
                 // when the content is unchanged (e.g. after an Explorer restart).
                 self.persist();
-                // A restarted Explorer also drops the engine, and then the file
-                // alone changes nothing — so put it back and say so if we cannot.
-                if let Err(e) = crate::injector::inject_now() {
-                    self.error = Some(format!("引擎注入失败：{e}"));
+                // `inject_now` enumerates processes and waits for
+                // `wh_injector.exe`; if the injector hangs in
+                // `CreateRemoteThread` this used to freeze the window forever.
+                self.reapply_busy = true;
+                if let Ok(mut slot) = REAPPLY_RESULT.lock() {
+                    *slot = None;
                 }
+                std::thread::spawn(|| {
+                    let r = crate::injector::inject_now();
+                    if let Ok(mut slot) = REAPPLY_RESULT.lock() {
+                        *slot = Some(r);
+                    }
+                });
                 // The footer reads a 3 s sample; nudge it before that so the
                 // "已应用" state lands without the user having to jiggle the mouse.
                 ui.ctx().request_repaint_after(Duration::from_millis(1500));
@@ -2312,12 +2597,37 @@ impl SettingsApp {
     /// The whole window, independent of the hosting event loop: `run_native`
     /// (dev entry point) and the panel's deferred viewport both end up here.
     pub fn ui(&mut self, ctx: &egui::Context) {
-        // The shell owns this bit — the Windows Settings app can flip it while we
-        // are open, so re-read it instead of trusting the snapshot from `new`.
-        self.auto_hide = crate::auto_hide::is_enabled();
-        // Same idea for the startup entry: the user may have removed it from
-        // Task Manager's startup tab while this window stayed open.
-        self.autostart = crate::autostart::is_enabled();
+        // The shell owns these bits — the Windows Settings app can flip them
+        // while we are open — but re-reading them every frame meant one
+        // synchronous `SHAppBarMessage` plus three registry opens per frame,
+        // which made this window "not responding" whenever Explorer was busy.
+        // Twice a second is enough to notice a change made elsewhere.
+        if self.shell_state_at.elapsed() >= Duration::from_secs(2) {
+            self.shell_state_at = Instant::now();
+            self.auto_hide = crate::auto_hide::is_enabled();
+            self.autostart = crate::autostart::is_enabled();
+        }
+        // Pick up the background 「重新应用」 result.
+        if let Ok(mut slot) = REAPPLY_RESULT.lock() {
+            if let Some(r) = slot.take() {
+                self.reapply_busy = false;
+                if let Err(e) = r {
+                    self.error = Some(format!("引擎注入失败：{e}"));
+                }
+            }
+        }
+        if self.reapply_busy {
+            ctx.request_repaint_after(Duration::from_millis(200));
+        }
+        // Pick up a finished library migration.
+        if let Ok(mut slot) = MIGRATE_RESULT.lock() {
+            if let Some((new, result)) = slot.take() {
+                self.finish_migration(new, result);
+            }
+        }
+        if self.migrate_busy {
+            ctx.request_repaint_after(Duration::from_millis(200));
+        }
         // A failed restore happens on its own thread; surface it in the footer
         // instead of leaving the button looking like it did nothing.
         if let Some(e) = crate::shutdown::take_error() {
@@ -3094,7 +3404,7 @@ fn row_icon(ui: &mut egui::Ui, p: &Palette, kind: RowIcon) {
             let r = Rect::from_center_size(c, egui::vec2(13.0, 10.0));
             painter.rect_stroke(r, Rounding::same(2.5), st);
             painter.hline(r.left() + 1.0..=r.right() - 1.0, c.y - 1.0, st);
-            painter.hline(c.x - 2.0..=c.x + 2.0, c.y - 1.0, Stroke::new(2.0, p.secondary));
+            painter.hline(c.x - 2.0..=c.x + 2.0, c.y - 1.0, Stroke::new(2.0_f32, p.secondary));
         }
         RowIcon::Search => {
             painter.circle_stroke(egui::pos2(c.x - 1.5, c.y - 1.5), 5.0, st);

@@ -24,15 +24,38 @@ fn command() -> Option<String> {
     exe_path().map(|exe| format!("\"{exe}\"{ARGS}"))
 }
 
+/// Executable path out of a Run-value command line.
+///
+/// A quoted path may contain spaces; an unquoted one ends at the first space.
+fn exe_of_command(value: &str) -> Option<String> {
+    let v = value.trim();
+    if let Some(rest) = v.strip_prefix('"') {
+        rest.split('"').next().map(|s| s.trim().to_string())
+    } else {
+        v.split_whitespace().next().map(str::to_string)
+    }
+    .filter(|s| !s.is_empty())
+}
+
 /// 启动项里的这条命令是否指的就是"当前这个 exe"。
 ///
 /// 只比可执行文件路径，不管后面的参数：用户手工加过 `--no-settings` 也好、
 /// 没有也好，都算已开启，重新打开开关时会补成我们推荐的形式。
+///
+/// The comparison is on the **whole** executable path. A substring test made any
+/// value that merely mentioned our path anywhere (an argument, a comment, a
+/// different exe under a directory whose name contains ours) read as "enabled",
+/// so the switch showed ON while nothing started at logon.
 fn points_at_us(value: &str) -> bool {
     let Some(exe) = exe_path() else {
         return false;
     };
-    value.to_lowercase().contains(&exe.to_lowercase())
+    match exe_of_command(value) {
+        Some(found) => found
+            .trim_end_matches(['\\', '/'])
+            .eq_ignore_ascii_case(exe.trim_end_matches(['\\', '/'])),
+        None => false,
+    }
 }
 
 /// 开关当前状态。启动项存在但指向旧路径（便携目录被搬走）时报 false，
@@ -90,5 +113,11 @@ mod tests {
         assert!(points_at_us(&ours));
         assert!(points_at_us(&ours.to_uppercase()), "Windows 路径不分大小写");
         assert!(!points_at_us(r#""C:\Somewhere\Else\dcx-host.exe" --no-settings"#));
+        // Our path only appearing *inside* the command (as an argument, not as
+        // the executable) must not read as "enabled": the old substring test
+        // said ON while nothing started at logon.
+        assert!(!points_at_us(&format!(
+            r#""C:\Somewhere\Else\launcher.exe" {ours}"#
+        )));
     }
 }

@@ -8,3 +8,5 @@ description = "Settings model + TOML persistence for DCX (shared by host and eng
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+# Cross-process file lock + atomic replace for `settings.toml`.
+dcx-win32 = { path = "../dcx-win32" }

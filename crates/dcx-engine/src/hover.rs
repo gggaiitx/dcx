@@ -222,6 +222,14 @@ pub fn mark_dirty() {
 }
 
 unsafe extern "system" fn timer_proc(_hwnd: isize, _msg: u32, _id: usize, _time: u32) {
+    // Set by `DllMain(DLL_PROCESS_DETACH)`. Doing the teardown here — on the
+    // UI thread that owns the timer and the state lock — is the only place it
+    // is safe: DETACH runs on whichever thread calls `FreeLibrary`, and taking
+    // `STATE` there could deadlock against a frame in flight.
+    if crate::stopping() {
+        shutdown();
+        return;
+    }
     tick();
     // `slot` arms a thread timer of its own (`hWnd = 0`), and such a timer dies
     // with the dispatcher thread that created it — XAML recycles those. Measured

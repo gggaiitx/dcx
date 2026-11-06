@@ -192,21 +192,74 @@ impl Config {
         crate::win::local_dir().join("search.toml")
     }
 
+    /// Read the document. A file that exists but does not parse is reported
+    /// through the poisoned-path registry so [`Config::save`] refuses to
+    /// replace it with defaults — the settings window and the search app both
+    /// write this file, and silently resetting it lost the other side's edits.
     pub fn load() -> Config {
-        std::fs::read_to_string(Self::path())
-            .ok()
-            .and_then(|text| toml::from_str::<Config>(&text).ok())
-            .unwrap_or_default()
+        let p = Self::path();
+        match std::fs::read_to_string(&p) {
+            Ok(text) => match toml::from_str::<Config>(&text) {
+                Ok(mut c) => {
+                    dcx_win32::config_file::note_parse_ok(&p);
+                    c.repair();
+                    c
+                }
+                Err(e) => {
+                    eprintln!("[dcx-search] parse {p:?} failed ({e}); using defaults (read-only)");
+                    dcx_win32::config_file::note_parse_error(&p);
+                    Config::default()
+                }
+            },
+            Err(_) => Config::default(),
+        }
     }
 
-    /// Atomic replace. Callers must `load()` immediately beforehand so they do
-    /// not roll back a change the other process just made.
+    /// Clamp the values that drive allocation.
+    ///
+    /// They are hand-editable and were passed straight through: a typo in
+    /// `max_results` or `max_file_size_mb` turned one query into an out-of-memory
+    /// kill, and `time_budget_ms = 0` disabled the only bound on a content scan.
+    pub fn repair(&mut self) {
+        self.content.max_file_size_mb = self.content.max_file_size_mb.clamp(1, 512);
+        self.content.max_results = self.content.max_results.clamp(10, 50_000);
+        self.content.time_budget_ms = self.content.time_budget_ms.clamp(200, 120_000);
+        self.index.refresh_minutes = self.index.refresh_minutes.clamp(1, 24 * 60);
+        if !matches!(
+            self.activation.residency.as_str(),
+            "release" | "keep_5m" | "resident"
+        ) {
+            self.activation.residency = "release".to_string();
+        }
+        if !matches!(self.activation.show_on.as_str(), "mouse" | "center" | "last") {
+            self.activation.show_on = "mouse".to_string();
+        }
+        if self.activation.hotkey.trim().is_empty() {
+            self.activation.hotkey = "Alt+s".to_string();
+        }
+        // Relative or non-existent custom roots are never walked: `WalkBuilder`
+        // and `notify` would either fail silently or watch an unintended path.
+        self.scope.custom_roots.retain(|r| {
+            let p = std::path::Path::new(r);
+            p.is_absolute() && p.is_dir()
+        });
+    }
+
+    /// Atomic, cross-process-safe replace. Callers must `load()` immediately
+    /// beforehand so they do not roll back a change the other process just made.
     pub fn save(&self) -> Result<(), String> {
-        let text = toml::to_string_pretty(self).map_err(|e| format!("序列化失败：{e}"))?;
         let path = Self::path();
-        let tmp = path.with_extension("toml.tmp");
-        std::fs::write(&tmp, text).map_err(|e| format!("写入失败：{e}"))?;
-        std::fs::rename(&tmp, &path).map_err(|e| format!("替换失败：{e}"))
+        let _guard = dcx_win32::config_file::FileLock::acquire(
+            &path,
+            dcx_win32::config_file::LOCK_TIMEOUT,
+        )
+        .map_err(|e| format!("配置文件被占用：{e}"))?;
+        if dcx_win32::config_file::is_poisoned(&path) {
+            return Err(dcx_win32::config_file::poisoned_error(&path).to_string());
+        }
+        let text = toml::to_string_pretty(self).map_err(|e| format!("序列化失败：{e}"))?;
+        dcx_win32::config_file::write_atomic(&path, text.as_bytes())
+            .map_err(|e| format!("保存失败：{e}"))
     }
 
     /// Cheap `(len, mtime_ms)` token for hot-reload without parsing every frame.

@@ -43,6 +43,7 @@ extern "system" {
 #[link(name = "ole32")]
 extern "system" {
     fn CoInitializeEx(reserved: *mut c_void, coinit: u32) -> i32;
+    fn CoUninitialize();
 }
 
 #[repr(C)]
@@ -61,7 +62,14 @@ const FO_DELETE: u32 = 0x0003;
 const FOF_SILENT: u16 = 0x0004;
 const FOF_NOCONFIRMATION: u16 = 0x0010;
 const FOF_ALLOWUNDO: u16 = 0x0040;
-const FOF_NOERRORUI: u16 = 0x0400;
+/// Deliberately **not** used: suppressing the shell's error dialog hid failures
+/// the user needs to see. Search for the reason here before re-adding it.
+// const FOF_NOERRORUI: u16 = 0x0400;
+/// Ask before deleting permanently. `FOF_ALLOWUNDO` only *requests* the Recycle
+/// Bin: a file that is too large, on a network volume or on a path the bin
+/// rejects is deleted outright, and `FOF_NOCONFIRMATION` used to silence even
+/// that prompt. With this flag the shell still asks for the destructive case.
+const FOF_WANTNUKEWARNING: u16 = 0x4000;
 
 const SW_SHOWNORMAL: i32 = 1;
 const SHOP_FILEPATH: u32 = 0x0000_0002;
@@ -69,7 +77,7 @@ const COINIT_APARTMENTTHREADED: u32 = 0x2;
 
 /// Open a file with its default handler.
 pub fn open_path(path: &Path) -> Result<(), String> {
-    let file = dcx_win32::wide(&path.to_string_lossy());
+    let file = dcx_win32::wide_path(path);
     let op = dcx_win32::wide("open");
     let code = unsafe {
         dcx_win32::ShellExecuteW(
@@ -86,7 +94,7 @@ pub fn open_path(path: &Path) -> Result<(), String> {
 
 /// Open the shell's property sheet for a file or folder.
 pub fn open_properties(path: &Path) -> Result<(), String> {
-    let file = dcx_win32::wide(&path.to_string_lossy());
+    let file = dcx_win32::wide_path(path);
     let ok = unsafe {
         SHObjectProperties(
             0,
@@ -109,10 +117,21 @@ pub fn open_properties(path: &Path) -> Result<(), String> {
 /// parser then exits with code 1. The shell API is both quote-safe and tells
 /// us whether it worked.
 pub fn reveal(path: &Path) -> Result<(), String> {
-    unsafe {
-        CoInitializeEx(core::ptr::null_mut(), COINIT_APARTMENTTHREADED);
+    // S_OK / S_FALSE both mean this thread now owns a COM apartment and must
+    // release it; a negative HRESULT means it was already initialised in another
+    // mode and must not be uninitialised. The old code ignored the result and
+    // never called `CoUninitialize` on any path.
+    let hr_init =
+        unsafe { CoInitializeEx(core::ptr::null_mut(), COINIT_APARTMENTTHREADED) };
+    let result = reveal_inner(path);
+    if hr_init >= 0 {
+        unsafe { CoUninitialize() };
     }
-    let file = dcx_win32::wide(&path.to_string_lossy());
+    result
+}
+
+fn reveal_inner(path: &Path) -> Result<(), String> {
+    let file = dcx_win32::wide_path(path);
     let mut pidl: *mut c_void = core::ptr::null_mut();
     let mut attrs = 0u32;
     let hr = unsafe {
@@ -171,14 +190,17 @@ fn error_text(what: &str) -> String {
 /// `SHFileOperationW` needs a double-NUL-terminated list of wide paths. We
 /// deliberately do not add `FOF_NOCONFIRMATION` without a UI confirmation of
 /// our own: the panel asks first when `Config::confirm_delete` is on.
+/// `FOF_WANTNUKEWARNING` keeps the shell's own prompt for the cases where the
+/// bin is not available and the delete would be permanent.
 pub fn recycle(paths: &[impl AsRef<Path>]) -> Result<Vec<std::path::PathBuf>, String> {
     if paths.is_empty() {
         return Ok(Vec::new());
     }
     let mut buf: Vec<u16> = Vec::new();
     for p in paths {
-        let s = p.as_ref().to_string_lossy();
-        buf.extend(s.encode_utf16());
+        let mut w = dcx_win32::wide_path(p.as_ref());
+        w.pop(); // the list is NUL-separated; drop this path's terminator
+        buf.extend_from_slice(&w);
         buf.push(0);
     }
     buf.push(0); // second NUL terminates the list
@@ -188,7 +210,7 @@ pub fn recycle(paths: &[impl AsRef<Path>]) -> Result<Vec<std::path::PathBuf>, St
         func: FO_DELETE,
         from: buf.as_ptr(),
         to: core::ptr::null(),
-        flags: FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI,
+        flags: FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_WANTNUKEWARNING | FOF_SILENT,
         aborted: 0,
         name_mappings: core::ptr::null_mut(),
         progress_title: core::ptr::null(),

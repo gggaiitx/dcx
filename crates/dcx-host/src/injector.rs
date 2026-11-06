@@ -12,12 +12,12 @@
 //! the host's own directory, overridable via `DCX_INJECTOR` / `DCX_ENGINE_DLL`
 //! for development.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Set while a shell restart is in progress (`shutdown::restore_taskbar_and_quit`).
 ///
@@ -204,6 +204,10 @@ pub fn is_paused() -> bool {
 pub fn spawn_watchdog() {
     thread::spawn(|| {
         let mut injected: HashSet<u32> = HashSet::new();
+        // pid → (consecutive failures, next attempt). A permanently failing
+        // injection used to respawn `wh_injector.exe` every 5 s for the whole
+        // session, filling `host.log` and spawning processes forever.
+        let mut retry: HashMap<u32, (u32, Instant)> = HashMap::new();
         loop {
             if PAUSED.load(Ordering::SeqCst) {
                 // A restore is running and the host is about to die; keep the
@@ -217,21 +221,38 @@ pub fn spawn_watchdog() {
                     continue;
                 }
                 if !has_module(pid, "dcx_engine.dll") {
+                    let now = Instant::now();
+                    if let Some((_, due)) = retry.get(&pid) {
+                        if now < *due {
+                            continue;
+                        }
+                    }
                     if inject(pid) {
                         println!("[dcx-host] injected dcx_engine into explorer pid {pid}");
                         injected.insert(pid);
+                        retry.remove(&pid);
                     } else {
+                        let failures = retry.get(&pid).map(|(n, _)| n + 1).unwrap_or(1);
+                        let delay = if failures >= 6 {
+                            Duration::from_secs(300)
+                        } else {
+                            Duration::from_secs(5u64 << failures.min(5))
+                        };
+                        retry.insert(pid, (failures, now + delay));
                         eprintln!(
-                            "[dcx-host] failed to inject explorer pid {pid} \
-                             (is wh_injector.exe / dcx_engine.dll present?)"
+                            "[dcx-host] failed to inject explorer pid {pid} (attempt {failures}; \
+                             retry in {} s — is wh_injector.exe / dcx_engine.dll present?)",
+                            delay.as_secs()
                         );
                     }
                 } else {
                     injected.insert(pid);
+                    retry.remove(&pid);
                 }
             }
             // Forget PIDs that have exited (e.g. Explorer restarted).
             injected.retain(|pid| pids.contains(pid));
+            retry.retain(|pid, _| pids.contains(pid));
             thread::sleep(Duration::from_secs(5));
         }
     });

@@ -972,6 +972,7 @@ dependencies = [
 name = "dcx-settings"
 version = "0.1.0"
 dependencies = [
+ "dcx-win32",
  "serde",
  "toml",
 ]

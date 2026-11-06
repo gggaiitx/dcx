@@ -36,6 +36,9 @@ pub const CATCH_ALL: &str = "other";
 /// not by extension, so this key has no `exts`.
 pub const FOLDER: &str = "folder";
 
+/// Consecutive unreachable refreshes before a manifest key is dropped.
+pub const PRUNE_MISSES: u8 = 3;
+
 // ---------------------------------------------------------------------------
 // View / placement preferences
 // ---------------------------------------------------------------------------
@@ -375,13 +378,21 @@ impl Config {
     }
 
     /// Load, repairing anything a hand edit could have broken.
+    ///
+    /// An unparseable document falls back to defaults **in memory only**: the
+    /// path is marked read-only so the next save cannot replace the user's
+    /// categories, overrides and custom library path with those defaults.
     pub fn load() -> Config {
         let p = Self::path();
         let mut cfg = match std::fs::read_to_string(&p) {
             Ok(text) => match toml::from_str::<Config>(&text) {
-                Ok(c) => c,
+                Ok(c) => {
+                    dcx_win32::config_file::note_parse_ok(&p);
+                    c
+                }
                 Err(e) => {
-                    eprintln!("[dcx-organizer] parse {p:?} failed ({e}); using defaults");
+                    eprintln!("[dcx-organizer] parse {p:?} failed ({e}); using defaults (read-only)");
+                    dcx_win32::config_file::note_parse_error(&p);
                     Config::default()
                 }
             },
@@ -476,22 +487,28 @@ impl Config {
         }
     }
 
+    /// Persist the document under the cross-process write lock.
+    ///
+    /// `organizer.toml` is written by both `dcx-host.exe --settings` and
+    /// `dcx-box.exe`; without the lock two read-modify-write cycles interleave
+    /// and the later one restores a stale snapshot of the other's keys.
     pub fn save(&self) -> io::Result<()> {
+        let _guard = dcx_win32::config_file::FileLock::acquire(
+            &Self::path(),
+            dcx_win32::config_file::LOCK_TIMEOUT,
+        )?;
+        self.save_unlocked()
+    }
+
+    /// Save while the caller already holds the document lock.
+    fn save_unlocked(&self) -> io::Result<()> {
         let p = Self::path();
-        if let Some(dir) = p.parent() {
-            std::fs::create_dir_all(dir)?;
+        if dcx_win32::config_file::is_poisoned(&p) {
+            return Err(dcx_win32::config_file::poisoned_error(&p));
         }
-        let text =
-            toml::to_string_pretty(self).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-        let tmp = p.with_extension("toml.tmp");
-        std::fs::write(&tmp, text.as_bytes())?;
-        match std::fs::rename(&tmp, &p) {
-            Ok(()) => Ok(()),
-            Err(e) => {
-                let _ = std::fs::remove_file(&tmp);
-                std::fs::write(&p, text.as_bytes()).map_err(|_| e)
-            }
-        }
+        let text = toml::to_string_pretty(self).map_err(io::Error::other)?;
+        // No truncating fallback: a failed swap leaves the old document intact.
+        dcx_win32::config_file::write_atomic(&p, text.as_bytes())
     }
 
     /// Category that owns `ext`, or `None` when no rule matches.
@@ -526,11 +543,15 @@ impl Config {
 
     /// Persist a UI-only preference without disturbing anything else. The box
     /// process owns these keys; the settings centre writes the same document,
-    /// so every write must be read-modify-write.
+    /// so every write must be read-modify-write **and** serialised.
     pub fn patch<F: FnOnce(&mut Config)>(f: F) -> io::Result<()> {
+        let _guard = dcx_win32::config_file::FileLock::acquire(
+            &Self::path(),
+            dcx_win32::config_file::LOCK_TIMEOUT,
+        )?;
         let mut cfg = Config::load();
         f(&mut cfg);
-        cfg.save()
+        cfg.save_unlocked()
     }
 }
 
@@ -609,7 +630,7 @@ impl Entry {
 }
 
 fn file_attributes(path: &Path) -> u32 {
-    let w = dcx_win32::wide(&path.to_string_lossy());
+    let w = dcx_win32::wide_path(path);
     let a = unsafe { dcx_win32::GetFileAttributesW(w.as_ptr()) };
     if a == dcx_win32::INVALID_FILE_ATTRIBUTES {
         0
@@ -642,11 +663,16 @@ pub struct Organizer {
     pub cfg: Config,
     root: PathBuf,
     desktop: PathBuf,
+    /// Consecutive refreshes in which a manifest key was unreachable. A single
+    /// miss is not enough to drop it: a network drive, a OneDrive placeholder or
+    /// a drag that has just landed can be briefly invisible to `exists()`.
+    missing: BTreeMap<String, u8>,
 }
 
 impl Organizer {
     pub fn new(cfg: Config) -> Organizer {
         let desktop = desktop_dir();
+        let mut cfg = cfg;
         let mut root = cfg.library_dir();
         // A collection inside the desktop would itself become a desktop icon
         // and be scanned recursively; fall back to the app data directory.
@@ -660,9 +686,20 @@ impl Organizer {
                 .unwrap_or_else(|| PathBuf::from("."))
                 .join("dcx")
                 .join("library");
+            // Report the root that is actually in use. Leaving `library_root`
+            // at the rejected value made the settings page show one path while
+            // the box scanned another.
+            cfg.library_root = Some(root.to_string_lossy().to_string());
         }
-        let _ = std::fs::create_dir_all(&root);
-        Organizer { cfg, root, desktop }
+        if let Err(e) = std::fs::create_dir_all(&root) {
+            eprintln!("[dcx-organizer] cannot create library {:?}: {e}", root);
+        }
+        Organizer {
+            cfg,
+            root,
+            desktop,
+            missing: BTreeMap::new(),
+        }
     }
 
     /// Explicit roots, for tests. Production uses [`Self::new`].
@@ -672,12 +709,18 @@ impl Organizer {
             cfg,
             desktop: root.clone(),
             root,
+            missing: BTreeMap::new(),
         }
     }
 
     pub fn with_roots(cfg: Config, root: PathBuf, desktop: PathBuf) -> Organizer {
         let _ = std::fs::create_dir_all(&root);
-        Organizer { cfg, root, desktop }
+        Organizer {
+            cfg,
+            root,
+            desktop,
+            missing: BTreeMap::new(),
+        }
     }
 
     pub fn root(&self) -> &Path {
@@ -943,10 +986,19 @@ impl Organizer {
     }
 
     /// Handle a drop *into* the panel. Returns `(tagged, moved)`.
+    ///
+    /// Every path crosses [`drop_refusal`] first. Without it a dragged desktop
+    /// folder reached `move_into_dir` unchecked and `rename(desktop,
+    /// root\Desktop)` moved the whole desktop into the library; `absorb_auto`
+    /// had the ancestor check, this entry point did not.
     pub fn absorb(&mut self, paths: &[PathBuf], key: &str) -> (usize, usize) {
         let (mut tagged, mut moved) = (0, 0);
         for p in paths {
             let p = norm(p);
+            if let Some(why) = drop_refusal(&p, &self.root, &self.desktop) {
+                eprintln!("[dcx-organizer] 拒绝收纳 {p:?}: {why}");
+                continue;
+            }
             if !is_same_or_under(&p, &self.root) {
                 match move_into_dir(&p, &self.root) {
                     Ok(new_path) => {
@@ -979,7 +1031,8 @@ impl Organizer {
         let (mut adopted, mut moved) = (0, 0);
         for p in paths {
             let p = norm(p);
-            if same_path(&p, &self.root) || is_same_or_under(&self.root, &p) {
+            if let Some(why) = drop_refusal(&p, &self.root, &self.desktop) {
+                eprintln!("[dcx-organizer] 拒绝收纳 {p:?}: {why}");
                 continue;
             }
             let target = if is_same_or_under(&p, &self.root) {
@@ -1020,6 +1073,11 @@ impl Organizer {
         let mut touched_desktop = false;
         for p in paths {
             let p = norm(p);
+            if let Some(why) = drop_refusal(&p, &self.root, &self.desktop) {
+                eprintln!("[dcx-organizer] 拒绝移动 {p:?}: {why}");
+                failed += 1;
+                continue;
+            }
             // Never move a folder into itself or into one of its descendants.
             if is_same_or_under(dir, &p) {
                 continue;
@@ -1062,7 +1120,8 @@ impl Organizer {
         let mut out = Vec::new();
         for p in paths {
             let p = norm(p);
-            if same_path(&p, &self.root) {
+            if let Some(why) = drop_refusal(&p, &self.root, &self.desktop) {
+                eprintln!("[dcx-organizer] 拒绝放回桌面 {p:?}: {why}");
                 continue;
             }
             let already_top = p
@@ -1115,7 +1174,7 @@ impl Organizer {
                 "目标不是文件夹",
             ));
         }
-        let dst = unique_path(parent, name);
+        let dst = unique_path(parent, name)?;
         std::fs::create_dir(&dst)?;
         if is_same_or_under(parent, &self.desktop) {
             notify_desktop(&self.desktop, false);
@@ -1151,11 +1210,49 @@ impl Organizer {
         Ok(())
     }
 
-    /// Prune manifest entries for paths that vanished (called on refresh).
+    /// Prune manifest entries for paths that stayed unreachable.
+    ///
+    /// A single `exists() == false` used to be enough, and the result was
+    /// written on the next save: a sleeping network drive, a OneDrive
+    /// placeholder or a drag that had not landed yet permanently dropped the
+    /// user's manual category. Three consecutive misses (~3.6 s at the panel's
+    /// refresh cadence) are required now.
     pub fn prune(&mut self) {
-        self.cfg.overrides.retain(|k, _| Path::new(k).exists());
-        self.cfg.excluded.retain(|k| Path::new(k).exists());
-        self.cfg.hidden.retain(|k| Path::new(k).exists());
+        let keys: Vec<String> = self
+            .cfg
+            .overrides
+            .keys()
+            .chain(self.cfg.excluded.iter())
+            .chain(self.cfg.hidden.iter())
+            .cloned()
+            .collect();
+        for k in keys {
+            if Path::new(&k).exists() {
+                self.missing.remove(&k);
+                continue;
+            }
+            let misses = {
+                let slot = self.missing.entry(k.clone()).or_insert(0);
+                *slot = slot.saturating_add(1);
+                *slot
+            };
+            if misses < PRUNE_MISSES {
+                continue;
+            }
+            self.cfg.overrides.remove(&k);
+            self.cfg.excluded.remove(&k);
+            self.cfg.hidden.remove(&k);
+            self.missing.remove(&k);
+        }
+        let keep: BTreeSet<String> = self
+            .cfg
+            .overrides
+            .keys()
+            .cloned()
+            .chain(self.cfg.excluded.iter().cloned())
+            .chain(self.cfg.hidden.iter().cloned())
+            .collect();
+        self.missing.retain(|k, _| keep.contains(k));
     }
 
     pub fn contains(&self, path: &Path) -> bool {
@@ -1253,7 +1350,7 @@ impl Organizer {
 /// Force one desktop re-enumeration after a batch of visibility changes.
 fn notify_desktop(dir: &Path, flush: bool) {
     use dcx_win32 as w;
-    let wide = w::wide(&dir.to_string_lossy());
+    let wide = w::wide_path(dir);
     let flags = w::SHCNF_PATHW
         | if flush {
             w::SHCNF_FLUSH
@@ -1272,7 +1369,7 @@ fn notify_desktop(dir: &Path, flush: bool) {
 
 fn set_hidden(path: &Path, hidden: bool) -> bool {
     use dcx_win32 as w;
-    let wide = w::wide(&path.to_string_lossy());
+    let wide = w::wide_path(path);
     let attrs = unsafe { w::GetFileAttributesW(wide.as_ptr()) };
     if attrs == w::INVALID_FILE_ATTRIBUTES {
         return false;
@@ -1299,40 +1396,185 @@ pub fn same_path(a: &Path, b: &Path) -> bool {
     path_key(a) == path_key(b)
 }
 
-/// `path` is `ancestor` or lives below it, compared component-wise (so
-/// `C:\Desktop2` is not under `C:\Desktop`).
+/// Component-wise, case-insensitive comparison of one path component pair.
+fn component_eq(a: Component<'_>, b: Component<'_>) -> bool {
+    a.as_os_str()
+        .to_string_lossy()
+        .eq_ignore_ascii_case(&b.as_os_str().to_string_lossy())
+}
+
+/// `path` is `ancestor` or lives below it, compared **component by component**
+/// after `..` folding — so `C:\Desktop2` is not under `C:\Desktop`, and
+/// `C:\Desktop\..\Windows` is not either.
 pub fn is_same_or_under(path: &Path, ancestor: &Path) -> bool {
-    let p = path_key(path);
-    let a = path_key(ancestor);
-    match p.strip_prefix(&a) {
-        Some(rest) => rest.is_empty() || rest.starts_with('\\') || rest.starts_with('/'),
-        None => false,
+    let p = norm(path);
+    let a = norm(ancestor);
+    let mut pc = p.components();
+    for ac in a.components() {
+        match pc.next() {
+            Some(c) if component_eq(c, ac) => {}
+            _ => return false,
+        }
     }
+    true
 }
 
 /// Move `src` into `dir`, never overwriting (`name`, `name (1)`, …).
+///
+/// A failed move removes whatever it had already copied: the caller counts a
+/// success, and a "copied but the source is still there" outcome used to be
+/// reported as collected — a silent duplicate on the desktop.
 pub fn move_into_dir(src: &Path, dir: &Path) -> io::Result<PathBuf> {
     std::fs::create_dir_all(dir)?;
     let name = src
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "未命名".to_string());
-    let dst = unique_path(dir, &name);
-    if src == dst {
+    let dst = unique_path(dir, &name)?;
+    if same_path(src, &dst) {
         return Ok(dst);
     }
-    match std::fs::rename(src, &dst) {
-        Ok(()) => Ok(dst),
-        Err(rename_err) => match copy_recursive(src, &dst) {
-            Ok(()) => {
-                let _ = remove_recursive(src);
-                Ok(dst)
+    move_no_replace(src, &dst)?;
+    Ok(dst)
+}
+
+#[link(name = "kernel32")]
+extern "system" {
+    fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
+}
+
+const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
+
+/// One move that must not overwrite and must not leave a duplicate behind.
+fn move_no_replace(src: &Path, dst: &Path) -> io::Result<()> {
+    let s = dcx_win32::config_file::wide_path(src);
+    let d = dcx_win32::config_file::wide_path(dst);
+    if unsafe { MoveFileExW(s.as_ptr(), d.as_ptr(), MOVEFILE_WRITE_THROUGH) } != 0 {
+        return Ok(());
+    }
+    let rename_err = io::Error::last_os_error();
+    // Same-volume rename refused (an open handle, or a different volume): copy,
+    // verify, then delete the source, and roll the copy back if that fails.
+    // `std::fs::rename` was not usable here — on Windows it passes
+    // MOVEFILE_REPLACE_EXISTING and can silently overwrite a same-named file.
+    copy_then_remove(src, dst).map_err(|e| io::Error::new(e.kind(), format!("{e}（重命名错误：{rename_err}）")))
+}
+
+fn copy_then_remove(src: &Path, dst: &Path) -> io::Result<()> {
+    if let Err(e) = copy_recursive(src, dst) {
+        let _ = remove_recursive(dst);
+        return Err(e);
+    }
+    match remove_recursive(src) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            // Honest failure: the destination is removed again so the file
+            // exists exactly once, where it started.
+            match remove_recursive(dst) {
+                Ok(()) => Err(io::Error::new(
+                    e.kind(),
+                    format!("已复制但无法删除源文件（{e}），操作已回滚"),
+                )),
+                Err(rollback) => Err(io::Error::new(
+                    e.kind(),
+                    format!(
+                        "已复制但无法删除源文件（{e}），回滚也失败（{rollback}）；源与目标同时存在，请手动核对"
+                    ),
+                )),
             }
-            Err(_) => {
-                let _ = remove_recursive(&dst);
-                Err(rename_err)
-            }
-        },
+        }
+    }
+}
+
+pub fn unique_path(dir: &Path, name: &str) -> io::Result<PathBuf> {
+    let candidate = dir.join(name);
+    if !candidate.exists() {
+        return Ok(candidate);
+    }
+    let p = Path::new(name);
+    let stem = p
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| name.to_string());
+    let ext = p
+        .extension()
+        .map(|e| format!(".{}", e.to_string_lossy()))
+        .unwrap_or_default();
+    for n in 1..10_000 {
+        let c = dir.join(format!("{stem} ({n}){ext}"));
+        if !c.exists() {
+            return Ok(c);
+        }
+    }
+    // Never hand back a name that is already taken — the caller would then move
+    // onto an existing file. A PID-tagged suffix plus the OS's own refusal is
+    // the last resort.
+    let pid = std::process::id();
+    for n in 0..1_000 {
+        let c = dir.join(format!("{stem} ({pid}-{n}){ext}"));
+        if !c.exists() {
+            return Ok(c);
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        format!("无法为 {name} 生成不重复的文件名"),
+    ))
+}
+
+#[link(name = "kernel32")]
+extern "system" {
+    fn CopyFileW(existing: *const u16, new: *const u16, fail_if_exists: i32) -> i32;
+}
+
+/// Copy one file with its timestamps and attributes.
+///
+/// `std::fs::copy` resets the modified time, which a cross-volume library move
+/// would turn into "every file changed today" in the box and in Explorer. The
+/// Win32 copy keeps the metadata the way Explorer's own move does.
+fn copy_file(src: &Path, dst: &Path) -> io::Result<()> {
+    let src = dcx_win32::config_file::wide_path(src);
+    let dst = dcx_win32::config_file::wide_path(dst);
+    if unsafe { CopyFileW(src.as_ptr(), dst.as_ptr(), 1) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn copy_recursive(src: &Path, dst: &Path) -> io::Result<()> {
+    let meta = std::fs::symlink_metadata(src)?;
+    // `metadata()` followed junctions: dropping one copied the whole external
+    // tree into the library and then deleted only the link, leaving the copy
+    // behind. A reparse point is refused instead.
+    if is_reparse_point(src) {
+        return Err(io::Error::other(format!(
+            "拒绝跟随链接或重解析点：{}",
+            src.display()
+        )));
+    }
+    if meta.is_dir() {
+        // `create_dir`, not `create_dir_all`: an existing destination must fail
+        // instead of merging two same-named folders.
+        std::fs::create_dir(dst)?;
+        let rd = std::fs::read_dir(src)?;
+        for e in rd {
+            let e = e?; // enumeration errors are failures, not skips
+            copy_recursive(&e.path(), &dst.join(e.file_name()))?;
+        }
+        Ok(())
+    } else if meta.is_file() {
+        copy_file(src, dst)
+    } else {
+        Err(io::Error::other("不支持的条目类型"))
+    }
+}
+
+fn remove_recursive(p: &Path) -> io::Result<()> {
+    let meta = std::fs::symlink_metadata(p)?;
+    if meta.is_dir() {
+        std::fs::remove_dir_all(p)
+    } else {
+        std::fs::remove_file(p)
     }
 }
 
@@ -1345,8 +1587,9 @@ pub struct MigrateReport {
     /// had an entry with the same name.
     pub renamed: usize,
     /// Items copied to the new root but still (at least partly) present under
-    /// the old one: an open file cannot be deleted. Data is never lost; the
-    /// caller should report these so the user can close the app and retry.
+    /// the old one. Always zero since moves became all-or-nothing: a delete
+    /// failure rolls the copy back and aborts the migration, and the error
+    /// names the file that could not be released.
     pub leftovers: usize,
     /// `(old, new)` for every top-level item that now exists in the new root.
     /// The caller rewrites manifest paths (`overrides`) with this, or manual
@@ -1376,10 +1619,12 @@ pub fn migrate_library(from: &Path, to: &Path) -> io::Result<MigrateReport> {
     if !from.is_dir() {
         return Ok(MigrateReport::default());
     }
-    let entries: Vec<PathBuf> = std::fs::read_dir(&from)?
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .collect();
+    let mut entries: Vec<PathBuf> = Vec::new();
+    // `filter_map(|e| e.ok())` skipped unreadable children, so a migration
+    // could "succeed" while leaving part of the library behind.
+    for e in std::fs::read_dir(&from)? {
+        entries.push(e?.path());
+    }
     let mut report = MigrateReport::default();
     let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new();
     for src in entries {
@@ -1393,24 +1638,30 @@ pub fn migrate_library(from: &Path, to: &Path) -> io::Result<MigrateReport> {
                 if collision {
                     report.renamed += 1;
                 }
-                if src.exists() {
-                    report.leftovers += 1;
-                } else {
-                    moved.push((src.clone(), dst.clone()));
-                }
+                // `move_into_dir` copies, deletes and rolls the copy back when
+                // the delete fails, so a success here means the item really
+                // left the old root.
+                moved.push((src.clone(), dst.clone()));
                 report.pairs.push((src, dst));
             }
             Err(e) => {
                 // Put the already moved items back under their old names, so a
                 // failed change leaves the library exactly where it was.
+                let mut rollback_failures = 0usize;
                 for (orig, placed) in moved.iter().rev() {
-                    if std::fs::rename(placed, orig).is_err() {
-                        let _ = move_into_dir(placed, &from);
+                    if std::fs::rename(placed, orig).is_err() && move_into_dir(placed, &from).is_err()
+                    {
+                        rollback_failures += 1;
                     }
                 }
+                let detail = if rollback_failures == 0 {
+                    String::new()
+                } else {
+                    format!("；{rollback_failures} 项回滚失败，请手动核对新旧目录")
+                };
                 return Err(io::Error::new(
                     e.kind(),
-                    format!("迁移 {} 失败：{e}", src.display()),
+                    format!("迁移 {} 失败：{e}{detail}", src.display()),
                 ));
             }
         }
@@ -1437,79 +1688,105 @@ pub fn remap_moved_key(key: &str, pairs: &[(PathBuf, PathBuf)]) -> String {
     key.to_string()
 }
 
-pub fn unique_path(dir: &Path, name: &str) -> PathBuf {
-    let candidate = dir.join(name);
-    if !candidate.exists() {
-        return candidate;
-    }
-    let p = Path::new(name);
-    let stem = p
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| name.to_string());
-    let ext = p
-        .extension()
-        .map(|e| format!(".{}", e.to_string_lossy()))
-        .unwrap_or_default();
-    for n in 1..10_000 {
-        let c = dir.join(format!("{stem} ({n}){ext}"));
-        if !c.exists() {
-            return c;
-        }
-    }
-    candidate
-}
-
-#[link(name = "kernel32")]
-extern "system" {
-    fn CopyFileW(existing: *const u16, new: *const u16, fail_if_exists: i32) -> i32;
-}
-
-/// Copy one file with its timestamps and attributes.
+/// Lexical normalisation: drop `.` and fold `..` against the preceding
+/// component.
 ///
-/// `std::fs::copy` resets the modified time, which a cross-volume library move
-/// would turn into "every file changed today" in the box and in Explorer. The
-/// Win32 copy keeps the metadata the way Explorer's own move does.
-fn copy_file(src: &Path, dst: &Path) -> io::Result<()> {
-    let src = dcx_win32::wide(&src.to_string_lossy());
-    let dst = dcx_win32::wide(&dst.to_string_lossy());
-    if unsafe { CopyFileW(src.as_ptr(), dst.as_ptr(), 1) } == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
-}
-
-fn copy_recursive(src: &Path, dst: &Path) -> io::Result<()> {
-    let meta = std::fs::metadata(src)?;
-    if meta.is_dir() {
-        std::fs::create_dir_all(dst)?;
-        for e in std::fs::read_dir(src)?.filter_map(|e| e.ok()) {
-            copy_recursive(&e.path(), &dst.join(e.file_name()))?;
-        }
-        Ok(())
-    } else {
-        copy_file(src, dst)
-    }
-}
-
-fn remove_recursive(p: &Path) -> io::Result<()> {
-    let meta = std::fs::symlink_metadata(p)?;
-    if meta.is_dir() {
-        std::fs::remove_dir_all(p)
-    } else {
-        std::fs::remove_file(p)
-    }
-}
-
+/// Folding matters for security, not cosmetics: `is_same_or_under` and the
+/// "library must not contain the desktop" checks were plain string prefix
+/// tests, so `C:\Users\x\Desktop\..\Windows` used to pass them and let a drop
+/// move a directory far outside the box.
 pub fn norm(p: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for c in p.components() {
         match c {
             Component::CurDir => {}
+            Component::ParentDir => match out.components().next_back() {
+                Some(Component::Normal(_)) => {
+                    out.pop();
+                }
+                // `..` above a root or a drive prefix resolves to the root
+                // itself, exactly like `GetFullPathNameW` does.
+                Some(Component::RootDir) | Some(Component::Prefix(_)) => {}
+                _ => out.push(".."),
+            },
             other => out.push(other.as_os_str()),
         }
     }
     out
+}
+
+/// `FILE_ATTRIBUTE_REPARSE_POINT` — junctions, symlinks, cloud placeholders.
+fn is_reparse_point(p: &Path) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    match std::fs::symlink_metadata(p) {
+        Ok(m) => m.file_attributes() & 0x400 != 0,
+        Err(_) => false,
+    }
+}
+
+/// Directories a drop must never move: losing one is unrecoverable, and none
+/// of them is ever a legitimate box item.
+fn is_protected_dir(p: &Path) -> bool {
+    let p = norm(p);
+    // The drive root itself (`C:\`) has no parent. `%SystemDrive%` must not be
+    // used as a prefix root: `C:` would mark every file on the system drive as
+    // protected.
+    if p.parent().is_none() {
+        return true;
+    }
+    let mut roots: Vec<PathBuf> = Vec::new();
+    for var in [
+        "SystemRoot",
+        "ProgramFiles",
+        "ProgramFiles(x86)",
+        "ProgramData",
+    ] {
+        if let Some(v) = std::env::var_os(var) {
+            let v = PathBuf::from(v);
+            if !v.as_os_str().is_empty() {
+                roots.push(v);
+            }
+        }
+    }
+    roots.iter().any(|r| is_same_or_under(&p, r))
+}
+
+/// `\\server\share` — a drop from a network location is refused: the move
+/// would silently turn into a long copy with no rollback guarantee.
+fn is_network_path(p: &Path) -> bool {
+    let s = p.to_string_lossy();
+    s.starts_with("\\\\") || s.starts_with("//")
+}
+
+/// Why a path may not enter (or leave through) the box.
+///
+/// Used by every entry point that accepts paths from outside: a UI drop, a
+/// clipboard paste, a folder move. The checks are deliberately conservative;
+/// a refusal is reported to the user, never silently ignored.
+pub fn drop_refusal(path: &Path, root: &Path, desktop: &Path) -> Option<String> {
+    let p = norm(path);
+    if p.as_os_str().is_empty() {
+        return Some("路径为空".to_string());
+    }
+    if is_network_path(&p) {
+        return Some("不支持从网络位置移动文件".to_string());
+    }
+    if p.components().next().is_none() {
+        return Some("路径无效".to_string());
+    }
+    if same_path(&p, root) || is_same_or_under(root, &p) {
+        return Some("不能把收纳库本身移入收纳库".to_string());
+    }
+    if same_path(&p, desktop) || is_same_or_under(desktop, &p) {
+        return Some("不能移动桌面目录本身".to_string());
+    }
+    if is_protected_dir(&p) {
+        return Some("不能移动系统目录".to_string());
+    }
+    if is_reparse_point(&p) {
+        return Some("不支持移动链接或重解析点".to_string());
+    }
+    None
 }
 
 /// Minimal `*` / `?` glob match (case-insensitive input expected).
@@ -1691,6 +1968,92 @@ mod tests {
             Path::new(r"C:\Users\A\Desktop"),
             Path::new(r"C:\Users\A\Desktop\Docs")
         ));
+    }
+
+    #[test]
+    fn path_normalisation_folds_parent_segments() {
+        assert_eq!(norm(Path::new(r"C:\a\b\..\c")), PathBuf::from(r"C:\a\c"));
+        // `..` above a drive root resolves to the root, like GetFullPathNameW.
+        assert_eq!(norm(Path::new(r"C:\..\..\a")), PathBuf::from(r"C:\a"));
+        assert_eq!(norm(Path::new(r"a\..\b")), PathBuf::from("b"));
+        assert_eq!(norm(Path::new(r".\a\.\b")), PathBuf::from(r"a\b"));
+    }
+
+    #[test]
+    fn containment_cannot_be_escaped_with_dotdot() {
+        let desktop = Path::new(r"C:\Users\A\Desktop");
+        // This used to pass a plain string-prefix test.
+        assert!(!is_same_or_under(
+            Path::new(r"C:\Users\A\Desktop\..\..\Windows"),
+            desktop
+        ));
+        assert!(!is_same_or_under(Path::new(r"C:\Users\A\Desktop\..\B"), desktop));
+        // …while a genuine child still matches.
+        assert!(is_same_or_under(Path::new(r"C:\Users\A\Desktop\x"), desktop));
+    }
+
+    #[test]
+    fn absorb_refuses_the_desktop_directory_itself() {
+        let base = std::env::temp_dir().join(format!("dcx-guard-{}", now_ms()));
+        let library = base.join("library");
+        let desktop = base.join("desktop");
+        std::fs::create_dir_all(&library).unwrap();
+        std::fs::create_dir_all(&desktop).unwrap();
+        std::fs::write(desktop.join("a.txt"), b"x").unwrap();
+        let mut o = Organizer::with_roots(Config::default(), library.clone(), desktop.clone());
+
+        // Dragging the desktop folder onto a category tab used to run
+        // `rename(desktop, library\desktop)` and take the whole desktop away.
+        assert_eq!(o.absorb(&[desktop.clone()], "doc"), (0, 0));
+        assert!(desktop.is_dir());
+        assert!(desktop.join("a.txt").exists());
+        // A path that reaches the desktop through `..` is refused too.
+        assert_eq!(
+            o.absorb(&[desktop.join("..").join("desktop")], "doc"),
+            (0, 0)
+        );
+        assert!(desktop.join("a.txt").exists());
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn move_into_dir_never_overwrites() {
+        let base = std::env::temp_dir().join(format!("dcx-move-{}", now_ms()));
+        let src = base.join("src");
+        let dst = base.join("dst");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&dst).unwrap();
+        std::fs::write(src.join("a.txt"), b"new").unwrap();
+        std::fs::write(dst.join("a.txt"), b"old").unwrap();
+
+        let moved = move_into_dir(&src.join("a.txt"), &dst).unwrap();
+        assert_eq!(moved, dst.join("a (1).txt"));
+        assert_eq!(std::fs::read(dst.join("a.txt")).unwrap(), b"old");
+        assert_eq!(std::fs::read(&moved).unwrap(), b"new");
+        assert!(!src.join("a.txt").exists());
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn prune_waits_for_consecutive_misses() {
+        let base = std::env::temp_dir().join(format!("dcx-prune-{}", now_ms()));
+        let library = base.join("library");
+        let desktop = base.join("desktop");
+        std::fs::create_dir_all(&library).unwrap();
+        std::fs::create_dir_all(&desktop).unwrap();
+        let mut cfg = Config::default();
+        cfg.overrides.insert(
+            format!(r"{}\gone.txt", desktop.display()).to_ascii_lowercase(),
+            "doc".to_string(),
+        );
+        let mut o = Organizer::with_roots(cfg, library, desktop);
+        for _ in 0..PRUNE_MISSES - 1 {
+            o.prune();
+            assert_eq!(o.cfg.overrides.len(), 1, "pruned too early");
+        }
+        o.prune();
+        assert!(o.cfg.overrides.is_empty());
+        std::fs::remove_dir_all(&base).unwrap();
     }
 
     #[test]

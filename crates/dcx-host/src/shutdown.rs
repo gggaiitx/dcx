@@ -65,6 +65,8 @@ pub fn restore_taskbar_and_quit() {
             // The platform is going away: stop every standalone app with it so
             // no tile is left painting into a taskbar that is no longer managed.
             crate::apps::stop_all();
+            // `exit` would otherwise leave the spawned settings window running.
+            crate::settings_app::close_settings_window();
             std::process::exit(0);
         }
         Err(e) => {

@@ -133,7 +133,10 @@ impl Platform {
                 WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
             );
 
-            SetTimer(0, 0, self.timer_ms, 0);
+            // Keep the id the system assigned: `KillTimer(0, 0)` in the teardown
+            // below addressed id 0, which does not exist, so the frame timer
+            // survived every `run()`.
+            let timer_id = SetTimer(0, 0, self.timer_ms, 0);
 
             if let Some(ms) = limit_ms {
                 let tid = GetCurrentThreadId();
@@ -159,7 +162,9 @@ impl Platform {
                 DispatchMessageW(&msg);
             }
 
-            KillTimer(0, 0);
+            if timer_id != 0 {
+                KillTimer(0, timer_id);
+            }
             if fg_hook != 0 {
                 UnhookWinEvent(fg_hook);
             }

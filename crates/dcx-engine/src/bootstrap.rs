@@ -372,6 +372,9 @@ fn schedule_apply(tray: isize, msg: u32) {
     std::thread::spawn(move || {
         for delay in [1200u64, 2400, 4200, 7000, 20_000, 45_000, 75_000] {
             std::thread::sleep(std::time::Duration::from_millis(delay));
+            if crate::stopping() {
+                return;
+            }
             post_to_taskbar(tray, msg, 1);
         }
     });
@@ -413,6 +416,9 @@ pub(crate) fn spawn_settings_watch() {
             let mut last = settings_mtime();
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(1000));
+                if crate::stopping() {
+                    return;
+                }
                 let now = settings_mtime();
                 if now != 0 && now != last {
                     last = now;

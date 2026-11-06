@@ -9,6 +9,10 @@
 
 use core::ffi::c_void;
 
+/// Cross-process locked, crash-safe persistence for the TOML documents that
+/// double as IPC between the DCX processes.
+pub mod config_file;
+
 pub type BOOL = i32;
 pub type DWORD = u32;
 pub type UINT = u32;
@@ -1159,6 +1163,16 @@ pub fn reg_delete_value(path: &str, name: &str) -> Result<(), i32> {
 /// UTF-16 conversion with a trailing NUL, for the `*W` APIs.
 pub fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(core::iter::once(0)).collect()
+}
+
+/// Same, straight from an OS string.
+///
+/// `to_string_lossy()` replaces unpaired surrogates with U+FFFD, so a path that
+/// is legal for NTFS but not valid UTF-8 would make the API act on a *different*
+/// path than the one the user selected.
+pub fn wide_path(p: &std::path::Path) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+    p.as_os_str().encode_wide().chain(core::iter::once(0)).collect()
 }
 
 pub fn rect_w(rc: &RECT) -> i32 {

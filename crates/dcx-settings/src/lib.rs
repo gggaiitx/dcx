@@ -224,13 +224,20 @@ impl Settings {
     /// Load settings, falling back to defaults on any error (missing file,
     /// unreadable, or unparseable). Errors are logged to stderr so the host/engine
     /// both stay alive.
+    ///
+    /// A document that exists but does not parse is also marked read-only, so a
+    /// later save cannot replace it with these defaults.
     pub fn load() -> Settings {
         let p = Self::path();
         match std::fs::read_to_string(&p) {
             Ok(text) => match toml::from_str::<Settings>(&text) {
-                Ok(s) => s.migrated(),
+                Ok(s) => {
+                    dcx_win32::config_file::note_parse_ok(&p);
+                    s.migrated()
+                }
                 Err(e) => {
-                    eprintln!("[dcx-settings] parse {p:?} failed ({e}); using defaults");
+                    eprintln!("[dcx-settings] parse {p:?} failed ({e}); using defaults (read-only)");
+                    dcx_win32::config_file::note_parse_error(&p);
                     Settings::default()
                 }
             },
@@ -240,32 +247,24 @@ impl Settings {
 
     /// Persist settings, creating `%LOCALAPPDATA%\dcx` if needed.
     ///
-    /// Writes to a sibling temp file and renames it over the target: the
-    /// engine polls `settings.toml` every second, and a plain in-place write
-    /// can be observed half-written, which makes the engine fall back to
-    /// defaults and visibly reset the taskbar for a moment.
+    /// Held under the cross-process lock and installed with an atomic swap:
+    /// the engine polls `settings.toml` every second, and both a half-written
+    /// file and a stale read-modify-write make it fall back to defaults and
+    /// visibly reset the whole taskbar. There is deliberately **no** direct
+    /// write fallback — the old one re-created exactly the half-written window
+    /// its own doc comment warned about, and a failed swap leaves the previous
+    /// revision intact instead.
     pub fn save(&self) -> std::io::Result<()> {
         let p = Self::path();
-        if let Some(dir) = p.parent() {
-            std::fs::create_dir_all(dir)?;
+        let _guard = dcx_win32::config_file::FileLock::acquire(
+            &p,
+            dcx_win32::config_file::LOCK_TIMEOUT,
+        )?;
+        if dcx_win32::config_file::is_poisoned(&p) {
+            return Err(dcx_win32::config_file::poisoned_error(&p));
         }
-        let text = toml::to_string_pretty(self)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-        let tmp = p.with_extension("toml.tmp");
-        std::fs::write(&tmp, text.as_bytes())?;
-        match std::fs::rename(&tmp, &p) {
-            Ok(()) => Ok(()),
-            Err(e) => {
-                // Rename can fail if another process holds the target open
-                // (antivirus, editor). Fall back to a direct write rather than
-                // reporting a save failure the user cannot act on.
-                let _ = std::fs::remove_file(&tmp);
-                match std::fs::write(&p, text.as_bytes()) {
-                    Ok(()) => Ok(()),
-                    Err(_) => Err(e),
-                }
-            }
-        }
+        let text = toml::to_string_pretty(self).map_err(std::io::Error::other)?;
+        dcx_win32::config_file::write_atomic(&p, text.as_bytes())
     }
 }
 

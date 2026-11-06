@@ -10,11 +10,17 @@
 #![allow(non_snake_case)]
 
 use core::ffi::c_void;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
+
+/// Vectored handler registered by [`install`], so [`uninstall`] can remove it.
+/// Removing it matters when the image is unloaded: a handler that outlives its
+/// code page is called on the next fault and jumps into freed memory.
+static HANDLER: AtomicIsize = AtomicIsize::new(0);
 
 #[link(name = "kernel32")]
 extern "system" {
     fn AddVectoredExceptionHandler(first: u32, handler: *mut c_void) -> *mut c_void;
+    fn RemoveVectoredExceptionHandler(handler: *mut c_void) -> u32;
     fn RtlCaptureStackBackTrace(
         frames_to_skip: u32,
         frames_to_capture: u32,
@@ -115,6 +121,18 @@ unsafe fn describe(addr: *mut c_void) -> String {
 
 pub fn install() {
     unsafe {
-        AddVectoredExceptionHandler(1, handler as *mut c_void);
+        let h = AddVectoredExceptionHandler(1, handler as *mut c_void);
+        HANDLER.store(h as isize, Ordering::SeqCst);
+    }
+}
+
+/// Remove the handler again. Safe when [`install`] never ran, and safe to call
+/// from `DllMain(DLL_PROCESS_DETACH)` — it is one kernel call, no locking.
+pub fn uninstall() {
+    let h = HANDLER.swap(0, Ordering::SeqCst);
+    if h != 0 {
+        unsafe {
+            RemoveVectoredExceptionHandler(h as *mut c_void);
+        }
     }
 }

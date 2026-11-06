@@ -576,6 +576,14 @@ pub(crate) fn reload_and_apply() {
 
 /// One full rebuild of every element from the current rule engine.
 fn reload_once() {
+    if settings_corrupt() {
+        // A half-written or hand-broken document used to reload the defaults and
+        // force `apply_element(record, true)` over the whole taskbar, piling up
+        // another batch of property-changed callbacks that never unregister.
+        // Keep what is on screen until a parseable revision arrives.
+        log("reload skipped: settings.toml did not parse; keeping the applied theme");
+        return;
+    }
     reset_caches();
     let snapshot: Vec<ElementRecord> = match ELEMENTS.lock() {
         Ok(g) => g.clone(),
@@ -600,9 +608,20 @@ fn reset_caches() {
     VARS_DIRTY.store(true, Ordering::SeqCst);
 }
 
+/// True when the last read of `settings.toml` failed to parse.
+fn settings_corrupt() -> bool {
+    dcx_win32::config_file::is_poisoned(&dcx_settings::Settings::path())
+}
+
 /// (Re)build the rule engine from the on-disk settings file.
 pub(crate) fn build_engine_from_settings() {
+    // `load` records a parse failure in the poison registry; check after it so
+    // the very first call already sees the verdict.
     let settings = dcx_settings::Settings::load();
+    if settings_corrupt() {
+        log("engine rebuild skipped: settings.toml did not parse");
+        return;
+    }
     let params = theme_params_from_settings(&settings);
     let theme = dcx_theme::build_runtime_theme(&params);
     let engine = dcx_theme::RuleEngine::from_runtime(&theme);
@@ -666,6 +685,18 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 static STARTED: AtomicBool = AtomicBool::new(false);
 
+/// Set from `DllMain(DLL_PROCESS_DETACH)`.
+///
+/// Every long-lived thread checks this: the attach loop (up to 10 minutes), the
+/// seven delayed apply passes and the 1 s settings watch. Without it, unloading
+/// the image left threads that kept calling into freed code pages.
+static STOPPING: AtomicBool = AtomicBool::new(false);
+
+/// True once the loader is detaching this image.
+pub(crate) fn stopping() -> bool {
+    STOPPING.load(Ordering::SeqCst)
+}
+
 #[link(name = "kernel32")]
 extern "system" {
     fn CreateThread(
@@ -686,6 +717,10 @@ unsafe extern "system" fn attach_thread(_param: *mut c_void) -> u32 {
     // reference catches the window with a `CreateWindowEx` hook (20097-20104);
     // we are injected after the fact, so wait for it instead.
     for attempt in 1..=600u32 {
+        if stopping() {
+            log("attach cancelled: image is detaching");
+            return 0;
+        }
         Sleep(1000);
         if attempt % 20 == 1 {
             log(&format!("attach attempt {attempt}"));
@@ -702,9 +737,21 @@ unsafe extern "system" fn attach_thread(_param: *mut c_void) -> u32 {
 
 /// # Safety
 /// Called by the loader. Must not block or touch COM here (loader lock).
+///
+/// # Hard constraint: this image must not be `FreeLibrary`ed
+///
+/// XAML keeps the TAP object registered through `InitializeXamlDiagnosticsEx`
+/// and the element handles cached in this crate point into that tree; the
+/// shutdown path (host/tray 「恢复任务栏」) therefore restarts Explorer instead of
+/// unloading the DLL — see `dcx-host/src/shutdown.rs:9-13` and
+/// `docs/engineering-notes.md`. That is a deliberate architectural choice, and
+/// it is the only supported way to unload: `DLL_PROCESS_DETACH` below stops the
+/// threads and removes the vectored handler, but it cannot undo references XAML
+/// holds into this code.
 #[no_mangle]
 pub unsafe extern "system" fn DllMain(_inst: isize, reason: u32, _reserved: *mut c_void) -> i32 {
     const DLL_PROCESS_ATTACH: u32 = 1;
+    const DLL_PROCESS_DETACH: u32 = 0;
     if reason == DLL_PROCESS_ATTACH && !STARTED.swap(true, Ordering::SeqCst) {
         diag::install();
         CreateThread(
@@ -715,6 +762,13 @@ pub unsafe extern "system" fn DllMain(_inst: isize, reason: u32, _reserved: *mut
             0,
             core::ptr::null_mut(),
         );
+    } else if reason == DLL_PROCESS_DETACH {
+        // Everything here must be lock-free and non-blocking: DETACH also runs
+        // during process termination, under the loader lock. In particular it
+        // must not take `hover::STATE` — the UI thread may hold it — so the
+        // effects are torn down from the timer callback instead.
+        STOPPING.store(true, Ordering::SeqCst);
+        diag::uninstall();
     }
     1
 }
