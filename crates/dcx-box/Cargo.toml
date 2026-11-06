@@ -1,0 +1,26 @@
+[package]
+name = "dcx-box"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DCX desktop file box — standalone application with its own process, window and icon"
+
+[[bin]]
+name = "dcx-box"
+path = "src/main.rs"
+
+[dependencies]
+dcx-win32 = { path = "../dcx-win32" }
+dcx-organizer = { path = "../dcx-organizer" }
+# Read-only: the drawer button follows the taskbar height the engine applies.
+dcx-settings = { path = "../dcx-settings" }
+
+# The box owns one eframe event loop for the tile + panel viewports.
+egui = "0.29"
+eframe = "0.29"
+# System CJK font is mapped, not read: the 20 MB collection never becomes private
+# memory (see `ui::setup_fonts`).
+memmap2 = "0.9"
+# Exact pin: must be the same 0.30.13 eframe links, so the EventLoopBuilder
+# types are identical and `with_any_thread` (Windows) can be applied.
+winit = "=0.30.13"

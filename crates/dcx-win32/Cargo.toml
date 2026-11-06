@@ -1,0 +1,8 @@
+[package]
+name = "dcx-win32"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Raw Win32 / GDI / DWM bindings for the DCX desktop enhancement platform"
+
+[dependencies]

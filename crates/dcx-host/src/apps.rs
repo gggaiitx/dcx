@@ -1,0 +1,261 @@
+//! 应用注册表与进程生命周期 —— 平台宿主统一拉起独立应用。
+//!
+//! 拆分后 `dcx-host.exe` 不再包含任何应用的 UI 代码，只负责：
+//!
+//! * 任务栏注入（见 `injector`）；
+//! * 在**一个**设置窗口里集中编辑平台与各应用的设置（见 `settings_app`）；
+//! * 按 `%LOCALAPPDATA%\dcx\apps.toml` 启动／停止独立应用 exe，并做看门狗。
+//!
+//! 应用清单是编译期静态表：新增一个独立应用 = 加一条 [`AppEntry`] + 一个
+//! 设置页，不需要改设置窗口的导航或状态字段。每个应用是独立进程、独立
+//! 图标、独立崩溃域；宿主退出时统一停止。
+//!
+//! 配置同样是「文件即 IPC」：设置窗口写 `apps.toml`，本模块读；应用本身
+//! 读自己的配置文件（收纳盒读 `organizer.toml`），两者不互相调用。
+
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::process::{Child, Command};
+use std::sync::Mutex;
+use std::time::Duration;
+
+/// 一个独立应用在平台里的登记信息。
+pub struct AppEntry {
+    /// 稳定标识，也是 `apps.toml` 里 `[apps.<id>]` 的键。
+    pub id: &'static str,
+    /// 设置中心显示名。
+    pub name: &'static str,
+    /// 与 `dcx-host.exe` 同目录下的可执行文件名。
+    pub exe: &'static str,
+    /// 主窗口标题，用于发现「用户自己双击启动」的实例。
+    pub window_title: &'static str,
+    /// 设置中心的副标题。
+    pub description: &'static str,
+    /// `apps.toml` 里没有 `[apps.<id>]` 时的缺省开关值。
+    ///
+    /// 收纳盒继承拆分前的行为（缺省 true）；文件检索缺省 **false** —— 它
+    /// 默认不随平台自启、不常驻、不预建全盘索引，只由 host 的全局热键按需
+    /// 拉起（见 `hotkey.rs`）。用户在设置中心开启常驻后仍会写 `enabled=true`，
+    /// 此时 `spawn_enabled()` 与看门狗照常保活。
+    pub default_on: bool,
+}
+
+static REGISTRY: &[AppEntry] = &[
+    AppEntry {
+        id: "box",
+        name: "桌面收纳盒",
+        exe: "dcx-box.exe",
+        window_title: "桌面收纳盒",
+        description: "把桌面文件收进独立收纳库，按扩展名分类；拖出即放回桌面",
+        default_on: true,
+    },
+    AppEntry {
+        id: "search",
+        name: "文件检索",
+        exe: "dcx-search.exe",
+        // 必须与 dcx-search/src/app.rs::WIN_TITLE 逐字一致。
+        window_title: "文件检索",
+        description: "全盘文件名与内容检索，默认关闭，由全局热键唤起",
+        default_on: false,
+    },
+];
+
+/// 所有已登记的独立应用（设置中心与看门狗共用这一张表）。
+pub fn entries() -> &'static [AppEntry] {
+    REGISTRY
+}
+
+/// 宿主亲自启动的进程。`try_wait()` 需要可变借用，所以整表放在一个锁里。
+struct ChildEntry {
+    id: String,
+    child: Child,
+}
+static CHILDREN: Mutex<Vec<ChildEntry>> = Mutex::new(Vec::new());
+
+#[derive(Serialize, Deserialize, Default)]
+pub struct AppsConfig {
+    #[serde(default)]
+    pub apps: BTreeMap<String, AppState>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct AppState {
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+}
+
+/// 文件缺失 / 新装应用的默认值：随平台一起启动，保持拆分前的行为。
+fn default_enabled() -> bool {
+    true
+}
+
+fn local_dir() -> PathBuf {
+    let mut p = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
+    p.push("dcx");
+    let _ = std::fs::create_dir_all(&p);
+    p
+}
+
+pub fn config_path() -> PathBuf {
+    local_dir().join("apps.toml")
+}
+
+pub fn load() -> AppsConfig {
+    std::fs::read_to_string(config_path())
+        .ok()
+        .and_then(|text| toml::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+/// 原子替换，避免设置窗口写到一半时看门狗读到半截 TOML。
+fn save(cfg: &AppsConfig) -> Result<(), String> {
+    let text = toml::to_string_pretty(cfg).map_err(|e| format!("序列化失败：{e}"))?;
+    let path = config_path();
+    let tmp = path.with_extension("toml.tmp");
+    std::fs::write(&tmp, text).map_err(|e| format!("写入失败：{e}"))?;
+    std::fs::rename(&tmp, &path).map_err(|e| format!("替换失败：{e}"))
+}
+
+pub fn is_enabled(id: &str) -> bool {
+    load()
+        .apps
+        .get(id)
+        .map(|s| s.enabled)
+        .unwrap_or_else(|| find(id).map(|e| e.default_on).unwrap_or(false))
+}
+
+/// 设置中心的开关：写文件 + 立刻起／停进程，不要求重启平台。
+pub fn set_enabled(id: &str, on: bool) -> Result<(), String> {
+    let mut cfg = load();
+    cfg.apps.insert(id.to_owned(), AppState { enabled: on });
+    save(&cfg)?;
+    if on {
+        launch(id).map_err(|e| format!("启动应用失败：{e}"))?;
+    } else {
+        stop(id);
+    }
+    Ok(())
+}
+
+fn find(id: &str) -> Option<&'static AppEntry> {
+    REGISTRY.iter().find(|e| e.id == id)
+}
+
+fn window(title: &str) -> isize {
+    let t = dcx_win32::wide(title);
+    unsafe { dcx_win32::FindWindowW(core::ptr::null(), t.as_ptr()) }
+}
+
+#[link(name = "user32")]
+extern "system" {
+    fn PostMessageW(hwnd: isize, msg: u32, wparam: usize, lparam: isize) -> i32;
+}
+
+/// 让窗口正常关闭（而不是强杀进程），这样应用能走完自己的退出路径。
+fn close_window(title: &str) {
+    const WM_CLOSE: u32 = 0x0010;
+    let hwnd = window(title);
+    if hwnd != 0 {
+        unsafe {
+            PostMessageW(hwnd, WM_CLOSE, 0, 0);
+        }
+    }
+}
+
+/// 进程是否还在：先看我们启动的 Child，再看用户手工启动的实例。
+pub fn is_running(id: &str) -> bool {
+    if let Ok(mut children) = CHILDREN.lock() {
+        // `try_wait` needs &mut Child, so `retain_mut` (not `retain`).
+        children.retain_mut(|c| {
+            c.id != id || matches!(c.child.try_wait(), Ok(None) | Err(_))
+        });
+        if children.iter().any(|c| c.id == id) {
+            return true;
+        }
+    }
+    find(id).map(|e| window(e.window_title) != 0).unwrap_or(false)
+}
+
+fn exe_path(entry: &AppEntry) -> Result<PathBuf, String> {
+    let mut path = std::env::current_exe().map_err(|e| e.to_string())?;
+    path.set_file_name(entry.exe);
+    if !path.exists() {
+        return Err(format!("找不到 {}", path.display()));
+    }
+    Ok(path)
+}
+
+pub fn launch(id: &str) -> Result<(), String> {
+    let entry = find(id).ok_or_else(|| format!("未登记的应用：{id}"))?;
+    if is_running(id) {
+        return Ok(());
+    }
+    let child = Command::new(exe_path(entry)?)
+        .spawn()
+        .map_err(|e| format!("无法启动 {}：{e}", entry.exe))?;
+    if let Ok(mut children) = CHILDREN.lock() {
+        children.push(ChildEntry {
+            id: id.to_owned(),
+            child,
+        });
+    }
+    println!("[dcx-apps] started {} ({})", entry.name, entry.exe);
+    Ok(())
+}
+
+/// 全局热键用：不管 `apps.toml` 里是不是 enabled 都拉起应用一次。
+///
+/// `launch()` 本身并不检查 enabled，这里单独留一个语义明确的入口，是为了
+/// 让「按需启动」与「看门狗保活」在调用点上不会混淆：按需启动的实例在
+/// `enabled=false` 时退出后不会被 5 秒看门狗重新拉起。
+pub fn launch_on_demand(id: &str) -> Result<(), String> {
+    launch(id)
+}
+
+pub fn stop(id: &str) {
+    if let Ok(mut children) = CHILDREN.lock() {
+        let mut i = 0;
+        while i < children.len() {
+            if children[i].id == id {
+                let mut c = children.remove(i);
+                let _ = c.child.kill();
+                let _ = c.child.wait();
+            } else {
+                i += 1;
+            }
+        }
+    }
+    // 用户自己双击启动的实例不在 Child 表里，用 WM_CLOSE 请它退出。
+    if let Some(entry) = find(id) {
+        close_window(entry.window_title);
+    }
+}
+
+/// 平台启动时调用：拉起所有启用的应用，并开一条看门狗。
+pub fn spawn_enabled() {
+    for entry in REGISTRY {
+        if is_enabled(entry.id) {
+            if let Err(e) = launch(entry.id) {
+                println!("[dcx-apps] cannot start {}: {e}", entry.name);
+            }
+        }
+    }
+    std::thread::spawn(|| loop {
+        std::thread::sleep(Duration::from_secs(5));
+        for entry in REGISTRY {
+            if is_enabled(entry.id) && !is_running(entry.id) {
+                let _ = launch(entry.id);
+            }
+        }
+    });
+}
+
+/// 平台退出前调用：所有独立应用随宿主一起停止，不留孤进程。
+pub fn stop_all() {
+    for entry in REGISTRY {
+        stop(entry.id);
+    }
+}

@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>DCX · 图标草图六选一</title>
+<style>
+  :root{
+    --ink:#1a1a1a; --ink-2:#5d5d5d; --ink-3:#8a8a8a; --line:#e6e6e6;
+    --bg:#f6f6f6; --card:#fff; --accent:#005fb8; --accent-soft:#eaf2fb;
+    --font:"Segoe UI Variable Display","Segoe UI","Microsoft YaHei UI","Microsoft YaHei",system-ui,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--font);line-height:1.7;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1080px;margin:0 auto;padding:56px 40px 100px}
+  header{border-bottom:1px solid var(--line);padding-bottom:26px;margin-bottom:36px}
+  .kicker{font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:var(--ink-3);margin:0 0 10px}
+  h1{font-size:31px;font-weight:600;letter-spacing:-.02em;margin:0}
+  .sub{color:var(--ink-2);margin:10px 0 0;font-size:14.5px;max-width:66ch}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:22px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:26px 26px 22px;position:relative}
+  .card.rec{border-color:#bcd7f3;box-shadow:0 0 0 3px rgba(0,95,184,.06)}
+  .badge{position:absolute;top:18px;right:20px;font-size:11px;letter-spacing:.06em;
+         color:var(--accent);background:var(--accent-soft);border-radius:99px;padding:3px 10px}
+  .top{display:flex;gap:22px;align-items:flex-start}
+  .hero{width:112px;height:112px;flex:0 0 112px}
+  .meta h2{font-size:16px;font-weight:600;margin:2px 0 4px}
+  .meta p{margin:0;font-size:13.5px;color:var(--ink-2)}
+  .tag{display:inline-block;font-size:11.5px;color:var(--ink-3);margin-top:8px}
+  .sizes{display:flex;align-items:flex-end;gap:18px;margin-top:22px;padding-top:18px;border-top:1px solid var(--line)}
+  .sizes figure{margin:0;text-align:center}
+  .sizes figcaption{font-size:10.5px;color:var(--ink-3);margin-top:6px;font-variant-numeric:tabular-nums}
+  .verdict{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:16px;font-size:12.5px}
+  .verdict div b{display:block;font-size:11px;letter-spacing:.08em;color:var(--ink-3);margin-bottom:2px;font-weight:600}
+  .pro{color:#0f6b32}
+  .con{color:#8a5a00}
+  .note{margin-top:44px;background:#fff;border:1px solid var(--line);border-radius:16px;padding:26px 30px}
+  .note h3{font-size:14px;margin:0 0 10px}
+  .note ol{margin:0;padding-left:20px;font-size:13.5px;color:var(--ink-2)}
+  .note li{margin-bottom:6px}
+  .note code{font-family:"Cascadia Mono",Consolas,monospace;font-size:12.5px;background:#f2f2f2;padding:1px 6px;border-radius:4px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <p class="kicker">Icon sketches · round 3</p>
+    <h1>六个方向，选一个再往下做</h1>
+    <p class="sub">蓝色渐变底、圆角方块、光源处理都是共用的，只有<strong>形态</strong>在变——这样你只需要判断"哪个形对"。选定后我会把那一版的字标、托盘、多尺寸降级和 <code>.ico</code> 一起精修到位。</p>
+  </header>
+
+  <div class="grid">
+
+    <div class="card rec">
+      <span class="badge">推荐</span>
+      <div class="top">
+        <img class="hero" src="p1-512.png" alt="">
+        <div class="meta">
+          <h2>P1 · 实心窗 + 负形 dock</h2>
+          <p>一整块实心面，底部用负空间挖出一条胶囊。少了线框的碎，力度最接近系统自带图标。</p>
+          <span class="tag">关键词：窗口 · 任务栏 · 负空间</span>
+        </div>
+      </div>
+      <div class="sizes">
+        <figure><img src="p1-16.png" width="16"><figcaption>16</figcaption></figure>
+        <figure><img src="p1-32.png" width="32"><figcaption>32</figcaption></figure>
+        <figure><img src="p1-64.png" width="64"><figcaption>64</figcaption></figure>
+        <figure><img src="p1-256.png" width="96"><figcaption>256</figcaption></figure>
+      </div>
+      <div class="verdict">
+        <div class="pro"><b>优势</b>16px 依然是一块干净的形；缩放到任务栏尺寸不掉细节；与深色任务栏对比强。</div>
+        <div class="con"><b>风险</b>单看容易被读成"卡片 / 徽章"，靠字标和语境补足。</div>
+      </div>
+    </div>
+
+    <div class="card rec">
+      <span class="badge">推荐</span>
+      <div class="top">
+        <img class="hero" src="p2-512.png" alt="">
+        <div class="meta">
+          <h2>P2 · D 字标</h2>
+          <p>字母 D 直接做主角，字干与碗都是胶囊造型。同类工具（Windhawk 等）都用字标，识别成本最低。</p>
+          <span class="tag">关键词：字标 · 几何 · 稳</span>
+        </div>
+      </div>
+      <div class="sizes">
+        <figure><img src="p2-16.png" width="16"><figcaption>16</figcaption></figure>
+        <figure><img src="p2-32.png" width="32"><figcaption>32</figcaption></figure>
+        <figure><img src="p2-64.png" width="64"><figcaption>64</figcaption></figure>
+        <figure><img src="p2-256.png" width="96"><figcaption>256</figcaption></figure>
+      </div>
+      <div class="verdict">
+        <div class="pro"><b>优势</b>最不容易出错；任何尺寸都清楚；和"DCX"字标天然是一套。</div>
+        <div class="con"><b>风险</b>不够独特，放在一堆工具里没有记忆点。</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="top">
+        <img class="hero" src="p3-512.png" alt="">
+        <div class="meta">
+          <h2>P3 · 切开的 D</h2>
+          <p>D 被斜切一刀、上半层向左上错位，一个字母里塞进"两层"的意思。</p>
+          <span class="tag">关键词：分层 · 注入 · 变体</span>
+        </div>
+      </div>
+      <div class="sizes">
+        <figure><img src="p3-16.png" width="16"><figcaption>16</figcaption></figure>
+        <figure><img src="p3-32.png" width="32"><figcaption>32</figcaption></figure>
+        <figure><img src="p3-64.png" width="64"><figcaption>64</figcaption></figure>
+        <figure><img src="p3-256.png" width="96"><figcaption>256</figcaption></figure>
+      </div>
+      <div class="verdict">
+        <div class="pro"><b>优势</b>有细节、有故事，256 下质感好。</div>
+        <div class="con"><b>风险</b>32px 以下错位会被读成"画坏了"，需要单独出简化版。</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="top">
+        <img class="hero" src="p4-512.png" alt="">
+        <div class="meta">
+          <h2>P4 · 交叉胶囊</h2>
+          <p>两条胶囊交织成 X，取名字里的 X，也暗合"注入 / 交织"这件事。</p>
+          <span class="tag">关键词：X · 交织 · 抽象</span>
+        </div>
+      </div>
+      <div class="sizes">
+        <figure><img src="p4-16.png" width="16"><figcaption>16</figcaption></figure>
+        <figure><img src="p4-32.png" width="32"><figcaption>32</figcaption></figure>
+        <figure><img src="p4-64.png" width="64"><figcaption>64</figcaption></figure>
+        <figure><img src="p4-256.png" width="96"><figcaption>256</figcaption></figure>
+      </div>
+      <div class="verdict">
+        <div class="pro"><b>优势</b>六个里最有识别度，不撞脸。</div>
+        <div class="con"><b>风险</b>X 在 UI 里常等于"关闭"；小尺寸交织的缺口会糊掉。</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="top">
+        <img class="hero" src="p5-512.png" alt="">
+        <div class="meta">
+          <h2>P5 · 胶囊任务栏</h2>
+          <p>把成品形态直接画出来：一条胶囊 dock，里面三个图标位。</p>
+          <span class="tag">关键词：字面 · 任务栏 · 产品</span>
+        </div>
+      </div>
+      <div class="sizes">
+        <figure><img src="p5-16.png" width="16"><figcaption>16</figcaption></figure>
+        <figure><img src="p5-32.png" width="32"><figcaption>32</figcaption></figure>
+        <figure><img src="p5-64.png" width="64"><figcaption>64</figcaption></figure>
+        <figure><img src="p5-256.png" width="96"><figcaption>256</figcaption></figure>
+      </div>
+      <div class="verdict">
+        <div class="pro"><b>优势</b>最直白，一看就知道改的是任务栏。</div>
+        <div class="con"><b>风险</b>横向细条在方形图标里上下空，观感偏弱；小尺寸只剩一个点。</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="top">
+        <img class="hero" src="p6-512.png" alt="">
+        <div class="meta">
+          <h2>P6 · 胶囊窗</h2>
+          <p>上半是窗口、下半直接化成胶囊，一个形里完成"变形"这个动作。</p>
+          <span class="tag">关键词：变形 · 单形 · 稳定</span>
+        </div>
+      </div>
+      <div class="sizes">
+        <figure><img src="p6-16.png" width="16"><figcaption>16</figcaption></figure>
+        <figure><img src="p6-32.png" width="32"><figcaption>32</figcaption></figure>
+        <figure><img src="p6-64.png" width="64"><figcaption>64</figcaption></figure>
+        <figure><img src="p6-256.png" width="96"><figcaption>256</figcaption></figure>
+      </div>
+      <div class="verdict">
+        <div class="pro"><b>优势</b>单形，缩到多小都是同一块；竖向比例更有图标感。</div>
+        <div class="con"><b>风险</b>容易被读成"手机 / 卡片"，需要把上半的窗口特征做明显。</div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="note">
+    <h3>接下来我会做的事（按你选的那一版）</h3>
+    <ol>
+      <li>把形态精度拉到成品：光学对齐、笔画统一、16/20 单独出简化版。</li>
+      <li>配一版字标：字重、字距、与图标的间距按选中形态重算。</li>
+      <li>出全套 <code>dcx.ico</code>（16→256 九个尺寸，&lt;128 BMP、128+ PNG）、PNG 图标集、托盘深浅两套。</li>
+      <li>色板再给 2–3 组可选（现用 Win11 蓝；可试深海蓝 / 青蓝 / 深灰）。</li>
+    </ol>
+  </div>
+</div>
+</body>
+</html>

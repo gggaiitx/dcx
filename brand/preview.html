@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>DCX · 品牌资源</title>
+<style>
+  :root{
+    --ink:#1a1a1a; --ink-2:#5d5d5d; --ink-3:#8a8a8a;
+    --line:#e5e5e5; --card:#ffffff; --bg:#f6f6f6;
+    --accent:#005fb8; --accent-soft:#e8f1fb;
+    --font:"Segoe UI Variable Display","Segoe UI","Microsoft YaHei UI","Microsoft YaHei",system-ui,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--font);
+       -webkit-font-smoothing:antialiased;line-height:1.6}
+  .wrap{max-width:1040px;margin:0 auto;padding:56px 40px 96px}
+  header.page{border-bottom:1px solid var(--line);padding-bottom:28px;margin-bottom:44px}
+  .kicker{font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:var(--ink-3);margin:0 0 10px}
+  h1{font-size:34px;font-weight:600;letter-spacing:-.02em;margin:0}
+  .sub{color:var(--ink-2);margin:8px 0 0;font-size:15px;max-width:60ch}
+  h2{font-size:15px;font-weight:600;letter-spacing:.02em;margin:0 0 6px}
+  .note{font-size:13px;color:var(--ink-3);margin:0 0 18px}
+  section{margin-bottom:52px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:36px}
+  .row{display:grid;gap:20px}
+  .row.two{grid-template-columns:1fr 1fr}
+  .row.three{grid-template-columns:repeat(3,1fr)}
+  .dark{background:#161616;border-color:#262626}
+  .light{background:#fafafa;border-color:#ececec}
+  .center{display:flex;align-items:center;justify-content:center}
+  .pad{padding:34px 26px}
+  .cap{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-3);margin-top:10px;text-align:center}
+  .dark .cap{color:#8a8a8a}
+
+  /* size ladder */
+  .ladder{display:flex;align-items:flex-end;gap:34px;flex-wrap:wrap}
+  .ladder figure{margin:0;text-align:center}
+  .ladder img{display:block;image-rendering:auto}
+  .ladder figcaption{font-size:11px;color:var(--ink-3);margin-top:9px;font-variant-numeric:tabular-nums}
+  .zoom{display:flex;align-items:center;gap:26px;margin-top:26px;padding-top:26px;border-top:1px dashed var(--line);flex-wrap:wrap}
+  .zoom figure{margin:0;text-align:center}
+  .zoom img{width:96px;height:96px;image-rendering:pixelated}
+  .zoom figcaption{font-size:11px;color:var(--ink-3);margin-top:6px}
+
+  /* tray */
+  .bar{display:flex;align-items:center;gap:26px;padding:0 22px;height:54px;border-radius:10px}
+  .bar.l{background:#f3f3f3;border:1px solid #e5e5e5}
+  .bar.d{background:#202020}
+  .bar .divider{width:1px;height:22px;background:currentColor;opacity:.15}
+  .bar .icon{width:16px;height:16px;opacity:.9}
+  .bar .icon.lg{width:24px;height:24px;opacity:1}
+
+  /* palette */
+  .sw{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
+  .chip{border-radius:12px;overflow:hidden;border:1px solid var(--line);background:#fff}
+  .chip .fill{height:76px}
+  .chip .meta{padding:10px 12px;font-size:12px;color:var(--ink-2)}
+  .chip code{font-family:"Cascadia Mono",Consolas,monospace;font-size:12px;color:var(--ink)}
+
+  table{width:100%;border-collapse:collapse;font-size:13.5px}
+  th,td{text-align:left;padding:11px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{font-weight:600;color:var(--ink-2);font-size:12px;letter-spacing:.04em;text-transform:uppercase}
+  td code,.mono{font-family:"Cascadia Mono",Consolas,monospace;font-size:12.5px;color:var(--ink)}
+  td.dim{color:var(--ink-3)}
+  .dont{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:6px}
+  .dont figure{margin:0;text-align:center;background:#fafafa;border:1px solid var(--line);border-radius:12px;padding:22px 12px 14px}
+  .dont img{height:64px}
+  .dont figcaption{font-size:12px;color:var(--ink-2);margin-top:12px}
+  footer{border-top:1px solid var(--line);padding-top:20px;color:var(--ink-3);font-size:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="page">
+    <p class="kicker">Brand assets · v0.1</p>
+    <h1>DCX 品牌资源</h1>
+    <p class="sub">标记语义：一扇窗口，底部浮着一条胶囊 dock —— 这正是 DCX 在做的事：接管 Explorer 外壳，把任务栏重塑成胶囊。应用图标、托盘图标与矢量标志均从同一套几何参数导出。</p>
+  </header>
+
+  <section>
+    <h2>主标志</h2>
+    <p class="note">横向组合：标记 + 自绘几何字标。字标已转为路径，不依赖任何系统字体。</p>
+    <div class="row two">
+      <div class="card light center pad">
+        <img src="logo-horizontal.svg" alt="DCX logo" style="width:100%;max-width:320px">
+      </div>
+      <div class="card dark center pad">
+        <img src="logo-horizontal-dark.svg" alt="DCX logo dark" style="width:100%;max-width:320px">
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>标记变体</h2>
+    <p class="note">彩色用于应用图标；单色版用于单色印刷、水印与需要跟随文字颜色的场景。</p>
+    <div class="row three">
+      <div class="card light center pad"><img src="mark.svg" style="width:120px" alt="mark"></div>
+      <div class="card dark center pad"><img src="mark.svg" style="width:120px" alt="mark"></div>
+      <div class="card center pad"><img src="mark-mono.svg" style="width:120px;color:#005fb8" alt="mono"></div>
+    </div>
+    <div class="row three" style="margin-top:0">
+      <div class="cap">主标记 · 浅底</div>
+      <div class="cap">主标记 · 深底</div>
+      <div class="cap">单色（currentColor）</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>尺寸阶梯</h2>
+    <p class="note">16 / 20 px 使用简化版：去掉内部胶囊、加粗外框——否则三个白区在 20px 会糊成一团。这也是写进 <span class="mono">dcx.ico</span> 的实际内容。</p>
+    <div class="card">
+      <div class="ladder">
+        <figure><img src="icons/dcx-16.png" width="16" height="16" alt=""><figcaption>16</figcaption></figure>
+        <figure><img src="icons/dcx-24.png" width="24" height="24" alt=""><figcaption>24</figcaption></figure>
+        <figure><img src="icons/dcx-32.png" width="32" height="32" alt=""><figcaption>32</figcaption></figure>
+        <figure><img src="icons/dcx-48.png" width="48" height="48" alt=""><figcaption>48</figcaption></figure>
+        <figure><img src="icons/dcx-64.png" width="64" height="64" alt=""><figcaption>64</figcaption></figure>
+        <figure><img src="icons/dcx-96.png" width="96" height="96" alt=""><figcaption>96</figcaption></figure>
+        <figure><img src="icons/dcx-128.png" width="128" height="128" alt=""><figcaption>128</figcaption></figure>
+      </div>
+      <div class="zoom">
+        <figure><img src="icons/dcx-16.png" alt=""><figcaption>16 → 6×</figcaption></figure>
+        <figure><img src="icons/dcx-20.png" alt=""><figcaption>20 → 6×</figcaption></figure>
+        <figure><img src="icons/dcx-24.png" alt=""><figcaption>24 → 6×</figcaption></figure>
+        <figure><img src="icons/dcx-32.png" alt=""><figcaption>32 → 3×</figcaption></figure>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>托盘图标</h2>
+    <p class="note">去掉底色块，只留标记本体，才能在通知区里和系统图标并排站住。深浅两套分开提供：<span class="mono">tray-*-on-light.png</span> / <span class="mono">tray-*-on-dark.png</span>。</p>
+    <div class="card" style="padding:26px">
+      <div class="bar l" style="color:#1a1a1a">
+        <img class="icon lg" src="tray/tray-24-on-light.png" alt="">
+        <img class="icon" src="tray/tray-16-on-light.png" alt="">
+        <span class="divider"></span>
+        <span style="font-size:12px;color:#5d5d5d">浅色任务栏</span>
+      </div>
+      <div class="bar d" style="margin-top:14px;color:#fff">
+        <img class="icon lg" src="tray/tray-24-on-dark.png" alt="">
+        <img class="icon" src="tray/tray-16-on-dark.png" alt="">
+        <span class="divider"></span>
+        <span style="font-size:12px;color:#9a9a9a">深色任务栏</span>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>色板</h2>
+    <p class="note">蓝色族直接取自设置窗口的 Win11 强调色 <span class="mono">#005FB8</span>，保证图标与界面同源。</p>
+    <div class="sw">
+      <div class="chip"><div class="fill" style="background:#43B0FF"></div><div class="meta"><code>#43B0FF</code><br>渐变起点</div></div>
+      <div class="chip"><div class="fill" style="background:#0A72E0"></div><div class="meta"><code>#0A72E0</code><br>渐变中点</div></div>
+      <div class="chip"><div class="fill" style="background:#004F9E"></div><div class="meta"><code>#004F9E</code><br>渐变终点</div></div>
+      <div class="chip"><div class="fill" style="background:#005FB8"></div><div class="meta"><code>#005FB8</code><br>界面强调色</div></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>构成参数</h2>
+    <p class="note">所有尺寸都由同一组比例导出（单位为 tile 边长 T 的比例），几何定义在 <span class="mono">tools/gen_brand.py</span> 中，可一键重生成全部资源。</p>
+    <div class="card" style="padding:8px 28px 20px">
+      <table>
+        <tr><th>元素</th><th>比例</th><th>说明</th></tr>
+        <tr><td>画布留白</td><td><code>0.055</code></td><td>四边透明边距，占画布边长</td></tr>
+        <tr><td>图块圆角</td><td><code>0.215 T</code></td><td>现代圆角方块</td></tr>
+        <tr><td>窗口外框</td><td><code>0.665 T × 0.575 T</code></td><td>描边 <code>0.072 T</code>，圆角 <code>0.105 T</code></td></tr>
+        <tr><td>胶囊 dock</td><td><code>0.420 T × 0.100 T</code></td><td>距内框底边 <code>0.072 T</code></td></tr>
+        <tr><td>小尺寸简化</td><td><code>≤ 20 px</code></td><td>外框加粗到 <code>0.105 T</code>，去掉 dock</td></tr>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2>不要这样用</h2>
+    <div class="dont">
+      <figure><img src="mark.svg" style="filter:saturate(0) brightness(.55)"><figcaption>不要改成灰度或用非品牌色</figcaption></figure>
+      <figure><img src="mark.svg" style="transform:rotate(-12deg)"><figcaption>不要旋转或倾斜</figcaption></figure>
+      <figure><img src="mark.svg" style="filter:blur(.4px) drop-shadow(0 0 6px #005fb8)"><figcaption>不要加投影、发光等特效</figcaption></figure>
+    </div>
+  </section>
+
+  <section>
+    <h2>文件清单</h2>
+    <div class="card" style="padding:8px 28px 20px">
+      <table>
+        <tr><th>文件</th><th>用途</th></tr>
+        <tr><td><code>dcx.ico</code></td><td>exe 图标，含 16/20/24/32/40/48/64/128/256 九个尺寸（&lt;128 为 32-bit BMP，128+ 为 PNG 压缩）</td></tr>
+        <tr><td><code>icons/dcx-*.png</code></td><td>16–1024 px 位图，用于商店页、文档、网页</td></tr>
+        <tr><td><code>mark.svg</code> / <code>mark-mono.svg</code></td><td>矢量标记（渐变版 / 单色版）</td></tr>
+        <tr><td><code>wordmark.svg</code></td><td>纯字标，已转路径</td></tr>
+        <tr><td><code>logo-horizontal.svg</code> / <code>-dark.svg</code></td><td>横向组合标志，浅底 / 深底</td></tr>
+        <tr><td><code>tray/tray-*-on-*.png</code></td><td>通知区图标，16/20/24/32/48 × 深浅两套</td></tr>
+        <tr><td><code>banner.png</code></td><td>README / 文章头图</td></tr>
+        <tr><td><code>../tools/gen_brand.py</code></td><td>生成脚本，改参数即可重出全套</td></tr>
+      </table>
+    </div>
+  </section>
+
+  <footer>DCX · 桌面增强平台 — 标志与图标资源由 <span class="mono">tools/gen_brand.py</span> 生成</footer>
+</div>
+</body>
+</html>

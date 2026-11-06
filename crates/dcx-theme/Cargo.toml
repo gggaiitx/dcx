@@ -1,0 +1,8 @@
+[package]
+name = "dcx-theme"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Port of the Windows 11 Taskbar Styler theme engine (rules, selectors, style variables)"
+
+[dependencies]

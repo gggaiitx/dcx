@@ -1,0 +1,24 @@
+[package]
+name = "dcx-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Injected XAML engine for taskbar-level effects (optional module)"
+
+[lib]
+name = "dcx_engine"
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "tap_selftest"
+path = "src/bin/tap_selftest.rs"
+
+[dependencies]
+dcx-win32 = { path = "../dcx-win32" }
+dcx-theme = { path = "../dcx-theme" }
+dcx-xaml = { path = "../dcx-xaml" }
+dcx-blur = { path = "../dcx-blur" }
+dcx-settings = { path = "../dcx-settings" }
+
+[build-dependencies]
+cc = "1"

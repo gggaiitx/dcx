@@ -1,0 +1,11 @@
+[package]
+name = "dcx-organizer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Desktop file box: category rules, classification and the physical move operations"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+dcx-win32 = { path = "../dcx-win32" }

@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 353.4 160" role="img" aria-label="DCX">
+  <defs>
+    <linearGradient id="g" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="256" y2="256">
+      <stop offset="0" stop-color="#43B0FF"/>
+      <stop offset=".5" stop-color="#0A72E0"/>
+      <stop offset="1" stop-color="#004F9E"/>
+    </linearGradient>
+    <mask id="weave">
+      <rect width="256" height="256" fill="#fff"/>
+      <rect x="109.78" y="119.11" width="36.43" height="17.77" rx="8.89" fill="#000" transform="rotate(45 128 128)"/>
+    </mask>
+  </defs>
+  <g transform="translate(0 16) scale(0.5)">
+    <rect x="14.08" y="14.08" width="227.84" height="227.84" rx="48.99" fill="url(#g)"/>
+  <path d="M 51.9 56.46 H 132.56 A 71.54 71.54 0 0 1 132.56 199.54 H 51.9 Z" fill="none" stroke="#FFFFFF" stroke-width="16.4" stroke-linejoin="round"/>
+  <g transform="rotate(45 128 128)"><rect x="63.07" y="119.11" width="129.87" height="17.77" rx="8.89" fill="#FFFFFF"/></g>
+  <g mask="url(#weave)" transform="rotate(-45 128 128)"><rect x="63.07" y="119.11" width="129.87" height="17.77" rx="8.89" fill="#FFFFFF"/></g>
+  </g>
+  <g transform="translate(162.0 51.0) scale(0.58)" fill="none"
+     stroke="#FFFFFF" stroke-width="13.5" stroke-linejoin="round">
+    <path d="M 6.75 6.75 H 26.00 A 43.25 43.25 0 0 1 26.00 93.25 H 6.75 Z"/><path d="M 196.10 33.80 A 43.25 43.25 0 1 0 196.10 66.20"/><path d="M 236.75 6.75 L 311.25 93.25 M 311.25 6.75 L 236.75 93.25"/>
+  </g>
+</svg>

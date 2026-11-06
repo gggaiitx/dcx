@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>DCX · 效果图</title>
+<style>
+  :root{
+    --ink:#16161a; --ink-2:#5c5c66; --ink-3:#93939e; --line:#e8e8ee;
+    --bg:#f5f5f8; --card:#fff; --accent:#5b45e8;
+    --font:"Segoe UI Variable Display","Segoe UI","Microsoft YaHei UI","Microsoft YaHei",system-ui,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--font);
+       -webkit-font-smoothing:antialiased;line-height:1.68}
+  .wrap{max-width:1020px;margin:0 auto;padding:56px 40px 84px}
+  header{display:flex;align-items:flex-end;justify-content:space-between;gap:24px;margin-bottom:40px}
+  .kicker{font-size:11px;letter-spacing:.2em;text-transform:uppercase;color:var(--ink-3);margin:0 0 10px}
+  h1{font-size:30px;font-weight:600;letter-spacing:-.022em;margin:0}
+  .sub{color:var(--ink-2);font-size:13.5px;margin:10px 0 0;max-width:56ch}
+  .chip{display:flex;align-items:center;gap:9px;font-size:12px;color:var(--ink-2);
+        background:#fff;border:1px solid var(--line);border-radius:999px;padding:7px 14px 7px 10px}
+  .chip i{width:14px;height:14px;border-radius:5px;display:block;background:linear-gradient(140deg,#2fbcb1,#0a6e72)}
+
+  h2{font-size:12px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;
+     color:var(--ink-3);margin:42px 0 14px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px}
+
+  /* 锁版 */
+  .row{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .lock{height:176px;border-radius:16px;display:flex;align-items:center;justify-content:center;gap:20px}
+  .lock.light{background:#fcfcfd;border:1px solid var(--line)}
+  .lock.dark{background:#18181c}
+  .lock img.mark{width:76px;height:76px}
+  .lock img.wm{height:32px;display:block}
+  .lock.dark img.wm{height:32px}
+  .lock .tag{position:absolute;font-size:10.5px;color:var(--ink-3);letter-spacing:.06em}
+
+  /* 图标 */
+  .icons{display:flex;align-items:center;gap:40px;padding:32px 34px}
+  .icons .hero{width:148px;height:148px;filter:drop-shadow(0 10px 22px rgba(24,16,90,.16))}
+  .ladder{display:flex;align-items:flex-end;gap:22px}
+  .ladder figure{margin:0;text-align:center}
+  .ladder figcaption{font-size:10px;color:var(--ink-3);margin-top:8px;font-variant-numeric:tabular-nums}
+
+  /* 任务栏 */
+  .tb{background:#1e1e22;border-radius:12px;padding:9px 14px;display:flex;align-items:center;gap:9px;
+      box-shadow:0 12px 30px rgba(20,16,50,.22)}
+  .tb .app{width:38px;height:38px;border-radius:9px;display:flex;align-items:center;justify-content:center;
+      background:#2c2c31;position:relative;flex:none}
+  .tb .app i{display:block;width:18px;height:14px;border:2px solid #70707a;border-radius:3px}
+  .tb .app.dot i{width:14px;height:14px;border-radius:50%}
+  .tb .app.bar i{width:20px;height:11px;border-radius:6px}
+  .tb .app.dcx{background:transparent;width:44px;height:44px}
+  .tb .app.dcx img{width:38px;height:38px;display:block}
+  .tb .app.active::after{content:"";position:absolute;bottom:-6px;left:50%;transform:translateX(-50%);
+      width:13px;height:2.5px;border-radius:2px;background:#9b8bff}
+  .tb .grow{flex:1}
+  .tb .tray{display:flex;align-items:center;gap:11px;padding-left:6px}
+  .tb .tray img{display:block}
+  .tb .tray img.off{opacity:.5}
+  .tb .clock{color:#dedee4;font-size:11px;line-height:1.3;text-align:right;font-variant-numeric:tabular-nums}
+  .tb.light{background:#f1f1f4;box-shadow:0 12px 30px rgba(30,30,50,.10)}
+  .tb.light .app{background:#e6e6eb}
+  .tb.light .app i{border-color:#8c8c96}
+  .tb.light .clock{color:#3b3b44}
+  .tb.light .app.active::after{background:#5b45e8}
+
+  /* 窗口 */
+  .win{max-width:520px;border-radius:12px;overflow:hidden;border:1px solid var(--line);
+       box-shadow:0 14px 34px rgba(24,24,50,.10);background:#fff}
+  .win .bar{height:40px;display:flex;align-items:center;gap:9px;padding:0 13px;background:#fafafc;
+      border-bottom:1px solid #eeeef4}
+  .win .bar img{width:16px;height:16px}
+  .win .bar span{font-size:12.5px;color:#3a3a44}
+  .win .body{padding:15px 16px;background:#fff}
+  .win .line{height:9px;border-radius:5px;background:#eeeff4;margin-bottom:9px}
+  .win .line.s{width:56%}.win .line.m{width:80%}
+
+  /* 配色 */
+  .ways{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+  .way{padding:22px;text-align:center;border-radius:16px;background:#fff;border:1px solid var(--line)}
+  .way img{width:92px;height:92px;filter:drop-shadow(0 8px 16px rgba(20,16,50,.14))}
+  .way b{display:block;font-size:12.5px;font-weight:600;margin-top:14px}
+  .way span{font-size:11px;color:var(--ink-3);font-variant-numeric:tabular-nums}
+  .way.pick{border-color:#a9dcd7;box-shadow:0 0 0 3px rgba(14,124,126,.10)}
+  .way.pick b::after{content:"主色";font-size:10px;color:#0e7c7e;border:1px solid #b9e4e0;
+      border-radius:99px;padding:1px 7px;margin-left:7px;font-weight:500;vertical-align:1px}
+
+  .shot{border-radius:14px;overflow:hidden;box-shadow:0 18px 44px rgba(20,16,50,.14);background:#E9E9E9}
+  .shot img{display:block;width:100%}
+  .cmp{display:flex;align-items:center;gap:26px;padding:24px 28px}
+  .cmp img{width:112px;height:112px;flex:none}
+  .cmp b{display:block;font-size:13px;font-weight:600}
+  .cmp span{font-size:11.5px;color:var(--ink-3);line-height:1.55;display:block;max-width:24ch}
+  .note{margin-top:40px;font-size:12px;color:var(--ink-3);border-top:1px solid var(--line);
+        padding-top:20px;display:grid;grid-template-columns:1fr 1fr;gap:6px 34px}
+  .note b{color:var(--ink-2);font-weight:600}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <p class="kicker">P4 · 交叉胶囊 · 原案</p>
+      <h1>DCX 效果图</h1>
+      <p class="sub">沿用 P4 原案的两条 45° 胶囊：交叉处用一个圆把下层切开，形成月牙形缺口和"穿过"的关系。比例按原图逐像素对齐，主色改为深青，图标块的材质做厚。</p>
+    </div>
+    <div class="chip"><i></i>#0E7C7E · 深青</div>
+  </header>
+
+  <h2>与 P4 原案对照</h2>
+  <div class="row">
+    <div class="card cmp"><img src="sketches/p4-512.png" alt=""><div><b>原案</b><span>比例基准：胶囊 0.620T × 0.173T，切口半径 1.07T</span></div></div>
+    <div class="card cmp"><img src="icons/dcx-256.png" alt=""><div><b>现版</b><span>同一组几何参数，仅换主色并补图标块材质</span></div></div>
+  </div>
+
+  <h2>横向锁版</h2>
+  <div class="row">
+    <div class="lock light"><img class="mark" src="icons/dcx-256.png" alt=""><img class="wm" src="wordmark.svg" alt="DCX"></div>
+    <div class="lock dark"><img class="mark" src="icons/dcx-256.png" alt=""><img class="wm" src="wordmark-dark.svg" alt="DCX"></div>
+  </div>
+
+  <h2>应用图标与尺寸链</h2>
+  <div class="card icons">
+    <img class="hero" src="icons/dcx-256.png" alt="">
+    <div class="ladder">
+      <figure><img src="icons/dcx-16.png" width="16"><figcaption>16</figcaption></figure>
+      <figure><img src="icons/dcx-24.png" width="24"><figcaption>24</figcaption></figure>
+      <figure><img src="icons/dcx-32.png" width="32"><figcaption>32</figcaption></figure>
+      <figure><img src="icons/dcx-48.png" width="48"><figcaption>48</figcaption></figure>
+      <figure><img src="icons/dcx-64.png" width="64"><figcaption>64</figcaption></figure>
+      <figure><img src="icons/dcx-96.png" width="96"><figcaption>96</figcaption></figure>
+    </div>
+  </div>
+
+  <h2>深色任务栏 · 通知区</h2>
+  <div class="tb">
+    <div class="app"><i></i></div>
+    <div class="app dot"><i></i></div>
+    <div class="app dcx active"><img src="icons/dcx-64.png" alt=""></div>
+    <div class="app bar"><i></i></div>
+    <div class="grow"></div>
+    <div class="tray">
+      <img src="tray/tray-16-on-dark.png" width="16" height="16" alt="">
+      <img class="off" src="tray/tray-16-on-dark.png" width="16" height="16" alt="">
+      <div class="clock">20:05<br>2026/11/3</div>
+    </div>
+  </div>
+
+  <h2>浅色任务栏 · 通知区</h2>
+  <div class="tb light">
+    <div class="app"><i></i></div>
+    <div class="app dot"><i></i></div>
+    <div class="app dcx"><img src="icons/dcx-64.png" alt=""></div>
+    <div class="app bar"><i></i></div>
+    <div class="grow"></div>
+    <div class="tray">
+      <img src="tray/tray-16-on-light.png" width="16" height="16" alt="">
+      <img class="off" src="tray/tray-16-on-light.png" width="16" height="16" alt="">
+      <div class="clock">20:05<br>2026/11/3</div>
+    </div>
+  </div>
+
+  <h2>窗口标题栏 · 16px</h2>
+  <div class="win">
+    <div class="bar"><img src="icons/dcx-32.png" alt=""><span>DCX 设置</span></div>
+    <div class="body">
+      <div class="line m"></div><div class="line"></div><div class="line s"></div>
+    </div>
+  </div>
+
+  <h2>接入程序 · 设置窗口</h2>
+  <div class="shot"><img src="settings-preview.png" alt="DCX 设置窗口"></div>
+
+  <h2>配色备选</h2>
+  <div class="ways">
+    <div class="way pick"><img src="colors/teal-128.png" alt=""><b>深青</b><span>#0E7C7E</span></div>
+    <div class="way"><img src="colors/indigo-128.png" alt=""><b>靛蓝</b><span>#5B45E8</span></div>
+    <div class="way"><img src="colors/graphite-128.png" alt=""><b>石墨</b><span>#48525F</span></div>
+  </div>
+
+  <div class="note">
+    <span><b>月牙切口</b>：交叉处挖半径 1.07 倍管径的圆，上层压过后两侧各留 0.5 管。</span>
+    <span><b>小尺寸</b>：≤ 56 px 改用实心 X（月牙在这一档会碎成两个点），16–24 px 再把管径收到 0.196T、拉长到 0.700T。</span>
+    <span><b>管身</b>：明暗压到 #F3F5FC，几乎纯白——保住原案的扁平图形感。</span>
+    <span><b>图标块</b>：对角三段渐变 + 左上柔光 + 底部厚度 + 上下内缘光，投影收紧到 1.1% 画布。</span>
+  </div>
+</div>
+</body>
+</html>

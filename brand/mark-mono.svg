@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="DCX">
+  <clipPath id="tclip"><rect x="13.31" y="13.31" width="229.38" height="229.38" rx="52.3"/></clipPath>
+    <g mask="url(#weave)" transform="rotate(-45 128 128)"><rect x="56.89" y="108.16" width="142.21" height="39.68" rx="19.84" fill="currentColor"/></g>
+    <g transform="rotate(45 128 128)"><rect x="56.89" y="108.16" width="142.21" height="39.68" rx="19.84" fill="currentColor"/></g>
+</svg>

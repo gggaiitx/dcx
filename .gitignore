@@ -1,0 +1,22 @@
+/out/
+/target/
+*.bak
+*.log
+*.tmp
+.DS_Store
+Thumbs.db
+/.idea/
+/.vscode/
+
+# Local tool build output
+/tools/metadump/bin/
+/tools/metadump/obj/
+*.exe
+*.dll
+*.pdb
+*.obj
+*.lib
+*.exp
+*.ilk
+*.pyc
+__pycache__/

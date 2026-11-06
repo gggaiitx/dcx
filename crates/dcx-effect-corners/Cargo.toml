@@ -1,0 +1,9 @@
+[package]
+name = "dcx-effect-corners"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+dcx-win32 = { path = "../dcx-win32" }
+dcx-core = { path = "../dcx-core" }

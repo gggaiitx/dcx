@@ -1,0 +1,36 @@
+[package]
+name = "dcx-search"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DCX file search — standalone application with a resident name index and streaming content search"
+build = "build.rs"
+
+[[bin]]
+name = "dcx-search"
+path = "src/main.rs"
+
+[dependencies]
+dcx-win32 = { path = "../dcx-win32" }
+dcx-organizer = { path = "../dcx-organizer" }
+
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+regex = "1"
+
+# ripgrep's traversal / searcher libraries. `grep-searcher` is consumed
+# directly (not via the `grep` facade) so the Sink and encoding knobs stay
+# explicit — they differ from the CLI defaults and the PRD calls them out.
+ignore = "0.4"
+grep-matcher = "0.1"
+grep-regex = "0.1"
+grep-searcher = "0.1"
+crossbeam-channel = "0.5"
+notify = "8"
+
+# One eframe event loop per process. The exact winit pin must match the one
+# eframe 0.29 links, otherwise `EventLoopBuilder::with_any_thread` cannot be
+# applied (the builder types would be from two different crate instances).
+egui = "0.29"
+eframe = "0.29"
+winit = "=0.30.13"

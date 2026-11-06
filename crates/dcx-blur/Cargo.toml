@@ -1,0 +1,12 @@
+[package]
+name = "dcx-blur"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Port of the WindhawkBlur composition brush (XamlCompositionBrushBase + D2D effect graph)"
+
+[dependencies]
+dcx-win32 = { path = "../dcx-win32" }
+
+[build-dependencies]
+cc = "1"

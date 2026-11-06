@@ -1,0 +1,28 @@
+[package]
+name = "dcx-host"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "dcx-host"
+path = "src/main.rs"
+
+[dependencies]
+dcx-win32 = { path = "../dcx-win32" }
+dcx-core = { path = "../dcx-core" }
+dcx-effect-corners = { path = "../dcx-effect-corners" }
+dcx-settings = { path = "../dcx-settings" }
+dcx-organizer = { path = "../dcx-organizer" }
+
+# Application registry (`apps.toml`): which standalone apps the host launches.
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+# System tray + egui settings window.
+tray-icon = "0.24"
+egui = "0.29"
+eframe = "0.29"
+# Exact pin: must be the same 0.30.13 eframe links, so the EventLoopBuilder
+# types are identical and `with_any_thread` (Windows) can be applied.
+winit = "=0.30.13"

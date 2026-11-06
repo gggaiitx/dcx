@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>DCX 设置窗口 · 深青强调色</title>
+<style>
+  :root{
+    --bg:#F3F3F3; --content:#F9F9F9; --card:#FFFFFF;
+    --line:#E5E5E5; --sep:#EBEBEB;
+    --ink:#1A1A1A; --ink-2:#5D5D5D; --ink-3:#8A8A8A;
+    --accent:#0E7C7E; --accent-soft:#E4F2F1;
+    --track:#E5E5E5; --hover:#F7F7F7;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:#E9E9E9}
+  body{
+    font-family:"Segoe UI Variable Text","Segoe UI","Microsoft YaHei UI","Microsoft YaHei",sans-serif;
+    -webkit-font-smoothing:antialiased;color:var(--ink);
+    display:flex;justify-content:center;padding:20px;
+  }
+  .win{
+    width:760px;height:648px;background:var(--bg);border-radius:8px;overflow:hidden;
+    display:flex;box-shadow:0 18px 46px rgba(0,0,0,.20),0 2px 6px rgba(0,0,0,.10);
+    border:1px solid #DDD;
+  }
+
+  /* ---- sidebar ---- */
+  .side{width:196px;flex:none;background:var(--bg);padding:10px;display:flex;flex-direction:column;position:relative}
+  .nav{display:flex;align-items:center;gap:10px;height:34px;padding:0 10px;border-radius:6px;
+       font-size:13px;color:var(--ink);position:relative}
+  .nav.sel{background:#E4E4E4}
+  .nav.sel::before{content:"";position:absolute;left:0;top:9px;bottom:9px;width:3px;
+       border-radius:2px;background:var(--accent)}
+  .nav svg{width:15px;height:15px;flex:none}
+  .nav.sel svg{stroke:var(--accent)}
+  .status{margin-top:auto;padding:8px 10px 10px;font-size:11px;color:var(--ink-3);line-height:1.7}
+  .status .line{display:flex;align-items:center;gap:6px}
+  .dot{width:6px;height:6px;border-radius:50%;background:#0F7B0F;flex:none}
+
+  /* ---- content ---- */
+  .main{flex:1;background:var(--content);border-left:1px solid var(--line);
+        padding:24px 28px 18px;display:flex;flex-direction:column;overflow:hidden}
+  .head{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:16px}
+  h1{margin:0;font-size:22px;font-weight:600;letter-spacing:.01em}
+  .sub{margin:3px 0 0;font-size:12px;color:var(--ink-2)}
+  .round{width:32px;height:32px;border-radius:6px;border:1px solid var(--line);
+         background:var(--card);display:grid;place-items:center;color:var(--ink-2)}
+
+  .card{background:var(--card);border:1px solid var(--line);border-radius:8px;
+        padding:2px 16px;margin-bottom:14px}
+  .card h2{margin:12px 0 4px;font-size:12px;font-weight:600;color:var(--ink-2)}
+  .row{display:flex;align-items:center;gap:14px;padding:10px 0;border-top:1px solid var(--sep)}
+  .card h2 + .row{border-top:0}
+  .row .txt{flex:1;min-width:0}
+  .row .t{font-size:13.5px;line-height:1.35}
+  .row .d{font-size:12px;color:var(--ink-3);margin-top:2px;line-height:1.4}
+
+  /* segmented */
+  .seg{display:flex;border:1px solid var(--line);border-radius:6px;overflow:hidden;background:var(--card)}
+  .seg span{font-size:12.5px;padding:5px 13px;color:var(--ink-2)}
+  .seg span.on{background:var(--accent);color:#fff}
+
+  /* switch 40x20 */
+  .sw{width:40px;height:20px;border-radius:10px;position:relative;flex:none}
+  .sw.on{background:var(--accent)}
+  .sw.off{background:var(--card);border:1px solid #8A8A8A}
+  .sw i{position:absolute;top:50%;transform:translateY(-50%);width:12px;height:12px;
+        border-radius:50%;background:#fff;display:block}
+  .sw.on i{right:4px}
+  .sw.off i{left:5px;background:#8A8A8A}
+
+  /* slider */
+  .sl{width:168px;position:relative;height:20px;flex:none}
+  .sl .track{position:absolute;top:8px;left:0;right:0;height:4px;border-radius:2px;background:var(--track)}
+  .sl .fill{position:absolute;top:8px;left:0;height:4px;border-radius:2px;background:var(--accent)}
+  .sl .thumb{position:absolute;top:4px;width:12px;height:12px;border-radius:50%;
+             background:var(--accent);border:3px solid var(--card);box-shadow:0 0 0 1px var(--accent)}
+  .val{font-size:12px;color:var(--ink-3);font-variant-numeric:tabular-nums;width:38px;text-align:right}
+
+  /* radio */
+  .radios{display:flex;gap:14px}
+  .rad{display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--ink-2)}
+  .rad i{width:16px;height:16px;border-radius:50%;border:1.5px solid #8A8A8A;display:block;position:relative}
+  .rad.on i{border-color:var(--accent)}
+  .rad.on i::after{content:"";position:absolute;inset:3.5px;border-radius:50%;background:var(--accent)}
+
+  /* buttons */
+  .btn{height:32px;padding:0 16px;border-radius:4px;font-size:13px;display:inline-flex;
+       align-items:center;gap:6px;border:1px solid transparent;cursor:default}
+  .btn.primary{background:var(--accent);color:#fff}
+  .btn.ghost{background:var(--card);border-color:var(--line);color:var(--ink)}
+  .foot{margin-top:auto;display:flex;gap:10px;align-items:center;padding-top:12px;
+        border-top:1px solid var(--sep);font-size:11.5px;color:var(--ink-3)}
+</style>
+</head>
+<body>
+<div class="win">
+  <div class="side">
+    <div class="nav sel">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4">
+        <rect x="2" y="2.5" width="12" height="11" rx="2"/><path d="M2 6h12"/>
+      </svg>
+      外观与尺寸
+    </div>
+    <div class="nav">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4">
+        <circle cx="8" cy="8" r="6"/><path d="M8 7.2v4M8 5v.9"/>
+      </svg>
+      关于
+    </div>
+    <div class="status">
+      <div class="line"><span class="dot"></span>已写入 · 引擎约 1 秒内重载</div>
+      <div>dcx-engine.dll 已注入 2 个 Explorer</div>
+    </div>
+  </div>
+
+  <div class="main">
+    <div class="head">
+      <div>
+        <h1>外观与尺寸</h1>
+        <p class="sub">任务栏形状、图标尺寸与间距，改动即时生效</p>
+      </div>
+      <div class="round">
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4">
+          <path d="M13 9.6A5.6 5.6 0 0 1 6.4 3a5.6 5.6 0 1 0 6.6 6.6Z"/>
+        </svg>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>外观</h2>
+      <div class="row">
+        <div class="txt">
+          <div class="t">任务栏形状</div>
+          <div class="d">胶囊把整条任务栏收进圆角容器</div>
+        </div>
+        <div class="seg"><span class="on">胶囊</span><span>直角</span></div>
+      </div>
+      <div class="row">
+        <div class="txt"><div class="t">圆角半径</div></div>
+        <div class="radios">
+          <div class="rad"><i></i>小</div>
+          <div class="rad on"><i></i>中</div>
+          <div class="rad"><i></i>大</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>尺寸与间距</h2>
+      <div class="row">
+        <div class="txt"><div class="t">图标尺寸</div><div class="d">相对于系统基准的缩放</div></div>
+        <div class="sl">
+          <div class="track"></div>
+          <div class="fill" style="width:58%"></div>
+          <div class="thumb" style="left:calc(58% - 6px)"></div>
+        </div>
+        <div class="val">1.18×</div>
+      </div>
+      <div class="row">
+        <div class="txt"><div class="t">图标间距</div></div>
+        <div class="sl">
+          <div class="track"></div>
+          <div class="fill" style="width:42%"></div>
+          <div class="thumb" style="left:calc(42% - 6px)"></div>
+        </div>
+        <div class="val">6 px</div>
+      </div>
+      <div class="row">
+        <div class="txt">
+          <div class="t">最大宽度跟随默认</div>
+          <div class="d">关掉后可手动指定 1895 px</div>
+        </div>
+        <div class="sw on"><i></i></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>行为</h2>
+      <div class="row">
+        <div class="txt">
+          <div class="t">自动隐藏任务栏</div>
+          <div class="d">走系统自身的 AppBar 状态，即时生效</div>
+        </div>
+        <div class="sw off"><i></i></div>
+      </div>
+      <div class="row" style="justify-content:flex-end;gap:8px">
+        <div class="btn ghost">重置外观</div>
+        <div class="btn primary">重新应用</div>
+      </div>
+    </div>
+
+    <div class="foot">设置文件 settings.toml · 上次写入 20:52:31</div>
+  </div>
+</div>
+</body>
+</html>

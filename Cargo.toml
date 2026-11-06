@@ -1,0 +1,28 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/dcx-win32",
+    "crates/dcx-core",
+    "crates/dcx-settings",
+    "crates/dcx-organizer",
+    "crates/dcx-effect-corners",
+    "crates/dcx-theme",
+    "crates/dcx-xaml",
+    "crates/dcx-blur",
+    "crates/dcx-engine",
+    "crates/dcx-host",
+    "crates/dcx-box",
+    "crates/dcx-search",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[profile.release]
+panic = "abort"
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
