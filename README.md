@@ -20,6 +20,25 @@ DCX 是一套用 Rust 编写的 Windows 11 桌面增强平台。它把三件事�
 
 > 当前版本 **v0.1.0**，已在 Windows 11 `10.0.26200` x64 实机验证。任务栏引擎针对当前 Win11 视觉树实现，Windows 大版本更新后可能需要重新核对元素路径。
 
+## 效果
+
+<p align="center">
+  <img src="docs/images/desktop.png" alt="Windows 11 任务栏主题" width="100%">
+</p>
+<p align="center"><sub>任务栏主题与桌面收纳盒按钮</sub></p>
+
+<p align="center">
+  <img src="docs/images/box.png" alt="桌面收纳盒" width="520">
+</p>
+<p align="center"><sub>桌面收纳盒：按分类浏览收纳库</sub></p>
+
+<p align="center">
+  <img src="docs/images/search.png" alt="文件检索" width="100%">
+</p>
+<p align="center"><sub>文件检索：名称 / 路径 / 大小 / 修改时间</sub></p>
+
+> 截图中的文件名和路径为脱敏后的示例，不代表真实文件。
+
 ## 功能
 
 | 模块 | 能力 |
