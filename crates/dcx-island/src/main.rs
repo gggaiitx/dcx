@@ -18,6 +18,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod activate;
+mod api;
 mod app;
 mod clipboard;
 mod clock;
@@ -81,8 +82,20 @@ fn main() {
     if matches!(args.first().map(String::as_str), Some("--help") | Some("-h")) {
         println!("dcx-island [--help]");
         println!("  (no option) : the island (normally started by dcx-host)");
+        println!("  --push JSON : post one card to the running island's push API");
         println!("  settings     : edit in dcx-host.exe --settings → 桌面信息岛");
         return;
+    }
+
+    // --push is a client, not a second instance: it must branch *before* the
+    // singleton logic, which touches `island_show` — a push that toggles the
+    // panel open/closed would be a bug, not a notification.
+    if args.first().map(String::as_str) == Some("--push") {
+        // Release builds are GUI-subsystem; attach to the calling terminal so
+        // the response and errors are visible there.
+        unsafe { dcx_win32::AttachConsole(dcx_win32::ATTACH_PARENT_PROCESS) };
+        let code = api::push_cli(args.get(1).map(String::as_str).unwrap_or(""));
+        std::process::exit(code);
     }
 
     if already_running() {

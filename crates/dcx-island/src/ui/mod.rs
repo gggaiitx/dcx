@@ -14,11 +14,13 @@ pub enum Tab {
     Clip,
     Inbox,
     Perf,
+    /// Cards from the local push API.
+    Live,
 }
 
 impl Tab {
-    pub fn all() -> [Tab; 4] {
-        [Tab::Tasks, Tab::Clip, Tab::Inbox, Tab::Perf]
+    pub fn all() -> [Tab; 5] {
+        [Tab::Tasks, Tab::Clip, Tab::Inbox, Tab::Perf, Tab::Live]
     }
 
     pub fn label(self) -> &'static str {
@@ -27,6 +29,7 @@ impl Tab {
             Tab::Clip => "剪贴板",
             Tab::Inbox => "消息",
             Tab::Perf => "性能",
+            Tab::Live => "动态",
         }
     }
 
@@ -36,6 +39,7 @@ impl Tab {
             Tab::Clip => "clip",
             Tab::Inbox => "inbox",
             Tab::Perf => "perf",
+            Tab::Live => "live",
         }
     }
 
@@ -44,6 +48,7 @@ impl Tab {
             "clip" => Tab::Clip,
             "inbox" => Tab::Inbox,
             "perf" => Tab::Perf,
+            "live" => Tab::Live,
             _ => Tab::Tasks,
         }
     }
@@ -54,6 +59,7 @@ impl Tab {
             Tab::Clip => Glyph::Clipboard,
             Tab::Inbox => Glyph::Inbox,
             Tab::Perf => Glyph::Gauge,
+            Tab::Live => Glyph::Pulse,
         }
     }
 }

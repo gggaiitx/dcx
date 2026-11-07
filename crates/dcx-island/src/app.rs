@@ -35,7 +35,7 @@ use dcx_island_config::Config;
 
 use crate::ui::panel::{Action, PanelState, TextureCache};
 use crate::ui::{theme, Tab};
-use crate::{clipboard, clock, dispatch, inbox, metrics, notify, sys, tasks, win};
+use crate::{api, clipboard, clock, dispatch, inbox, metrics, notify, sys, tasks, win};
 
 /// Must equal `AppEntry.window_title` in `dcx-host/src/apps.rs` byte for byte:
 /// the host uses `FindWindowW` to stop a manually started instance and to
@@ -168,6 +168,13 @@ struct Island {
     clip_listener: Option<clipboard::Listener>,
     inbox: inbox::Inbox,
     notifier: notify::Notifier,
+    /// Push-API cards, memory-only: the UI thread is the single writer, the
+    /// HTTP threads hand changes over through `api.rx`.
+    cards: api::PushCards,
+    api: Option<api::ApiServer>,
+    /// When the newest card first arrived; drives the capsule pulse. Progress
+    /// updates reuse the id and deliberately do not reset it.
+    card_flash: Option<Instant>,
 
     textures: TextureCache,
     tab: Tab,
@@ -184,6 +191,7 @@ struct Island {
     clip_scroll: f32,
     inbox_scroll: f32,
     perf_scroll: f32,
+    live_scroll: f32,
 
     today: String,
     last_secs: u32,
@@ -252,6 +260,9 @@ impl Island {
             clip_listener: listener,
             inbox: inbox::Inbox::new(cfg.inbox.keep),
             notifier: notify::Notifier::start(&cfg, sys::cred_read(dispatch::CRED_IMAP)),
+            cards: api::PushCards::new(),
+            api: api::start(cfg.api.enabled, cfg.api.port),
+            card_flash: None,
             textures: TextureCache::new(),
             tab: Tab::from_key(&cfg.ui.last_tab),
             task_input: String::new(),
@@ -262,6 +273,7 @@ impl Island {
             clip_scroll: 0.0,
             inbox_scroll: 0.0,
             perf_scroll: 0.0,
+            live_scroll: 0.0,
             today,
             last_secs: 0,
             last_tick: Instant::now(),
@@ -298,6 +310,7 @@ impl Island {
             self.poll_config(ctx);
             self.poll_marker(ctx);
             self.drain_clipboard(ctx);
+            self.drain_api(ctx);
             if self.notifier.poll(&mut self.inbox) {
                 ctx.request_repaint();
             }
@@ -443,6 +456,12 @@ impl Island {
             self.notifier = notify::Notifier::start(&next, sys::cred_read(dispatch::CRED_IMAP));
             self.notifier.seed_states(&mut self.inbox, &next);
         }
+        if next.api != old.api {
+            // Dropping the old server closes its listener; `start` retries the
+            // bind for a second so a same-port restart does not lose the race
+            // against the old socket's teardown.
+            self.api = api::start(next.api.enabled, next.api.port);
+        }
         if next.ui.last_tab != old.ui.last_tab {
             self.tab = Tab::from_key(&next.ui.last_tab);
         }
@@ -505,6 +524,45 @@ impl Island {
         }
         if added > 0 {
             self.dirty_at = Some(Instant::now());
+            ctx.request_repaint();
+        }
+    }
+
+    /// Push-API messages and TTL expiry. Runs on the housekeeping cadence so
+    /// cards vanish on time even when no traffic arrives.
+    fn drain_api(&mut self, ctx: &egui::Context) {
+        let mut changed = false;
+        if let Some(server) = &self.api {
+            while let Ok(msg) = server.rx.try_recv() {
+                match msg {
+                    api::ApiMsg::Upsert(card) => {
+                        if self.cards.upsert(card) {
+                            // Flash only for a genuinely new id: a progress
+                            // card updates the same id every second and must
+                            // not re-alert on every update.
+                            self.card_flash = Some(Instant::now());
+                        }
+                        changed = true;
+                    }
+                    api::ApiMsg::Remove(id) => {
+                        changed |= self.cards.remove(&id);
+                    }
+                }
+            }
+        }
+        if self.cards.expire(crate::inbox::now_secs()) {
+            changed = true;
+        }
+        if self
+            .card_flash
+            .as_ref()
+            .map(|t| t.elapsed().as_secs_f32() > REMINDER_SECS)
+            .unwrap_or(false)
+        {
+            self.card_flash = None;
+            changed = true;
+        }
+        if changed {
             ctx.request_repaint();
         }
     }
@@ -861,6 +919,8 @@ impl Island {
                                 clip_scroll: &mut self.clip_scroll,
                                 inbox_scroll: &mut self.inbox_scroll,
                                 perf_scroll: &mut self.perf_scroll,
+                                live_scroll: &mut self.live_scroll,
+                                cards: &self.cards,
                                 textures: &mut self.textures,
                                 toast: self.toast.as_ref().map(|(t, _)| t.as_str()),
                                 dispatch_note: self.send_note.as_ref().map(|(t, _)| t.as_str()),
@@ -964,7 +1024,19 @@ impl Island {
                 let t = at.elapsed().as_secs_f32();
                 (Some(title.clone()), flash_envelope(t), t)
             }
-            None => (None, 0.0, 0.0),
+            None => {
+                // A live push card is the capsule's secondary headline: the
+                // newest unexpired card shows in the pill and pulses once when
+                // it first arrives. Reminders keep priority over cards.
+                let task = self.cards.latest().map(api::capsule_text);
+                match self.card_flash {
+                    Some(at) => {
+                        let t = at.elapsed().as_secs_f32();
+                        (task, flash_envelope(t), t)
+                    }
+                    None => (task, 0.0, 0.0),
+                }
+            }
         };
         crate::ui::compact::CapsuleState {
             // `clock.show = false` hides the whole clock module, weekday
@@ -1183,6 +1255,27 @@ impl Island {
                     }
                 }
             }
+            Action::DismissCard(id) => {
+                self.cards.remove(&id);
+            }
+            Action::RunCard(id) => {
+                if let Some(action) = self.cards.get(&id).and_then(|c| c.action.clone()) {
+                    match action {
+                        api::PushAction::ShowPanel { tab } => {
+                            self.tab = Tab::from_key(&tab);
+                            self.cfg.ui.last_tab = self.tab.key().to_string();
+                            self.dirty_at = Some(Instant::now());
+                            self.persist_ui();
+                            self.set_open(true, ctx);
+                        }
+                        other => {
+                            if let Err(e) = api::run_action(&other) {
+                                self.toast = Some((e, Instant::now()));
+                            }
+                        }
+                    }
+                }
+            }
         }
         ctx.request_repaint();
     }
@@ -1198,7 +1291,7 @@ impl Island {
         if self.open {
             // While open, keep the panel responsive (hover, drag, animations).
             ctx.request_repaint_after(Duration::from_millis(120));
-        } else if self.reminder.is_some() {
+        } else if self.reminder.is_some() || self.card_flash.is_some() {
             // The pulse is the alert: it has to run at a real frame rate, and
             // only for the twelve seconds it lasts.
             ctx.request_repaint_after(Duration::from_millis(50));

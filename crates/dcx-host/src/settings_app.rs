@@ -2782,6 +2782,71 @@ impl SettingsApp {
         });
 
         ui.add_space(18.0);
+        caption(ui, p, "推送 API · 本地脚本接入");
+        card(ui, p, |ui| {
+            row_tight(
+                ui,
+                p,
+                RowIcon::Link,
+                "本地推送 API",
+                "脚本把进度/提醒卡片推到「动态」页；仅监听 127.0.0.1，默认开启",
+                |ui| {
+                    switch(ui, p, &mut iv.api.enabled);
+                },
+            );
+            row_separator(ui, p);
+            row(
+                ui,
+                p,
+                RowIcon::Info,
+                "端口",
+                "默认 9841；改动后岛内服务自动重启",
+                |ui| {
+                    ui.add(egui::DragValue::new(&mut iv.api.port).range(1..=65535));
+                },
+            );
+            row_separator(ui, p);
+            row_reserve(
+                ui,
+                p,
+                RowIcon::Doc,
+                "访问令牌",
+                "存于 island_api_token.txt 供本机脚本读取；重置后立即生效，无需重启",
+                380.0,
+                |ui| {
+                    let exists = dcx_island_config::api_token::read().is_some();
+                    ui.label(
+                        RichText::new(if exists { "已生成" } else { "未生成" })
+                            .size(12.0)
+                            .color(if exists { p.ok } else { p.tertiary }),
+                    );
+                    if standard_button(ui, p, "复制", exists).clicked() {
+                        if let Some(t) = dcx_island_config::api_token::read() {
+                            ui.ctx().copy_text(t);
+                        }
+                    }
+                    if standard_button(ui, p, "重置", true).clicked() {
+                        match dcx_island_config::api_token::reset() {
+                            Ok(_) => self.island_error = None,
+                            Err(e) => self.island_error = Some(e),
+                        }
+                    }
+                },
+            );
+            row_separator(ui, p);
+            row_info(
+                ui,
+                p,
+                RowIcon::Info,
+                "能力边界",
+                "除 /v1/health 外均需 Bearer 令牌；只有打开链接/文件夹/面板三类动作，没有执行命令。脚本用法：dcx-island.exe --push '{\"id\":\"build\",\"title\":\"构建中\",\"progress\":0.4}'",
+                |ui| {
+                    ui.allocate_exact_size(egui::vec2(8.0, 8.0), Sense::hover());
+                },
+            );
+        });
+
+        ui.add_space(18.0);
         caption(ui, p, "能力边界");
         card(ui, p, |ui| {
             row_info(

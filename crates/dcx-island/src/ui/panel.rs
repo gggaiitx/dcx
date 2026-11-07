@@ -65,6 +65,9 @@ pub struct PanelState<'a> {
     pub clip_scroll: &'a mut f32,
     pub inbox_scroll: &'a mut f32,
     pub perf_scroll: &'a mut f32,
+    pub live_scroll: &'a mut f32,
+    /// Cards from the local push API; read-only here, the UI thread owns them.
+    pub cards: &'a crate::api::PushCards,
     pub textures: &'a mut TextureCache,
     pub toast: Option<&'a str>,
     pub dispatch_note: Option<&'a str>,
@@ -88,6 +91,10 @@ pub enum Action {
     RemoveInbox(u64),
     /// Open the app that produced this row (and mark the row read).
     OpenInbox(u64, Source),
+    /// Run a push card's whitelisted action (open url / folder / panel tab).
+    RunCard(String),
+    /// Dismiss a push card before its TTL expires.
+    DismissCard(String),
 }
 
 /// `merged` means the caller already painted one card over the whole window
@@ -151,6 +158,7 @@ pub fn draw(
         Tab::Clip => clip_tab(ui, content, p, st, actions),
         Tab::Inbox => inbox_tab(ui, content, p, st, actions),
         Tab::Perf => perf_tab(ui, content, p, st),
+        Tab::Live => live_tab(ui, content, p, st, actions),
     }
 
     // Resize grip, bottom-right, outside the content rectangle.
@@ -213,6 +221,12 @@ fn draw_tabs(
                 label = format!("{} {}", label, n.min(99));
             }
         }
+        if *tab == Tab::Live {
+            let n = st.cards.len();
+            if n > 0 {
+                label = format!("{} {}", label, n.min(99));
+            }
+        }
         let galley = ui
             .painter()
             .layout_no_wrap(label, FontId::proportional(12.0), color);
@@ -248,6 +262,7 @@ fn draw_footer(ui: &mut egui::Ui, rect: Rect, p: &Palette, st: &PanelState<'_>) 
         Tab::Clip => "点条目回写剪贴板 · 图钉保留",
         Tab::Inbox => "只显示提醒，不读取聊天内容",
         Tab::Perf => "1 秒采样 · 平滑显示",
+        Tab::Live => "脚本推送的临时卡片 · 到期自动消失",
     };
     if let Some(toast) = st.toast {
         widgets::text(
@@ -1044,6 +1059,203 @@ fn inbox_tab(
         y += row_h;
     }
     scroll_bar(ui, list, p, content_h, offset);
+    ui.set_clip_rect(prev_clip);
+}
+
+// ---------------------------------------------------------------------------
+// Live (push API cards)
+// ---------------------------------------------------------------------------
+
+/// Wrapped body line count, capped at three. Free functions rather than
+/// closures capturing `ui`: such a closure would hold an immutable borrow of
+/// the ui across every mutable widget call in the row.
+fn card_body_lines(ui: &egui::Ui, body: &str, inner_w: f32, lh_body: f32) -> f32 {
+    if body.is_empty() {
+        return 0.0;
+    }
+    let galley = ui
+        .painter()
+        .layout(body.to_string(), FontId::proportional(10.0), Color32::WHITE, inner_w);
+    (galley.size().y / lh_body).round().clamp(1.0, 3.0)
+}
+
+/// Card plate height. The same measurement feeds the scroll range and the
+/// paint, so the two can never disagree.
+fn card_h(ui: &egui::Ui, c: &crate::api::PushCard, inner_w: f32, lh_title: f32, lh_body: f32) -> f32 {
+    const PAD_Y: f32 = 8.0;
+    let mut h = PAD_Y + lh_title + PAD_Y;
+    if !c.body.is_empty() {
+        h += 3.0 + card_body_lines(ui, &c.body, inner_w, lh_body) * lh_body;
+    }
+    if c.progress.is_some() {
+        h += 5.0 + 12.0;
+    }
+    if c.action.is_some() {
+        h += 5.0 + 20.0;
+    }
+    h
+}
+
+fn live_tab(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    p: &Palette,
+    st: &mut PanelState<'_>,
+    actions: &mut Vec<Action>,
+) {
+    // Cloned for the same reason as `perf_tab`: the scroll helper borrows
+    // `st.live_scroll` mutably while the rows read the store.
+    let cards: Vec<crate::api::PushCard> = st.cards.iter().cloned().collect();
+    if cards.is_empty() {
+        empty_state(
+            ui,
+            rect,
+            p,
+            "没有动态卡片",
+            "脚本通过本地推送 API 发来的进度与提醒会显示在这里",
+        );
+        return;
+    }
+    let now = crate::inbox::now_secs();
+
+    // Measured line heights, same rule as the inbox rows: fixed offsets were
+    // tuned for 100 % DPI and smeared at 125 %.
+    let lh_title = ui.fonts(|f| f.row_height(&FontId::proportional(12.5))).max(16.0);
+    let lh_body = ui.fonts(|f| f.row_height(&FontId::proportional(10.0))).max(13.0);
+    const PAD_X: f32 = 10.0;
+    const PAD_Y: f32 = 8.0;
+    const GAP: f32 = 8.0;
+    let inner_w = (rect.width() - PAD_X * 2.0).max(40.0);
+
+    let content_h: f32 = cards
+        .iter()
+        .map(|c| card_h(ui, c, inner_w, lh_title, lh_body))
+        .sum::<f32>()
+        + GAP * (cards.len().saturating_sub(1)) as f32;
+    let offset = scroll(ui, rect, content_h, st.live_scroll);
+    let prev_clip = ui.clip_rect();
+    ui.set_clip_rect(rect);
+    let mut y = rect.top() - offset;
+    for card in &cards {
+        let h = card_h(ui, card, inner_w, lh_title, lh_body);
+        if y + h < rect.top() {
+            y += h + GAP;
+            continue;
+        }
+        if y > rect.bottom() {
+            break;
+        }
+        let plate = Rect::from_min_size(Pos2::new(rect.left(), y), Vec2::new(rect.width(), h));
+        widgets::round_rect(ui, plate, 9.0, with_alpha(p.surface_alt, 0.6), Stroke::NONE);
+        let hovered = ui.rect_contains_pointer(plate);
+        let inner = Rect::from_min_max(
+            plate.min + Vec2::new(PAD_X, PAD_Y),
+            plate.max - Vec2::new(PAD_X, PAD_Y),
+        );
+
+        // Line 1: title left, remaining lifetime right. The reserve is constant
+        // so the title does not jump when the hover-only dismiss button appears.
+        let remain = card.expires_at().saturating_sub(now);
+        let remain_label = if remain >= 60 {
+            format!("{}分", remain / 60)
+        } else {
+            format!("{remain}秒")
+        };
+        widgets::text(
+            ui,
+            Pos2::new(inner.left(), inner.top()),
+            Align2::LEFT_TOP,
+            &fit_one_line(ui, &card.title, 12.5, inner.width() - 52.0),
+            12.5,
+            p.text,
+        );
+        widgets::text(
+            ui,
+            Pos2::new(inner.right() - 22.0, inner.top() + lh_title * 0.5),
+            Align2::RIGHT_CENTER,
+            &remain_label,
+            9.5,
+            p.text_faint,
+        );
+        if hovered {
+            let x = Rect::from_center_size(
+                Pos2::new(inner.right() - 6.0, inner.top() + lh_title * 0.5),
+                Vec2::splat(18.0),
+            );
+            if widgets::icon_button(ui, x, Glyph::Close, p, false)
+                .on_hover_text("移除卡片")
+                .clicked()
+            {
+                actions.push(Action::DismissCard(card.id.clone()));
+            }
+        }
+        let mut cy = inner.top() + lh_title;
+
+        if !card.body.is_empty() {
+            cy += 3.0;
+            let lines = card_body_lines(ui, &card.body, inner_w, lh_body);
+            let body_rect = Rect::from_min_size(
+                Pos2::new(inner.left(), cy),
+                Vec2::new(inner.width(), lines * lh_body),
+            );
+            let galley = ui.painter().layout(
+                card.body.clone(),
+                FontId::proportional(10.0),
+                p.text_dim,
+                inner.width(),
+            );
+            ui.painter()
+                .with_clip_rect(body_rect)
+                .galley(body_rect.min, galley, p.text_dim);
+            cy += lines * lh_body;
+        }
+
+        if let Some(progress) = card.progress {
+            cy += 5.0;
+            let row = Rect::from_min_size(Pos2::new(inner.left(), cy), Vec2::new(inner.width(), 12.0));
+            let track = Rect::from_min_max(
+                Pos2::new(row.left(), row.center().y - 2.0),
+                Pos2::new(row.right() - 40.0, row.center().y + 2.0),
+            );
+            widgets::round_rect(ui, track, 2.0, with_alpha(p.text_faint, 0.35), Stroke::NONE);
+            let fill_w = track.width() * progress.clamp(0.0, 1.0);
+            if fill_w > 0.5 {
+                widgets::round_rect(
+                    ui,
+                    Rect::from_min_size(track.min, Vec2::new(fill_w, track.height())),
+                    2.0,
+                    p.accent,
+                    Stroke::NONE,
+                );
+            }
+            widgets::text(
+                ui,
+                Pos2::new(row.right(), row.center().y),
+                Align2::RIGHT_CENTER,
+                &format!("{}%", (progress * 100.0).round() as u32),
+                9.5,
+                p.text_dim,
+            );
+            cy += 12.0;
+        }
+
+        if let Some(action) = &card.action {
+            cy += 5.0;
+            let label = action.label();
+            let w = ui
+                .painter()
+                .layout_no_wrap(label.to_string(), FontId::proportional(10.0), Color32::WHITE)
+                .size()
+                .x
+                + 18.0;
+            let btn = Rect::from_min_size(Pos2::new(inner.left(), cy), Vec2::new(w, 20.0));
+            if small_button(ui, btn, p, label).clicked() {
+                actions.push(Action::RunCard(card.id.clone()));
+            }
+        }
+        y += h + GAP;
+    }
+    scroll_bar(ui, rect, p, content_h, offset);
     ui.set_clip_rect(prev_clip);
 }
 

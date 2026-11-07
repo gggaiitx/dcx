@@ -12,6 +12,7 @@
 //! hand-edited file that is missing a table must not fail to parse, because a
 //! parse failure marks the document poisoned and freezes both writers.
 
+pub mod api_token;
 pub mod credential;
 
 use serde::{Deserialize, Serialize};
@@ -70,6 +71,7 @@ pub struct Config {
     pub inbox: InboxCfg,
     pub mail: MailCfg,
     pub dispatch: DispatchCfg,
+    pub api: ApiCfg,
     pub ui: UiCfg,
 }
 
@@ -196,10 +198,20 @@ pub struct DispatchCfg {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
+pub struct ApiCfg {
+    /// Local push API: HTTP on 127.0.0.1, bearer token in
+    /// `island_api_token.txt`. On by default — it is loopback-only and the
+    /// token gates everything but the health check.
+    pub enabled: bool,
+    pub port: u16,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct UiCfg {
     pub panel_width: f32,
     pub panel_height: f32,
-    /// Last expanded tab: "tasks" | "clip" | "inbox" | "perf".
+    /// Last expanded tab: "tasks" | "clip" | "inbox" | "perf" | "live".
     pub last_tab: String,
     /// Pin the island to a monitor: empty = primary, otherwise a device name
     /// such as `\\.\DISPLAY2`.
@@ -227,6 +239,7 @@ impl Default for Config {
             inbox: InboxCfg::default(),
             mail: MailCfg::default(),
             dispatch: DispatchCfg::default(),
+            api: ApiCfg::default(),
             ui: UiCfg::default(),
         }
     }
@@ -341,6 +354,15 @@ impl Default for DispatchCfg {
     }
 }
 
+impl Default for ApiCfg {
+    fn default() -> Self {
+        ApiCfg {
+            enabled: true,
+            port: 9841,
+        }
+    }
+}
+
 impl Default for UiCfg {
     fn default() -> Self {
         UiCfg {
@@ -377,9 +399,12 @@ impl Config {
         self.mail.imap_port = if self.mail.imap_port == 0 { 993 } else { self.mail.imap_port };
         self.mail.smtp_port = if self.mail.smtp_port == 0 { 465 } else { self.mail.smtp_port };
         self.dispatch.min_gap_secs = self.dispatch.min_gap_secs.clamp(0, 60);
+        if self.api.port == 0 {
+            self.api.port = 9841;
+        }
         if !matches!(
             self.ui.last_tab.as_str(),
-            "tasks" | "clip" | "inbox" | "perf"
+            "tasks" | "clip" | "inbox" | "perf" | "live"
         ) {
             self.ui.last_tab = "tasks".to_string();
         }

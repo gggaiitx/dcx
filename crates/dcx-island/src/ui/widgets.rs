@@ -235,6 +235,8 @@ pub enum Glyph {
     Briefcase,
     /// Envelope.
     Mail,
+    /// Heartbeat / activity trace — the "live" push-card tab.
+    Pulse,
 }
 
 pub fn glyph(ui: &Ui, center: Pos2, size: f32, which: Glyph, color: Color32) {
@@ -447,6 +449,21 @@ fn draw_glyph(
             let fold = Pos2::new(c.x, c.y + s * 0.3);
             line(Pos2::new(body.left() + s * 0.14, body.top() + s * 0.14), fold);
             line(Pos2::new(body.right() - s * 0.14, body.top() + s * 0.14), fold);
+        }
+        Glyph::Pulse => {
+            // Flat lead-in, one spike up and one down, flat tail. At 12 pt the
+            // spike is the only thing that survives, and it must not look like
+            // the gauge arc or a check mark, so the down-stroke goes below the
+            // baseline.
+            let pts = [
+                c + Vec2::new(-s, 0.0),
+                c + Vec2::new(-s * 0.45, 0.0),
+                c + Vec2::new(-s * 0.2, -s * 0.75),
+                c + Vec2::new(s * 0.15, s * 0.75),
+                c + Vec2::new(s * 0.42, 0.0),
+                c + Vec2::new(s, 0.0),
+            ];
+            p.add(Shape::line(pts.to_vec(), stroke));
         }
     }
 }
