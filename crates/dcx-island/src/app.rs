@@ -202,6 +202,7 @@ struct Island {
     search_at: Option<Instant>,
     /// Query in flight, and the receiver its answer will arrive on.
     search_pending: Option<String>,
+    search_pending_at: Option<Instant>,
     search_rx: Option<Receiver<search::Outcome>>,
     /// Query the current `search_hits`/`search_error` answer.
     search_done_for: String,
@@ -306,6 +307,7 @@ impl Island {
             search_scroll: 0.0,
             search_at: None,
             search_pending: None,
+            search_pending_at: None,
             search_rx: None,
             search_done_for: String::new(),
             search_hits: Vec::new(),
@@ -511,9 +513,9 @@ impl Island {
             self.notifier.seed_states(&mut self.inbox, &next);
         }
         if next.api != old.api {
-            // Dropping the old server closes its listener; `start` retries the
-            // bind for a second so a same-port restart does not lose the race
-            // against the old socket's teardown.
+            // Drop the old listener *before* binding the new one: holding both
+            // would make the same-port restart race against itself.
+            self.api = None;
             self.api = api::start(next.api.enabled, next.api.port);
         }
         if next.media.enabled != old.media.enabled {
@@ -567,6 +569,10 @@ impl Island {
         let Some(listener) = &self.clip_listener else {
             return;
         };
+        // The settings window's "复制" puts the API bearer on the clipboard.
+        // It must not end up in the persisted history (or in Win+V), so the
+        // current token is compared against every incoming text copy.
+        let token = dcx_island_config::api_token::read();
         let mut added = 0;
         while let Ok(raw) = listener.rx.try_recv() {
             // `take`, not a plain read: the marker must never outlive the event
@@ -575,6 +581,11 @@ impl Island {
             if let Some(seq) = self.clip.self_write.take() {
                 if seq == sys::clipboard_sequence() {
                     // Our own write-back; do not record it again.
+                    continue;
+                }
+            }
+            if let (Some(token), clipboard::RawClip::Text(text)) = (&token, &raw) {
+                if text.trim() == token {
                     continue;
                 }
             }
@@ -610,7 +621,13 @@ impl Island {
                 }
             }
         }
-        if self.cards.expire(crate::inbox::now_secs()) {
+        let now = crate::inbox::now_secs();
+        if self.cards.expire(now) {
+            // Keep the server's read model in step: `GET active` must not
+            // report a card the panel has already dropped.
+            if let Some(api) = &self.api {
+                api.prune_expired(now);
+            }
             changed = true;
         }
         if self
@@ -743,11 +760,23 @@ impl Island {
             self.search_rx = None;
             if self.search_pending.as_deref() == Some(outcome.query.as_str()) {
                 self.search_pending = None;
+                self.search_pending_at = None;
                 self.search_done_for = outcome.query;
                 self.search_hits = outcome.hits;
                 self.search_error = outcome.error;
                 ctx.request_repaint();
             }
+        }
+        // Belt and braces: `search::start` already kills a hung child at 5 s,
+        // but a wedged pending query must never block typing indefinitely.
+        if self.search_pending_at.map(|t| t.elapsed() >= Duration::from_secs(6)).unwrap_or(false) {
+            if let Some(query) = self.search_pending.take() {
+                self.search_done_for = query;
+                self.search_error = Some("文件检索超时".to_string());
+            }
+            self.search_pending_at = None;
+            self.search_rx = None;
+            ctx.request_repaint();
         }
         if self.search_pending.is_some() {
             return;
@@ -762,6 +791,7 @@ impl Island {
             return;
         }
         self.search_pending = Some(query.clone());
+        self.search_pending_at = Some(Instant::now());
         self.search_rx = Some(search::start(query, 12));
     }
 
@@ -1484,6 +1514,9 @@ impl Island {
             }
             Action::DismissCard(id) => {
                 self.cards.remove(&id);
+                if let Some(api) = &self.api {
+                    api.forget(&id);
+                }
             }
             Action::RunCard(id) => {
                 if let Some(action) = self.cards.get(&id).and_then(|c| c.action.clone()) {
@@ -1541,6 +1574,7 @@ impl Island {
                     self.search_error = None;
                     self.search_done_for.clear();
                     self.search_pending = None;
+                    self.search_pending_at = None;
                     self.search_rx = None;
                 }
             }

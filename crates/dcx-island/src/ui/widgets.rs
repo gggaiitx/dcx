@@ -593,3 +593,42 @@ pub fn field(ui: &mut Ui, rect: Rect, text: &mut String, hint: &str, p: &Palette
     );
     out
 }
+
+/// Trims `text` to a single line of `max_w` at `size`, ending in an ellipsis.
+///
+/// Measured, not counted: a 12 pt CJK glyph is about twice as wide as a 12 pt
+/// Latin one, so "40 characters" is either a wasted line or two inches of
+/// overflow depending on the string. Binary search over the prefix length keeps
+/// this to a handful of layout calls per row.
+pub fn fit_one_line(ui: &Ui, text: &str, size: f32, max_w: f32) -> String {
+    if max_w <= 0.0 {
+        return String::new();
+    }
+    let font = FontId::proportional(size);
+    let width = |s: &str| {
+        ui.fonts(|f| {
+            f.layout_no_wrap(s.to_owned(), font.clone(), Color32::WHITE)
+                .size()
+                .x
+        })
+    };
+    if width(text) <= max_w {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut lo = 0usize;
+    let mut hi = chars.len();
+    while lo < hi {
+        let mid = (lo + hi + 1) / 2;
+        let cand: String = chars[..mid].iter().collect::<String>() + "…";
+        if width(&cand) <= max_w {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    if lo == 0 {
+        return "…".to_string();
+    }
+    chars[..lo].iter().collect::<String>() + "…"
+}

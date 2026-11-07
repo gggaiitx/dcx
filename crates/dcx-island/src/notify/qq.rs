@@ -44,6 +44,9 @@ pub struct QqHit {
     /// Display name of the raising app (`AppInfo.DisplayInfo.DisplayName`,
     /// falling back to the AUMID's last meaningful segment).
     pub app: String,
+    /// The AUMID the notification came from. WinRT ids are per app, so the
+    /// de-dupe key has to carry this or app B's id 3 is swallowed by app A's.
+    pub app_id: String,
     /// The AUMID classified as QQ. Routing decision is the caller's: QQ hits
     /// go to the QQ channel only while that switch is on, everything else is
     /// a `System` row.
@@ -146,7 +149,7 @@ pub fn start(qq_enabled: bool, system: bool) -> Option<QqProbe> {
                 }
             }
 
-            let mut seen: HashSet<u32> = HashSet::new();
+            let mut seen: HashSet<String> = HashSet::new();
             while !stop2.load(Ordering::SeqCst) {
                 // 15 s: the notification store is cheap to read but this is a
                 // cross-process WinRT call, not something to do per frame.
@@ -174,12 +177,13 @@ pub fn start(qq_enabled: bool, system: bool) -> Option<QqProbe> {
                                     continue;
                                 }
                                 let Ok(id) = n.Id() else { continue };
-                                if !seen.insert(id) {
+                                let key = format!("{app_id}\u{1}{id}");
+                                if !seen.insert(key) {
                                     continue;
                                 }
                                 if seen.len() > 512 {
                                     seen.clear();
-                                    seen.insert(id);
+                                    seen.insert(format!("{app_id}\u{1}{id}"));
                                 }
                                 let (title, body) = texts(&n);
                                 let app_name = display_name(&app, &app_id);
@@ -190,6 +194,7 @@ pub fn start(qq_enabled: bool, system: bool) -> Option<QqProbe> {
                                             title,
                                             body,
                                             app: app_name,
+                                            app_id: app_id.clone(),
                                             is_qq,
                                         });
                                     }

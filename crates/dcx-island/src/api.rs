@@ -33,7 +33,7 @@
 //! ([`PushCards`]) keeps the single-writer rule every other island model
 //! follows; TTL expiry also runs there, so a card never disappears mid-frame.
 
-use std::io::{BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -271,8 +271,25 @@ struct Shared {
 
 pub struct ApiServer {
     pub rx: Receiver<ApiMsg>,
+    /// The server's read model. The UI shares it so a card dismissed in the
+    /// panel (or expired) stops being reported by `GET active`.
+    shared: Arc<Shared>,
     stop: Arc<AtomicBool>,
     port: u16,
+}
+
+impl ApiServer {
+    pub fn forget(&self, id: &str) {
+        if let Ok(mut cards) = self.shared.snapshot.lock() {
+            cards.retain(|c| c.id != id);
+        }
+    }
+
+    pub fn prune_expired(&self, now: u64) {
+        if let Ok(mut cards) = self.shared.snapshot.lock() {
+            cards.retain(|c| c.expires_at() > now);
+        }
+    }
 }
 
 impl Drop for ApiServer {
@@ -329,6 +346,7 @@ pub fn start(enabled: bool, port: u16) -> Option<ApiServer> {
         tx,
         token_cache: Mutex::new(None),
     });
+    let server_shared = Arc::clone(&shared);
     let stop = Arc::new(AtomicBool::new(false));
     let stop2 = Arc::clone(&stop);
     let conns = Arc::new(AtomicUsize::new(0));
@@ -359,7 +377,12 @@ pub fn start(enabled: bool, port: u16) -> Option<ApiServer> {
         })
         .ok()?;
     crate::win::trace(&format!("api: listening on 127.0.0.1:{port}"));
-    Some(ApiServer { rx, stop, port })
+    Some(ApiServer {
+        rx,
+        shared: server_shared,
+        stop,
+        port,
+    })
 }
 
 /// Re-read the token only when its file changed — a settings-side reset
@@ -377,6 +400,7 @@ fn current_token(shared: &Shared) -> Option<String> {
     Some(tok)
 }
 
+#[derive(Debug)]
 struct Request {
     method: String,
     target: String,
@@ -428,6 +452,12 @@ fn constant_time_eq(a: &str, b: &str) -> bool {
 
 fn read_request(stream: &mut TcpStream) -> Result<(Request, Vec<u8>), Reply> {
     let mut reader = BufReader::new(stream.try_clone().map_err(io_reply)?);
+    read_request_from(&mut reader)
+}
+
+/// The parser is generic over `BufRead` so the caps and framing rules are unit
+/// testable without a socket; [`read_request`] is the thin socket wrapper.
+fn read_request_from<R: BufRead>(reader: &mut R) -> Result<(Request, Vec<u8>), Reply> {
     // Header block, byte at a time through the buffer: a line-based reader
     // would let one unterminated line grow without bound.
     let mut head = Vec::with_capacity(1024);
@@ -813,6 +843,44 @@ mod tests {
         assert!(store.get(&format!("c{}", MAX_CARDS + 3)).is_some());
         assert!(store.expire(1000 + MAX_CARDS as u64 + 4 + DEFAULT_TTL + 1));
         assert_eq!(store.len(), 0);
+    }
+
+    #[test]
+    fn request_parsing_rejects_oversized_header() {
+        let mut input = vec![b'x'; MAX_HEADER + 64];
+        input.extend_from_slice(b"GET / HTTP/1.1\r\n");
+        let mut reader = std::io::Cursor::new(input);
+        assert_eq!(read_request_from(&mut reader).unwrap_err().0, 431);
+    }
+
+    #[test]
+    fn request_parsing_rejects_short_body_and_chunked() {
+        let short = "POST /v1/island/push HTTP/1.1\r\nContent-Length: 10\r\n\r\n{}";
+        assert_eq!(
+            read_request_from(&mut std::io::Cursor::new(short.as_bytes().to_vec()))
+                .unwrap_err()
+                .0,
+            400
+        );
+        let chunked =
+            "POST /v1/island/push HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n";
+        assert_eq!(
+            read_request_from(&mut std::io::Cursor::new(chunked.as_bytes().to_vec()))
+                .unwrap_err()
+                .0,
+            400
+        );
+    }
+
+    #[test]
+    fn request_parsing_accepts_lf_only_and_reads_body() {
+        let raw = "POST /v1/island/push HTTP/1.0\ncontent-length: 2\nauthorization: Bearer t\n\n{}";
+        let (req, body) = read_request_from(&mut std::io::Cursor::new(raw.as_bytes().to_vec()))
+            .expect("LF-only request should parse");
+        assert_eq!(req.method, "POST");
+        assert_eq!(req.target, "/v1/island/push");
+        assert_eq!(req.authorization.as_deref(), Some("Bearer t"));
+        assert_eq!(body, b"{}");
     }
 
     #[test]

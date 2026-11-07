@@ -7,7 +7,7 @@
 //! of that drag. Rows are painted and hit-tested by the same numbers, so a click
 //! can never land on a row the user is not looking at.
 
-use egui::{Align2, Color32, FontId, Pos2, Rect, Stroke, Ui, Vec2};
+use egui::{Align2, Color32, FontId, Pos2, Rect, Stroke, Vec2};
 
 use crate::clipboard::{ClipItem, Kind};
 use crate::inbox::{ChannelState, Inbox, Source};
@@ -289,7 +289,7 @@ fn draw_media_row(
         ui,
         Pos2::new(text_left, text_top),
         Align2::LEFT_TOP,
-        &fit_one_line(ui, title, 12.0, title_w),
+        &widgets::fit_one_line(ui, title, 12.0, title_w),
         12.0,
         p.text,
     );
@@ -319,7 +319,7 @@ fn draw_media_row(
         ui,
         Pos2::new(text_left, text_top + lh_title),
         Align2::LEFT_TOP,
-        &fit_one_line(ui, &meta, 9.5, (title_w - time_w - 8.0).max(10.0)),
+        &widgets::fit_one_line(ui, &meta, 9.5, (title_w - time_w - 8.0).max(10.0)),
         9.5,
         p.text_faint,
     );
@@ -897,13 +897,15 @@ fn clip_tab(
         }
 
         let mut icons_right = row.right() - 8.0;
-        if hovered {
-            let del = Rect::from_center_size(Pos2::new(icons_right - 8.0, row.center().y), Vec2::splat(20.0));
-            if widgets::icon_button(ui, del, Glyph::Trash, p, true).clicked() {
-                actions.push(Action::RemoveClip(item.id));
-            }
-            icons_right -= 22.0;
+        // The delete slot is reserved even when the pointer is elsewhere:
+        // allocating it only on hover shifted pin and collect 22 pt left the
+        // moment the pointer entered the row, so aiming at collect landed on
+        // the pin (and at the pin landed on the trash).
+        let del = Rect::from_center_size(Pos2::new(icons_right - 8.0, row.center().y), Vec2::splat(20.0));
+        if hovered && widgets::icon_button(ui, del, Glyph::Trash, p, true).clicked() {
+            actions.push(Action::RemoveClip(item.id));
         }
+        icons_right -= 22.0;
         let pin = Rect::from_center_size(Pos2::new(icons_right - 8.0, row.center().y), Vec2::splat(20.0));
         if widgets::icon_button(ui, pin, Glyph::Pin, p, false).clicked() {
             actions.push(Action::PinClip(item.id));
@@ -1220,7 +1222,7 @@ fn inbox_tab(
             ui,
             Pos2::new(row.left() + 12.0, title_y),
             Align2::LEFT_TOP,
-            &fit_one_line(ui, &title, 12.0, title_w),
+            &widgets::fit_one_line(ui, &title, 12.0, title_w),
             12.0,
             title_color,
         );
@@ -1229,7 +1231,7 @@ fn inbox_tab(
                 ui,
                 Pos2::new(row.left() + 12.0, title_y + lh_title),
                 Align2::LEFT_TOP,
-                &fit_one_line(ui, &detail, 9.5, title_w),
+                &widgets::fit_one_line(ui, &detail, 9.5, title_w),
                 9.5,
                 p.text_faint,
             );
@@ -1366,7 +1368,7 @@ fn live_tab(
             ui,
             Pos2::new(inner.left(), inner.top()),
             Align2::LEFT_TOP,
-            &fit_one_line(ui, &card.title, 12.5, inner.width() - 52.0),
+            &widgets::fit_one_line(ui, &card.title, 12.5, inner.width() - 52.0),
             12.5,
             p.text,
         );
@@ -1507,11 +1509,14 @@ fn search_tab(
         Vec::new()
     };
 
-    // Enter opens the first row; Ctrl+Enter reveals it. Handled while the
-    // field still owns the focus, then focus is handed straight back so the
-    // user can keep narrowing the query.
-    if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-        let reveal = ui.input(|i| i.modifiers.command);
+    // Enter opens the first row; Ctrl+Enter reveals it. The two are detected
+    // differently: egui's TextEdit only surrenders focus for a *plain* Enter
+    // (`return_key` matches `Modifiers::NONE`), so with Ctrl held `lost_focus`
+    // never fires — the reveal branch has to watch the key on its own. Focus
+    // is handed straight back so the user can keep narrowing the query.
+    let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
+    let reveal = ui.input(|i| i.modifiers.command);
+    if enter && (reveal || resp.lost_focus()) {
         let first = apps
             .first()
             .map(|a| a.path.to_string_lossy().to_string())
@@ -1523,7 +1528,9 @@ fn search_tab(
                 Action::OpenPath(path)
             });
         }
-        resp.request_focus();
+        if !reveal {
+            resp.request_focus();
+        }
     }
 
     enum Row<'a> {
@@ -1609,7 +1616,7 @@ fn search_tab(
                     ui,
                     Pos2::new(r.left() + 1.0, mid),
                     Align2::LEFT_CENTER,
-                    &fit_one_line(ui, &app.name, 12.0, r.width() - 6.0),
+                    &widgets::fit_one_line(ui, &app.name, 12.0, r.width() - 6.0),
                     12.0,
                     p.text,
                 );
@@ -1640,7 +1647,7 @@ fn search_tab(
                     ui,
                     Pos2::new(r.left() + 1.0, r.top() + 4.0),
                     Align2::LEFT_TOP,
-                    &fit_one_line(ui, &file.name, 12.0, r.width() - 6.0),
+                    &widgets::fit_one_line(ui, &file.name, 12.0, r.width() - 6.0),
                     12.0,
                     p.text,
                 );
@@ -1648,7 +1655,7 @@ fn search_tab(
                     ui,
                     Pos2::new(r.left() + 1.0, r.top() + 19.0),
                     Align2::LEFT_TOP,
-                    &fit_one_line(ui, &file.dir, 9.0, r.width() - 6.0),
+                    &widgets::fit_one_line(ui, &file.dir, 9.0, r.width() - 6.0),
                     9.0,
                     p.text_faint,
                 );
@@ -2221,43 +2228,4 @@ fn clip_row_h(ui: &egui::Ui, item: &ClipItem, text_w: f32) -> f32 {
             (lines * line + PAD).max(34.0)
         }
     }
-}
-
-/// Trims `text` to a single line of `max_w` at `size`, ending in an ellipsis.
-///
-/// Measured, not counted: a 12 pt CJK glyph is about twice as wide as a 12 pt
-/// Latin one, so "40 characters" is either a wasted line or two inches of
-/// overflow depending on the string. Binary search over the prefix length keeps
-/// this to a handful of layout calls per row.
-fn fit_one_line(ui: &Ui, text: &str, size: f32, max_w: f32) -> String {
-    if max_w <= 0.0 {
-        return String::new();
-    }
-    let font = FontId::proportional(size);
-    let width = |s: &str| {
-        ui.fonts(|f| {
-            f.layout_no_wrap(s.to_owned(), font.clone(), Color32::WHITE)
-                .size()
-                .x
-        })
-    };
-    if width(text) <= max_w {
-        return text.to_string();
-    }
-    let chars: Vec<char> = text.chars().collect();
-    let mut lo = 0usize;
-    let mut hi = chars.len();
-    while lo < hi {
-        let mid = (lo + hi + 1) / 2;
-        let cand: String = chars[..mid].iter().collect::<String>() + "…";
-        if width(&cand) <= max_w {
-            lo = mid;
-        } else {
-            hi = mid - 1;
-        }
-    }
-    if lo == 0 {
-        return "…".to_string();
-    }
-    chars[..lo].iter().collect::<String>() + "…"
 }

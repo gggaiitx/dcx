@@ -2811,7 +2811,7 @@ impl SettingsApp {
                 p,
                 RowIcon::Doc,
                 "访问令牌",
-                "存于 island_api_token.txt 供本机脚本读取；重置后立即生效，无需重启",
+                "存于 island_api_token.txt，供本机脚本读取",
                 380.0,
                 |ui| {
                     let exists = dcx_island_config::api_token::read().is_some();
@@ -2839,7 +2839,7 @@ impl SettingsApp {
                 p,
                 RowIcon::Info,
                 "能力边界",
-                "除 /v1/health 外均需 Bearer 令牌；只有打开链接/文件夹/面板三类动作，没有执行命令。脚本用法：dcx-island.exe --push '{\"id\":\"build\",\"title\":\"构建中\",\"progress\":0.4}'",
+                "除 /v1/health 外均需 Bearer 令牌；动作只有打开链接/文件夹/面板，无执行命令",
                 |ui| {
                     ui.allocate_exact_size(egui::vec2(8.0, 8.0), Sense::hover());
                 },

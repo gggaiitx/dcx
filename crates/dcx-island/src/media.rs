@@ -66,7 +66,9 @@ pub struct Snapshot {
     pub duration: f64,
     /// Playback rate (podcasts); 1.0 when unreported.
     pub rate: f64,
-    pub cover: Option<Cover>,
+    /// Shared, not cloned: a snapshot is sent every second and the RGBA
+    /// buffer may be a quarter of a megabyte.
+    pub cover: Option<Arc<Cover>>,
 }
 
 pub enum Msg {
@@ -220,7 +222,7 @@ fn run(tx: Sender<Msg>, cmd_rx: Receiver<Cmd>, stop: Arc<AtomicBool>) {
     let mut session: Option<Subscribed> = None;
     // Cover art is re-read only when the track identity changes.
     let mut cover_key = String::new();
-    let mut cover: Option<Cover> = None;
+    let mut cover: Option<Arc<Cover>> = None;
     let mut next_poll = Instant::now();
 
     loop {
@@ -351,7 +353,7 @@ fn reconcile(
 fn sample(
     session: &GlobalSystemMediaTransportControlsSession,
     cover_key: &mut String,
-    cover: &mut Option<Cover>,
+    cover: &mut Option<Arc<Cover>>,
 ) -> Option<Snapshot> {
     // A session that cannot answer a synchronous properties read is closing.
     let props = session.TryGetMediaPropertiesAsync().ok()?.join().ok()?;
@@ -402,11 +404,10 @@ fn sample(
     let key = format!("{title}\u{1}{artist}\u{1}{album}");
     if *cover_key != key {
         *cover_key = key;
-        *cover = read_cover(&props);
+        *cover = read_cover(&props).map(Arc::new);
     }
 
-    // The clone is per-sample; the RGBA buffer itself is shared until the
-    // art changes.
+    // The clone is per-sample and only copies the `Arc`.
     let cover = cover.clone();
     Some(Snapshot {
         title,

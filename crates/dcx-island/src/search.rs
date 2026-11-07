@@ -5,8 +5,11 @@
 //! code 2 means the index snapshot is missing or stale and its stderr is shown
 //! verbatim — an honest "index not built yet" beats an empty list.
 
+use std::io::Read;
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
 use std::sync::mpsc::{channel, Receiver};
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
@@ -39,6 +42,10 @@ pub fn start(query: String, limit: usize) -> Receiver<Outcome> {
     rx
 }
 
+/// A child that hangs on a damaged snapshot must not wedge the tab: the
+/// process is killed after this and reported as a timeout.
+const CHILD_TIMEOUT: Duration = Duration::from_secs(5);
+
 fn run(query: &str, limit: usize) -> Outcome {
     let error = |msg: String| Outcome {
         query: query.to_string(),
@@ -48,23 +55,59 @@ fn run(query: &str, limit: usize) -> Outcome {
     let Some(exe) = exe_path() else {
         return error("找不到 dcx-search.exe（应与信息岛放在同一目录）".to_string());
     };
-    let out = match std::process::Command::new(&exe)
+    let child = Command::new(&exe)
         .args(["--query", query, "--limit", &limit.to_string(), "--json"])
-        .output()
-    {
-        Ok(o) => o,
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn();
+    let mut child = match child {
+        Ok(c) => c,
         Err(e) => return error(format!("启动文件检索失败：{e}")),
     };
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        let msg = if stderr.is_empty() {
-            format!("检索退出码 {:?}", out.status.code())
+
+    let deadline = Instant::now() + CHILD_TIMEOUT;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break None;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return error(format!("等待检索进程失败：{e}"));
+            }
+        }
+    };
+    let Some(status) = status else {
+        return error("文件检索超时（索引可能损坏，重新打开一次文件检索可重建）".to_string());
+    };
+
+    // Read after exit; the JSON is capped by `--limit`, so the pipe cannot
+    // have blocked the child on a full buffer in practice.
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    if let Some(mut pipe) = child.stdout.take() {
+        let _ = pipe.read_to_end(&mut stdout);
+    }
+    if let Some(mut pipe) = child.stderr.take() {
+        let _ = pipe.read_to_end(&mut stderr);
+    }
+    if !status.success() {
+        let text = String::from_utf8_lossy(&stderr).trim().to_string();
+        let msg = if text.is_empty() {
+            format!("检索退出码 {:?}", status.code())
         } else {
-            stderr
+            text
         };
         return error(msg);
     }
-    match serde_json::from_str::<Reply>(&String::from_utf8_lossy(&out.stdout)) {
+    match serde_json::from_slice::<Reply>(&stdout) {
         Ok(reply) => Outcome {
             query: query.to_string(),
             hits: reply.hits,

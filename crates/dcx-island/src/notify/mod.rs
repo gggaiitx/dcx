@@ -133,7 +133,7 @@ impl Notifier {
                     &hit.app,
                     &title,
                     &hit.body,
-                    &format!("toast-{}", hit.id),
+                    &format!("toast-{}-{}", hit.app_id, hit.id),
                 );
             }
             // One listener, two channels: mirror its health to whichever

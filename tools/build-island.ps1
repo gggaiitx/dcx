@@ -20,10 +20,16 @@ param(
 
 $ErrorActionPreference = "Continue"
 $root = Split-Path -Parent $PSScriptRoot
+$script:lastPush = [DateTime]::MinValue
 
 function Push-Card {
-    param([string]$Title, [string]$Body, [double]$Progress, [int]$Ttl)
+    param([string]$Title, [string]$Body, [double]$Progress, [int]$Ttl, [switch]$Force)
     if ($NoPush) { return }
+    # A fresh powershell per "Compiling" line measurably slowed the build; a
+    # progress card only needs to move every couple of seconds.
+    $now = Get-Date
+    if (-not $Force -and ($now - $script:lastPush).TotalSeconds -lt 2) { return }
+    $script:lastPush = $now
     try {
         & "$PSScriptRoot\island-push.ps1" -Id "build-$Package" -Title $Title -Body $Body `
             -Progress $Progress -Ttl $Ttl -Port $Port | Out-Null
@@ -35,7 +41,7 @@ function Push-Card {
 }
 
 $cardTitle = if ($Profile -eq "release") { "构建 $Package（release）" } else { "构建 $Package" }
-Push-Card -Title $cardTitle -Body "准备编译…" -Progress 0 -Ttl 900
+Push-Card -Title $cardTitle -Body "准备编译…" -Progress 0 -Ttl 900 -Force
 
 $compiled = 0
 $tail = New-Object System.Collections.Generic.Queue[string]
@@ -61,11 +67,11 @@ if ($Profile -eq "release") { $cargoArgs += "--release" }
 
 if ($LASTEXITCODE -eq 0) {
     $out = if ($Profile -eq "release") { "target\release" } else { "target\debug" }
-    Push-Card -Title "$Package 构建成功" -Body ("{0} 个 crate · {1}" -f $compiled, $out) -Progress 1.0 -Ttl 12
+    Push-Card -Title "$Package 构建成功" -Body ("{0} 个 crate · {1}" -f $compiled, $out) -Progress 1.0 -Ttl 12 -Force
     exit 0
 }
 
 $detail = ($tail.ToArray() -join "`n")
 if (-not $detail) { $detail = "cargo 退出码 $LASTEXITCODE" }
-Push-Card -Title "$Package 构建失败" -Body $detail -Progress 1.0 -Ttl 30
+Push-Card -Title "$Package 构建失败" -Body $detail -Progress 1.0 -Ttl 30 -Force
 exit $LASTEXITCODE

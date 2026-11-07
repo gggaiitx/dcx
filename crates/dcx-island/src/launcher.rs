@@ -9,6 +9,9 @@ use std::sync::mpsc::{channel, Receiver};
 #[derive(Clone, Debug)]
 pub struct AppEntry {
     pub name: String,
+    /// Lowercase copy made once at scan time: filtering runs on every frame
+    /// while a query is open and must not lowercase the whole start menu.
+    pub name_lower: String,
     pub path: PathBuf,
 }
 
@@ -54,14 +57,14 @@ pub fn matches<'a>(apps: &'a [AppEntry], query: &str, limit: usize) -> Vec<&'a A
     }
     let mut hits: Vec<&AppEntry> = apps
         .iter()
-        .filter(|a| a.name.to_lowercase().contains(&q))
+        .filter(|a| a.name_lower.contains(&q))
         .collect();
     hits.sort_by(|a, b| {
-        let pa = a.name.to_lowercase().starts_with(&q);
-        let pb = b.name.to_lowercase().starts_with(&q);
+        let pa = a.name_lower.starts_with(&q);
+        let pb = b.name_lower.starts_with(&q);
         pb.cmp(&pa)
-            .then_with(|| a.name.chars().count().cmp(&b.name.chars().count()))
-            .then_with(|| a.name.cmp(&b.name))
+            .then_with(|| a.name_lower.chars().count().cmp(&b.name_lower.chars().count()))
+            .then_with(|| a.name_lower.cmp(&b.name_lower))
     });
     hits.truncate(limit);
     hits
@@ -79,10 +82,10 @@ fn scan() -> Vec<AppEntry> {
     for root in roots {
         walk(&root, 0, &mut out);
     }
-    out.sort_by_cached_key(|a| a.name.to_lowercase());
+    out.sort_by(|a, b| a.name_lower.cmp(&b.name_lower));
     // The two start menus can carry the same shortcut; two identical rows in
     // a five-row list is a waste of a row.
-    out.dedup_by(|a, b| a.name.to_lowercase() == b.name.to_lowercase());
+    out.dedup_by(|a, b| a.name_lower == b.name_lower);
     out
 }
 
@@ -107,7 +110,11 @@ fn walk(dir: &Path, depth: u8, out: &mut Vec<AppEntry>) {
             if let Some(stem) = path.file_stem() {
                 let name = stem.to_string_lossy().trim().to_string();
                 if !name.is_empty() && !name.starts_with('~') {
-                    out.push(AppEntry { name, path });
+                    out.push(AppEntry {
+                        name_lower: name.to_lowercase(),
+                        name,
+                        path,
+                    });
                 }
             }
         }

@@ -373,15 +373,15 @@ pub fn draw(
             let avail = (right - text_left).max(0.0);
             // Body colour, not accent: the task name has to stay as readable as
             // the clock it sits next to. The bell and the ring carry "reminder".
-            let galley = ui.painter().layout(
-                task.clone(),
-                FontId::proportional(11.0),
-                p.text,
-                avail,
-            );
-            let h = galley.size().y.min(rect.height() - 6.0);
-            let pos = Pos2::new(text_left, mid_y - h * 0.5);
-            let clip = Rect::from_min_size(pos, Vec2::new(avail, h));
+            // One line, ellipsised by measurement: wrapping inside a 28 pt
+            // pill clipped the second line through its glyphs, which read as a
+            // rendering fault rather than as "the title continues".
+            let text = widgets::fit_one_line(ui, task, 11.0, avail);
+            let galley = ui
+                .painter()
+                .layout_no_wrap(text, FontId::proportional(11.0), p.text);
+            let pos = Pos2::new(text_left, mid_y - galley.size().y * 0.5);
+            let clip = Rect::from_min_size(pos, Vec2::new(avail, galley.size().y));
             ui.painter().with_clip_rect(clip).galley(pos, galley, p.text);
         }
     }
