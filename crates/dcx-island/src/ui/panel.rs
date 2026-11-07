@@ -58,6 +58,8 @@ pub struct PanelState<'a> {
     pub task_input: &'a mut String,
     pub task_time: &'a mut String,
     pub task_repeat: &'a mut crate::tasks::Repeat,
+    /// Minutes between reminders while composing; 0 = one reminder a day.
+    pub task_every: &'a mut u32,
     pub clip_query: &'a mut String,
     /// Wheel offset of the two scrollable lists, in points (see [`scroll`]).
     pub clip_scroll: &'a mut f32,
@@ -294,19 +296,33 @@ fn tasks_tab(
     widgets::round_rect(ui, composer, 9.0, p.surface_alt, Stroke::new(1.0_f32, p.divider));
 
     let add_w = 30.0;
-    let time_w = 50.0;
-    let repeat_w = 52.0;
+    // The export action lives in this tab's tool row, at the same slot the
+    // clipboard tab puts its "clear" button in: tab-scoped actions stay on the
+    // tab that owns the data. It used to sit in the panel's title row, where it
+    // meant nothing until you guessed which list it exported.
+    let doc_w = 24.0;
+    let time_w = 62.0;
+    let repeat_w = 48.0;
+    let every_w = 46.0;
+    let tail = add_w + doc_w + time_w + repeat_w + every_w;
     let field = Rect::from_min_max(
         composer.min + Vec2::new(8.0, 4.0),
         Pos2::new(
-            composer.right() - (add_w + time_w + repeat_w + 14.0),
+            composer.right() - (tail + 14.0),
             composer.bottom() - 4.0,
         ),
     );
     let resp = ui.put(
         field,
         egui::TextEdit::singleline(st.task_input)
-            .hint_text("添加任务，回车确认")
+            // The hint has to fit the field it is drawn in: at the panel's
+            // minimum width the long hint ran into the time field's own hint and
+            // the row read "添加任务，时间" as if it were one string.
+            .hint_text(if field.width() > 118.0 {
+                "添加任务，回车确认"
+            } else {
+                "新任务"
+            })
             .frame(false)
             .text_color(p.text)
             .margin(egui::Margin::symmetric(2.0, 4.0)),
@@ -316,52 +332,64 @@ fn tasks_tab(
         resp.request_focus();
     }
 
-    // Reminder time field: accepts `15:30`, empty means no reminder.
+    // Reminder time field: accepts `15:30`, or `09:00-18:00` for an interval.
+    // Empty means no reminder.
+    let mut x = composer.right() - (tail + 8.0);
     let time_rect = Rect::from_min_size(
-        Pos2::new(composer.right() - (add_w + time_w + repeat_w + 8.0), composer.top() + 4.0),
+        Pos2::new(x, composer.top() + 4.0),
         Vec2::new(time_w, composer.height() - 8.0),
     );
     // Colour is computed before the widget takes its mutable borrow of the
     // text buffer; reading the same String inside the builder chain is a
     // second borrow and does not compile.
-    let time_color = if crate::clock::parse_hhmm(st.task_time).is_some()
-        || st.task_time.trim().is_empty()
-    {
-        p.text_dim
-    } else {
-        p.danger
-    };
+    let time_ok = crate::clock::parse_hhmm_span(st.task_time).is_some()
+        || st.task_time.trim().is_empty();
+    let time_color = if time_ok { p.text_dim } else { p.danger };
     ui.put(
         time_rect,
         egui::TextEdit::singleline(st.task_time)
-            .hint_text("时间")
+            // A format hint, not a label: "09:00" tells the user what to type in
+            // the space where they type it, and stays short enough to fit.
+            .hint_text("09:00")
             .frame(false)
             .text_color(time_color)
             .margin(egui::Margin::symmetric(2.0, 4.0)),
-    );
+    )
+    .on_hover_text("09:00 单次；09:00-18:00 表示区间（配合右侧间隔）");
 
+    x = time_rect.right() + 2.0;
     let repeat_rect = Rect::from_min_size(
-        Pos2::new(time_rect.right() + 2.0, composer.top() + 4.0),
+        Pos2::new(x, composer.top() + 4.0),
         Vec2::new(repeat_w, composer.height() - 8.0),
     );
-    let rresp = ui.allocate_rect(repeat_rect, egui::Sense::click());
-    if rresp.hovered() {
-        widgets::round_rect(ui, repeat_rect.shrink(2.0), 6.0, p.accent_soft, Stroke::NONE);
-    }
-    widgets::text(
-        ui,
-        repeat_rect.center(),
-        Align2::CENTER_CENTER,
-        st.task_repeat.label(),
-        10.0,
-        p.text_dim,
-    );
-    if rresp.clicked() {
+    if cycle_chip(ui, repeat_rect, p, st.task_repeat.label(), false).clicked() {
         *st.task_repeat = match *st.task_repeat {
             crate::tasks::Repeat::Once => crate::tasks::Repeat::Daily,
             crate::tasks::Repeat::Daily => crate::tasks::Repeat::Workdays,
             crate::tasks::Repeat::Workdays => crate::tasks::Repeat::Weekly,
             crate::tasks::Repeat::Weekly => crate::tasks::Repeat::Once,
+        };
+    }
+
+    // Interval chip: how often inside the day. Deliberately a separate control
+    // from the repeat chip, because they answer different questions — "which
+    // days" and "how often within a day". Merging them into one five-value
+    // cycle would make "工作日每半小时" reachable only through an obscure order.
+    x = repeat_rect.right() + 2.0;
+    let every_rect = Rect::from_min_size(
+        Pos2::new(x, composer.top() + 4.0),
+        Vec2::new(every_w, composer.height() - 8.0),
+    );
+    if cycle_chip(ui, every_rect, p, every_label(*st.task_every), *st.task_every > 0)
+        .on_hover_text("每半小时提醒一次，例如工作日 09:00-18:00 每 30 分钟")
+        .clicked()
+    {
+        *st.task_every = match *st.task_every {
+            0 => 15,
+            15 => 30,
+            30 => 60,
+            60 => 120,
+            _ => 0,
         };
     }
 
@@ -371,6 +399,17 @@ fn tasks_tab(
     );
     if widgets::icon_button(ui, add_rect, Glyph::Plus, p, false).clicked() {
         actions.push(Action::AddTask);
+    }
+
+    let doc_rect = Rect::from_min_size(
+        Pos2::new(add_rect.left() - doc_w + 2.0, composer.top() + 3.0),
+        Vec2::new(doc_w - 4.0, composer.height() - 6.0),
+    );
+    if widgets::icon_button(ui, doc_rect, Glyph::Doc, p, false)
+        .on_hover_text("把今天的任务导出为 Markdown")
+        .clicked()
+    {
+        actions.push(Action::Archive);
     }
 
     // -- list --------------------------------------------------------------
@@ -431,7 +470,11 @@ fn draw_task_row(ui: &mut egui::Ui, row: Rect, p: &Palette, task: &Task, actions
 
     // Title (click = make current).
     let title_color = if task.done { p.text_faint } else { p.text };
-    let title_right = row.right() - 92.0;
+    // An interval row shows two lines on the right (repeat + interval above,
+    // the window below), so it needs more room than a plain row's one time.
+    let interval = task.is_interval();
+    let right_reserve = if interval { 118.0 } else { 92.0 };
+    let title_right = row.right() - right_reserve;
     let title_rect = Rect::from_min_max(
         Pos2::new(circle.right() + 8.0, row.top()),
         Pos2::new(title_right.max(circle.right() + 30.0), row.bottom()),
@@ -473,31 +516,71 @@ fn draw_task_row(ui: &mut egui::Ui, row: Rect, p: &Palette, task: &Task, actions
         }
         right -= 24.0;
     }
-    if task.repeat != crate::tasks::Repeat::Once {
+    let clock = crate::clock::Clock::now();
+    let overdue = task.due_now(&clock.iso_date(), clock.secs_of_day());
+    let time_colour = if overdue { p.danger } else { p.text_dim };
+    if interval {
+        // Two lines instead of one: `工作日 · 每30分` over `09:00–18:00`. Squeezed
+        // into a single line the row would either truncate the window or push
+        // the title down to a few characters.
+        let every = task.every.unwrap_or(0);
+        let meta = if task.repeat == crate::tasks::Repeat::Once {
+            short_every(every)
+        } else {
+            format!("{} · {}", task.repeat.label(), short_every(every))
+        };
         widgets::text(
             ui,
-            Pos2::new(right, row.center().y),
+            Pos2::new(right, row.center().y - 7.0),
             Align2::RIGHT_CENTER,
-            task.repeat.label(),
-            9.5,
+            &meta,
+            9.0,
             p.text_faint,
         );
-        right -= 30.0;
+        if let Some(window) = task.window_label() {
+            widgets::mono_text(
+                ui,
+                Pos2::new(right, row.center().y + 7.0),
+                Align2::RIGHT_CENTER,
+                &window,
+                10.0,
+                time_colour,
+            );
+        }
+    } else {
+        if task.repeat != crate::tasks::Repeat::Once {
+            widgets::text(
+                ui,
+                Pos2::new(right, row.center().y),
+                Align2::RIGHT_CENTER,
+                task.repeat.label(),
+                9.5,
+                p.text_faint,
+            );
+            right -= 30.0;
+        }
+        if let Some(at) = task.at {
+            let text = format!("{:02}:{:02}", at / 3600, (at % 3600) / 60);
+            widgets::mono_text(
+                ui,
+                Pos2::new(right, row.center().y),
+                Align2::RIGHT_CENTER,
+                &text,
+                10.5,
+                time_colour,
+            );
+        }
     }
-    if let Some(at) = task.at {
-        let text = format!("{:02}:{:02}", at / 3600, (at % 3600) / 60);
-        let overdue = !task.done && task.day == crate::clock::Clock::now().iso_date() && {
-            let now = crate::clock::Clock::now().secs_of_day();
-            now >= at && now <= at + 1800
-        };
-        widgets::mono_text(
-            ui,
-            Pos2::new(right, row.center().y),
-            Align2::RIGHT_CENTER,
-            &text,
-            10.5,
-            if overdue { p.danger } else { p.text_dim },
-        );
+}
+
+/// `每30分` / `每2时` — the short form used inside a task row.
+fn short_every(minutes: u32) -> String {
+    if minutes == 0 {
+        String::new()
+    } else if minutes % 60 == 0 {
+        format!("每{}时", minutes / 60)
+    } else {
+        format!("每{}分", minutes)
     }
 }
 
@@ -691,7 +774,31 @@ fn inbox_tab(
         .map(|(s, c)| (*s, c.state.clone(), c.last_at, c.note))
         .collect();
 
-    let mut y = rect.top();
+    // Every tab opens with its own tool row at the top and its actions
+    // right-aligned. The inbox used to put "全部已读 / 清空" *below* the channel
+    // cards, so it was the only tab whose actions sat in the middle of the page
+    // — the same two controls changed height depending on which tab you were on,
+    // which is exactly what makes a panel feel assembled rather than designed.
+    let toolbar = Rect::from_min_size(
+        Pos2::new(rect.left(), rect.top()),
+        Vec2::new(rect.width(), 22.0),
+    );
+    let read_all = Rect::from_min_size(
+        Pos2::new(toolbar.right() - 140.0, toolbar.top()),
+        Vec2::new(64.0, 20.0),
+    );
+    let clear = Rect::from_min_size(
+        Pos2::new(toolbar.right() - 68.0, toolbar.top()),
+        Vec2::new(64.0, 20.0),
+    );
+    if small_button(ui, read_all, p, "全部已读").clicked() {
+        actions.push(Action::MarkAllRead);
+    }
+    if small_button(ui, clear, p, "清空").clicked() {
+        actions.push(Action::ClearInbox);
+    }
+
+    let mut y = toolbar.bottom() + 6.0;
     for (source, state, last_at, note) in &channels {
         let row = Rect::from_min_size(Pos2::new(rect.left(), y), Vec2::new(rect.width(), card_h));
         let (r, g, b) = source.color();
@@ -742,29 +849,12 @@ fn inbox_tab(
         y += card_h;
     }
 
-    y += 4.0;
+    y += 2.0;
     ui.painter().line_segment(
         [Pos2::new(rect.left(), y), Pos2::new(rect.right(), y)],
         Stroke::new(1.0_f32, p.divider),
     );
     y += 6.0;
-
-    let toolbar = Rect::from_min_size(Pos2::new(rect.left(), y), Vec2::new(rect.width(), 22.0));
-    let read_all = Rect::from_min_size(
-        Pos2::new(toolbar.right() - 140.0, toolbar.top()),
-        Vec2::new(64.0, 20.0),
-    );
-    let clear = Rect::from_min_size(
-        Pos2::new(toolbar.right() - 68.0, toolbar.top()),
-        Vec2::new(64.0, 20.0),
-    );
-    if small_button(ui, read_all, p, "全部已读").clicked() {
-        actions.push(Action::MarkAllRead);
-    }
-    if small_button(ui, clear, p, "清空").clicked() {
-        actions.push(Action::ClearInbox);
-    }
-    y += 26.0;
 
     let items: Vec<_> = st
         .inbox
@@ -1168,6 +1258,45 @@ fn small_button(
         if resp.hovered() { p.accent } else { p.text_dim },
     );
     resp
+}
+
+/// Compact cycling chip used by the task composer for 重复 and 间隔. The caller
+/// owns the value and the cycle order — the chip only draws and reports clicks.
+///
+/// It carries a faint plate even when idle: as bare grey text the two chips read
+/// as labels, and a label is not something a user tries to click. `active` (an
+/// interval is set) tints both the plate and the text so the row shows at a
+/// glance that this task reminds more than once.
+fn cycle_chip(ui: &mut egui::Ui, rect: Rect, p: &Palette, label: &str, active: bool) -> egui::Response {
+    let resp = ui.allocate_rect(rect, egui::Sense::click());
+    let plate = rect.shrink2(Vec2::new(1.0, 3.0));
+    let fill = if resp.hovered() {
+        p.accent_soft
+    } else if active {
+        with_alpha(p.accent, 0.10)
+    } else {
+        with_alpha(p.surface_alt, 0.9)
+    };
+    widgets::round_rect(ui, plate, 6.0, fill, Stroke::NONE);
+    let colour = if resp.hovered() || active {
+        p.accent
+    } else {
+        p.text_dim
+    };
+    widgets::text(ui, rect.center(), Align2::CENTER_CENTER, label, 9.5, colour);
+    resp
+}
+
+/// Chip label for the composer's interval state. `0` is "once a day", which is
+/// the default and has to read as a non-choice rather than as a value.
+fn every_label(minutes: u32) -> &'static str {
+    match minutes {
+        15 => "15分",
+        30 => "30分",
+        60 => "1时",
+        120 => "2时",
+        _ => "单次",
+    }
 }
 
 fn with_alpha(color: Color32, factor: f32) -> Color32 {

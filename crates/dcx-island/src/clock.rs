@@ -103,6 +103,31 @@ pub fn parse_hhmm(text: &str) -> Option<u32> {
     Some(h * 3600 + m * 60)
 }
 
+/// `09:00-18:00` → start plus an optional end. A bare `09:00` yields no end,
+/// which the task editor turns into "eight hours from the start" when an
+/// interval is set. Returns `None` for anything malformed so the editor can
+/// show its inline error instead of silently storing midnight.
+pub fn parse_hhmm_span(text: &str) -> Option<(u32, Option<u32>)> {
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    // Accept the three dashes a Chinese keyboard produces: -, –, —, plus ~.
+    let split = text
+        .split_once(|c: char| matches!(c, '-' | '–' | '—' | '~' | '～'))
+        .map(|(a, b)| (a.to_string(), Some(b.to_string())));
+    let (start_text, end_text) = match split {
+        Some((a, b)) => (a, b.filter(|s| !s.trim().is_empty())),
+        None => (text.to_string(), None),
+    };
+    let start = parse_hhmm(&start_text)?;
+    let end = match end_text {
+        Some(e) => Some(parse_hhmm(&e)?),
+        None => None,
+    };
+    Some((start, end))
+}
+
 pub fn hhmm_of(secs: u32) -> String {
     let s = secs % 86_400;
     format!("{:02}:{:02}", s / 3600, (s % 3600) / 60)

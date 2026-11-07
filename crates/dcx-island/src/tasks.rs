@@ -20,9 +20,32 @@
 //! the day passing, advances that day instead of creating a new task. This is
 //! why "carry over" must not touch repeating tasks: shifting their day to today
 //! would fire a reminder they already had.
+//!
+//! There are two independent axes and they are deliberately not merged:
+//!
+//! - [`Task::repeat`] is **which days** the task exists on (once / daily /
+//!   weekdays / weekly);
+//! - [`Task::every`] is **how often within one day** it reminds, starting at
+//!   [`Task::at`] and ending at [`Task::until`].
+//!
+//! "工作日上午九点到下午六点每半小时提醒" is therefore `repeat = workdays`,
+//! `at = 09:00`, `every = 30`, `until = 18:00` — one record, not forty. A day
+//! with an interval fires up to `(until - at) / every + 1` times, and the fire
+//! key is the **slot**, not the day, so each slot fires exactly once even across
+//! restarts.
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+
+/// How long an interval window lasts when the user only typed a start time.
+/// Eight hours from 09:00 is a working day, which is the case this feature was
+/// asked for; anything longer turns "每半小时" into an evening of popups.
+const DEFAULT_WINDOW: u32 = 8 * 3600;
+
+/// A reminder more than this late is stale: the machine was asleep or the app
+/// was closed. Firing it would pop a notification about something the user has
+/// already moved past.
+const STALE_AFTER: u32 = 1800;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -73,9 +96,18 @@ pub struct Task {
     pub note: String,
     /// Local calendar day this task belongs to, `YYYY-MM-DD`.
     pub day: String,
-    /// Reminder time as seconds of day. `None` = no reminder.
+    /// Reminder time as seconds of day. `None` = no reminder. For an interval
+    /// task this is the **first** slot of the day.
     #[serde(default)]
     pub at: Option<u32>,
+    /// Minutes between reminders inside the day. `None` = a single reminder at
+    /// `at`. Only meaningful together with `at`.
+    #[serde(default)]
+    pub every: Option<u32>,
+    /// Last slot of the day, inclusive. Only meaningful with `every`; a file
+    /// written by an older build has neither field and keeps working.
+    #[serde(default)]
+    pub until: Option<u32>,
     #[serde(default = "once")]
     pub repeat: Repeat,
     #[serde(default)]
@@ -102,13 +134,96 @@ impl Task {
         self.repeat != Repeat::Once
     }
 
-    /// Reminder key for the current day and time.
-    pub fn fire_key(&self, day: &str) -> String {
-        match self.at {
-            Some(secs) => format!("{day}@{:02}:{:02}", secs / 3600, (secs % 3600) / 60),
-            None => format!("{day}@-"),
+    /// True when the task reminds more than once a day.
+    pub fn is_interval(&self) -> bool {
+        self.every.is_some_and(|e| e > 0) && self.at.is_some()
+    }
+
+    /// Last slot the day will remind at. For a single reminder this is `at`.
+    pub fn last_slot(&self) -> Option<u32> {
+        let at = self.at?;
+        match self.every.filter(|e| *e > 0) {
+            None => Some(at),
+            Some(_) => Some(self.until.unwrap_or(at).max(at)),
         }
     }
+
+    /// The most recent slot that is not in the future, or `None` before the
+    /// first one. This is what the tick loop asks: it is deliberately
+    /// self-correcting rather than a queue, so a machine that was asleep for
+    /// three hours fires **once** (the slot that just passed) instead of
+    /// replaying the backlog.
+    pub fn slot_before_or_at(&self, now: u32) -> Option<u32> {
+        let at = self.at?;
+        if now < at {
+            return None;
+        }
+        let Some(every) = self.every.filter(|e| *e > 0) else {
+            return Some(at);
+        };
+        let step = every as u64 * 60;
+        let end = self.until.unwrap_or(at).max(at);
+        let now = now as u64;
+        let at64 = at as u64;
+        let mut slot = at64 + (now - at64) / step * step;
+        if slot > end as u64 {
+            // Past the window: the last grid point at or before `end`.
+            slot = at64 + (end as u64 - at64) / step * step;
+        }
+        Some(slot as u32)
+    }
+
+    /// Per-slot fire key, `YYYY-MM-DD@HH:MM`. One key per reminder, so the same
+    /// day can fire many times without a `Vec` of history.
+    pub fn slot_key(&self, day: &str, slot: u32) -> String {
+        format!("{day}@{:02}:{:02}", (slot / 3600) % 24, (slot % 3600) / 60)
+    }
+
+    /// `每 30 分钟` / `每 2 小时` — the interval as the user reads it.
+    pub fn every_label(&self) -> Option<String> {
+        let every = self.every.filter(|e| *e > 0)?;
+        Some(if every % 60 == 0 {
+            format!("每 {} 小时", every / 60)
+        } else if every > 60 {
+            format!("每 {} 小时 {} 分", every / 60, every % 60)
+        } else {
+            format!("每 {every} 分钟")
+        })
+    }
+
+    /// `09:00–18:00` for an interval task, `09:00` for a single one.
+    pub fn window_label(&self) -> Option<String> {
+        let at = self.at?;
+        let head = crate::clock::hhmm_of(at);
+        match self.every.filter(|e| *e > 0) {
+            Some(_) => Some(format!("{head}–{}", crate::clock::hhmm_of(self.last_slot()?))),
+            None => Some(head),
+        }
+    }
+
+    /// True while a reminder for the slot that just passed is worth
+    /// highlighting in red. One-off reminders stay marked for half an hour (the
+    /// window in which they still deserve attention); an interval task is
+    /// marked only for [`Task::FRESH_INTERVAL`], because "within 30 minutes of
+    /// the last slot" is *always* true when the interval is 30 minutes and the
+    /// row would sit there permanently red.
+    pub fn due_now(&self, day: &str, now: u32) -> bool {
+        if self.done || self.day != day {
+            return false;
+        }
+        let Some(slot) = self.slot_before_or_at(now) else {
+            return false;
+        };
+        let window = if self.is_interval() {
+            Self::FRESH_INTERVAL
+        } else {
+            STALE_AFTER
+        };
+        now <= slot + window
+    }
+
+    /// How long an interval reminder stays highlighted after it fires.
+    const FRESH_INTERVAL: u32 = 300;
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -126,6 +241,21 @@ pub struct Store {
     /// edit was persisted.
     pub error: Option<String>,
     dirty: bool,
+}
+
+/// How a new task is described at the point of creation. A struct rather than
+/// six positional arguments: `at`/`until`/`every` are three `Option<u32>` of
+/// seconds and minutes, and swapping two of them silently produces a task that
+/// reminds at 09:30 every fifty minutes.
+pub struct NewTask<'a> {
+    pub title: &'a str,
+    pub day: &'a str,
+    pub at: Option<u32>,
+    /// End of the interval window; ignored when `every` is `None`.
+    pub until: Option<u32>,
+    /// Minutes between reminders.
+    pub every: Option<u32>,
+    pub repeat: Repeat,
 }
 
 impl Store {
@@ -156,16 +286,29 @@ impl Store {
         self.dirty = true;
     }
 
-    pub fn add(&mut self, title: &str, day: &str, at: Option<u32>, repeat: Repeat) -> u64 {
+    pub fn add(&mut self, new: NewTask<'_>) -> u64 {
         let id = self.file.next_id.max(1);
         self.file.next_id = id + 1;
+        // An interval needs a window; a single reminder must not carry one, or
+        // the list would print a range that means nothing.
+        let every = new.every.filter(|e| *e > 0 && new.at.is_some());
+        let until = match (every, new.at) {
+            (Some(_), Some(at)) => Some(
+                new.until
+                    .unwrap_or(at.saturating_add(DEFAULT_WINDOW))
+                    .max(at),
+            ),
+            _ => None,
+        };
         self.file.tasks.push(Task {
             id,
-            title: title.trim().to_string(),
+            title: new.title.trim().to_string(),
             note: String::new(),
-            day: day.to_string(),
-            at,
-            repeat,
+            day: new.day.to_string(),
+            at: new.at,
+            every,
+            until,
+            repeat: new.repeat,
             done: false,
             current: false,
             created_at: now_secs(),
@@ -286,8 +429,14 @@ impl Store {
         moved
     }
 
-    /// Reminders whose time has arrived and that have not fired today.
-    /// Marks them fired so the caller can be called every tick.
+    /// Reminders whose slot has arrived and that have not fired. Marks them
+    /// fired so the caller can be called every tick.
+    ///
+    /// An interval task is driven by [`Task::slot_before_or_at`] rather than by
+    /// a cursor: at most one reminder per task per tick, and only the slot that
+    /// just passed. Sleeping through three slots fires once, not three times —
+    /// a burst of catch-up notifications at wake-up is worse than a single
+    /// "it's time again".
     pub fn take_due(&mut self, today: &str, secs_of_day: u32) -> Vec<Task> {
         let mut due = Vec::new();
         for t in &mut self.file.tasks {
@@ -298,18 +447,19 @@ impl Store {
             if secs_of_day < at {
                 continue;
             }
-            // A reminder more than 30 minutes late is stale: the machine was
-            // asleep or the app was closed. Fire once, but do not pretend the
-            // user was notified on time.
-            if secs_of_day > at + 1800 {
-                t.fired_on = Some(t.fire_key(today));
+            let Some(slot) = t.slot_before_or_at(secs_of_day) else {
                 continue;
-            }
-            let key = t.fire_key(today);
+            };
+            let key = t.slot_key(today, slot);
             if t.fired_on.as_deref() == Some(key.as_str()) {
                 continue;
             }
+            // Mark before pushing: the key is what makes this idempotent, and
+            // the early returns below must leave it written.
             t.fired_on = Some(key);
+            if secs_of_day > slot + STALE_AFTER {
+                continue;
+            }
             due.push(t.clone());
         }
         if !due.is_empty() {
@@ -475,6 +625,38 @@ mod tests {
         Store::load(dir.join("tasks.json"))
     }
 
+    /// One-off / single-reminder task, the shape most tests need.
+    fn add(s: &mut Store, title: &str, day: &str, at: Option<u32>, repeat: Repeat) -> u64 {
+        s.add(NewTask {
+            title,
+            day,
+            at,
+            until: None,
+            every: None,
+            repeat,
+        })
+    }
+
+    /// Interval task: `every` minutes from `at` to `until`.
+    fn add_every(
+        s: &mut Store,
+        title: &str,
+        day: &str,
+        at: u32,
+        until: u32,
+        every: u32,
+        repeat: Repeat,
+    ) -> u64 {
+        s.add(NewTask {
+            title,
+            day,
+            at: Some(at),
+            until: Some(until),
+            every: Some(every),
+            repeat,
+        })
+    }
+
     #[test]
     fn civil_dates_round_trip() {
         for day in ["2026-11-07", "2024-02-29", "1999-12-31", "2100-01-01"] {
@@ -509,8 +691,8 @@ mod tests {
     #[test]
     fn carry_over_moves_one_offs_but_rolls_repeats() {
         let mut s = store("carry");
-        let a = s.add("写周报", "2026-11-06", None, Repeat::Once);
-        let b = s.add("站会", "2026-11-06", Some(9 * 3600), Repeat::Workdays);
+        let a = add(&mut s, "写周报", "2026-11-06", None, Repeat::Once);
+        let b = add(&mut s, "站会", "2026-11-06", Some(9 * 3600), Repeat::Workdays);
         let moved = s.carry_over("2026-11-09");
         assert_eq!(moved, 2);
         assert_eq!(s.get(a).unwrap().day, "2026-11-09");
@@ -521,7 +703,7 @@ mod tests {
     #[test]
     fn a_reminder_fires_once_per_day() {
         let mut s = store("due");
-        let id = s.add("吃药", "2026-11-07", Some(8 * 3600), Repeat::Daily);
+        let id = add(&mut s, "吃药", "2026-11-07", Some(8 * 3600), Repeat::Daily);
         assert!(s.take_due("2026-11-07", 8 * 3600 - 1).is_empty());
         let due = s.take_due("2026-11-07", 8 * 3600);
         assert_eq!(due.len(), 1);
@@ -534,7 +716,7 @@ mod tests {
     #[test]
     fn a_stale_reminder_is_swallowed_instead_of_firing_late() {
         let mut s = store("stale");
-        s.add("错过", "2026-11-07", Some(8 * 3600), Repeat::Once);
+        add(&mut s, "错过", "2026-11-07", Some(8 * 3600), Repeat::Once);
         assert!(s.take_due("2026-11-07", 12 * 3600).is_empty());
         assert!(s.take_due("2026-11-07", 13 * 3600).is_empty());
     }
@@ -542,7 +724,7 @@ mod tests {
     #[test]
     fn completing_a_daily_task_advances_it() {
         let mut s = store("repeat");
-        let id = s.add("站会", "2026-11-06", Some(9 * 3600), Repeat::Workdays);
+        let id = add(&mut s, "站会", "2026-11-06", Some(9 * 3600), Repeat::Workdays);
         s.toggle_done(id, "2026-11-06");
         let t = s.get(id).unwrap();
         assert!(!t.done, "a repeating task must stay open");
@@ -556,7 +738,7 @@ mod tests {
         let path = dir.join("tasks.json");
         std::fs::write(&path, "{ this is not json").unwrap();
         let mut s = Store::load(path.clone());
-        s.add("x", "2026-11-07", None, Repeat::Once);
+        add(&mut s, "x", "2026-11-07", None, Repeat::Once);
         s.save_if_dirty();
         assert!(s.error.is_some());
         assert_eq!(
@@ -569,11 +751,134 @@ mod tests {
     #[test]
     fn ordering_puts_the_current_task_first() {
         let mut s = store("order");
-        let a = s.add("B", "2026-11-07", Some(10 * 3600), Repeat::Once);
-        let b = s.add("A", "2026-11-07", Some(9 * 3600), Repeat::Once);
+        let a = add(&mut s, "B", "2026-11-07", Some(10 * 3600), Repeat::Once);
+        let b = add(&mut s, "A", "2026-11-07", Some(9 * 3600), Repeat::Once);
         s.set_current(a);
         let list = s.for_day("2026-11-07");
         assert_eq!(list[0].id, a);
         assert_eq!(list[1].id, b);
+    }
+
+    #[test]
+    fn interval_fires_once_per_slot() {
+        let mut s = store("interval");
+        let id = add_every(
+            &mut s,
+            "喝水",
+            "2026-11-07",
+            9 * 3600,
+            18 * 3600,
+            30,
+            Repeat::Workdays,
+        );
+        // The task this whole feature exists for: half-hourly on weekdays.
+        assert!(s.take_due("2026-11-07", 8 * 3600 + 59 * 60).is_empty());
+        assert_eq!(s.take_due("2026-11-07", 9 * 3600).len(), 1);
+        // Same slot, many ticks: one reminder, not one per tick.
+        assert!(s.take_due("2026-11-07", 9 * 3600 + 60).is_empty());
+        assert!(s.take_due("2026-11-07", 9 * 3600 + 25 * 60).is_empty());
+        assert_eq!(s.take_due("2026-11-07", 9 * 3600 + 30 * 60).len(), 1);
+        let t = s.get(id).unwrap();
+        assert_eq!(t.every, Some(30));
+        assert_eq!(t.until, Some(18 * 3600));
+    }
+
+    #[test]
+    fn interval_does_not_replay_slots_it_slept_through() {
+        let mut s = store("interval-sleep");
+        add_every(
+            &mut s,
+            "喝水",
+            "2026-11-07",
+            9 * 3600,
+            18 * 3600,
+            30,
+            Repeat::Workdays,
+        );
+        // Woke up at 12:34 after 09:00 — one reminder for 12:30, not seven.
+        let due = s.take_due("2026-11-07", 12 * 3600 + 34 * 60);
+        assert_eq!(due.len(), 1, "a backlog must not become a notification burst");
+        assert!(due[0].fired_on.as_deref().unwrap().ends_with("@12:30"));
+        // And the next slot still works.
+        assert_eq!(s.take_due("2026-11-07", 13 * 3600).len(), 1);
+    }
+
+    #[test]
+    fn interval_slots_stop_at_until() {
+        let mut s = store("interval-until");
+        add_every(
+            &mut s,
+            "喝水",
+            "2026-11-07",
+            9 * 3600,
+            18 * 3600,
+            30,
+            Repeat::Workdays,
+        );
+        // 18:00 is the last slot; 18:20 is late but still worth one popup.
+        assert_eq!(s.take_due("2026-11-07", 18 * 3600 + 20 * 60).len(), 1);
+        // 18:40 maps back to the 18:00 slot, already fired, and the window is
+        // over anyway — nothing more today.
+        assert!(s.take_due("2026-11-07", 18 * 3600 + 40 * 60).is_empty());
+        assert!(s.take_due("2026-11-07", 23 * 3600).is_empty());
+    }
+
+    #[test]
+    fn interval_window_defaults_to_a_working_day() {
+        let mut s = store("interval-default");
+        let id = s.add(NewTask {
+            title: "喝水",
+            day: "2026-11-07",
+            at: Some(9 * 3600),
+            until: None,
+            every: Some(30),
+            repeat: Repeat::Workdays,
+        });
+        let t = s.get(id).unwrap();
+        assert_eq!(t.until, Some(17 * 3600), "09:00 + eight hours");
+        assert_eq!(t.window_label().unwrap(), "09:00–17:00");
+        assert_eq!(t.every_label().unwrap(), "每 30 分钟");
+    }
+
+    #[test]
+    fn a_single_reminder_carries_no_window() {
+        let mut s = store("no-window");
+        // A range typed without an interval must not leave a dangling `until`
+        // that the list would print as if it meant something.
+        let id = s.add(NewTask {
+            title: "站会",
+            day: "2026-11-07",
+            at: Some(9 * 3600),
+            until: Some(18 * 3600),
+            every: None,
+            repeat: Repeat::Daily,
+        });
+        let t = s.get(id).unwrap();
+        assert_eq!(t.until, None);
+        assert!(!t.is_interval());
+        assert_eq!(t.window_label().unwrap(), "09:00");
+        assert_eq!(t.every_label(), None);
+    }
+
+    #[test]
+    fn an_interval_repeats_to_the_next_workday() {
+        let mut s = store("interval-advance");
+        // Friday 2026-11-06.
+        let id = add_every(
+            &mut s,
+            "喝水",
+            "2026-11-06",
+            9 * 3600,
+            18 * 3600,
+            30,
+            Repeat::Workdays,
+        );
+        s.take_due("2026-11-06", 9 * 3600);
+        s.toggle_done(id, "2026-11-06");
+        let t = s.get(id).unwrap();
+        assert_eq!(t.day, "2026-11-09", "Monday, not Saturday");
+        assert_eq!(t.fired_on, None, "the new day starts with a clean slate");
+        assert!(!t.done);
+        assert_eq!(t.every, Some(30), "the interval survives the roll");
     }
 }

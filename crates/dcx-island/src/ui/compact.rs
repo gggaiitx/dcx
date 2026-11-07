@@ -37,10 +37,8 @@ pub struct CapsuleOpts {
     /// caller because the pill pads by its own height while the panel pads by
     /// its own grid.
     pub pad: f32,
-    /// 0..1 — the corner buttons fade in as the panel unfolds.
+    /// 0..1 — the close button fades in as the panel unfolds.
     pub corner: f32,
-    /// Show the "export today's tasks" button next to the close button.
-    pub archive: bool,
 }
 
 /// What the capsule wants the app to do after this frame.
@@ -48,7 +46,6 @@ pub struct CapsuleOpts {
 pub struct CapsuleHit {
     pub clicked: bool,
     pub close: bool,
-    pub archive: bool,
 }
 
 pub fn draw(
@@ -140,33 +137,36 @@ pub fn draw(
     // -- right cluster -----------------------------------------------------
     let mut right = rect.right() - pad;
 
-    // Close, then "export tasks", both pinned to the row's right end. The close
-    // button is the right-most thing on the card when the panel is open — that
-    // is the "最右上角" the user asked for — so it is laid out first and every
-    // other right-hand element has to fit inside what is left.
+    // Close, pinned to the row's right end. Only the close button lives up
+    // here: the title row carries the island's own information (clock, date,
+    // metrics) and exactly one global action. Everything else — exporting the
+    // task list, clearing the clipboard, marking messages read — belongs to a
+    // tab and is drawn in that tab's own tool row, so the header never grows a
+    // toolbar that means different things on different tabs.
     if opts.corner > 0.01 {
-        let size = 22.0;
+        // Optical size, not tap size. At 12 pt with a 1.5 pt stem the ✕ stood
+        // taller than the clock digits and carried more ink than any text in
+        // the row, so it read as a caption button borrowed from another window.
+        //
+        // 8 pt puts the cross at the cap height of the 10 pt metrics beside it
+        // (≈10 px at 125 %). A cross has two diagonals, so equal cap height
+        // already reads *larger* than a digit; anything above that and it starts
+        // competing with the data instead of sitting beside it.
+        //
+        // The glyph's right edge lands on the row's right inset, mirroring the
+        // clock's left inset, so the title row is symmetric. The hit box is
+        // larger than the glyph and spills a few points past the row — it is
+        // invisible, and the 16 pt row padding keeps it inside the card.
+        const GLYPH: f32 = 8.0;
+        const HIT: f32 = 22.0;
         let close = Rect::from_center_size(
-            Pos2::new(right - size * 0.5, mid_y),
-            Vec2::splat(size),
+            Pos2::new(right - GLYPH * 0.5, mid_y),
+            Vec2::splat(HIT),
         );
-        if corner_button(ui, close, Glyph::Close, p, opts.corner, true).clicked() {
+        if corner_button(ui, close, Glyph::Close, p, opts.corner, GLYPH).clicked() {
             hit.close = true;
         }
-        right = close.left() - 2.0;
-        if opts.archive {
-            let doc = Rect::from_center_size(
-                Pos2::new(right - size * 0.5, mid_y),
-                Vec2::splat(size),
-            );
-            if corner_button(ui, doc, Glyph::Doc, p, opts.corner, false)
-                .on_hover_text("把今天的任务导出为 Markdown")
-                .clicked()
-            {
-                hit.archive = true;
-            }
-            right = doc.left() - 2.0;
-        }
+        right -= GLYPH + 10.0;
     }
 
     // Unread badge: a filled pill with the count, not a bare dot — a dot is
@@ -203,14 +203,21 @@ pub fn draw(
     // taken, not against a fixed width: a 232 pt capsule used to show **no**
     // metrics at all because of a `>= 250.0` gate, and a capsule the user
     // narrows must lose the bars rather than overlap the time.
-    let mut metrics: Vec<(f32, Color32)> = Vec::new();
+    //
+    // The names appear only when the row is wide enough to afford them, which is
+    // exactly the open panel. Collapsed, "44% 31%" is read at a glance by the
+    // person who set the island up and the labels would cost both numbers; open,
+    // the same two numbers sit next to a task list with no legend, and two bare
+    // percentages of nothing is a genuinely unreadable header.
+    let labelled = rect.width() > 330.0;
+    let mut metrics: Vec<(f32, Color32, &'static str)> = Vec::new();
     if let Some(cpu) = st.cpu {
-        metrics.push((cpu, p.level(crate::metrics::level(cpu))));
+        metrics.push((cpu, p.level(crate::metrics::level(cpu)), "CPU"));
     }
     if let Some(mem) = st.mem {
-        metrics.push((mem, p.level(crate::metrics::level(mem))));
+        metrics.push((mem, p.level(crate::metrics::level(mem)), "内存"));
     }
-    for (value, color) in metrics.iter().rev() {
+    for (value, color, name) in metrics.iter().rev() {
         let text = format!("{value:.0}%");
         let galley = ui.painter().layout_no_wrap(
             text,
@@ -219,13 +226,33 @@ pub fn draw(
         );
         let text_w = galley.size().x;
         let bar_w = 18.0;
-        // text + gap + bar + the 8 pt gap that separates two clusters.
-        let need = text_w + 5.0 + bar_w + 8.0;
+        let name_w = if labelled {
+            ui.painter()
+                .layout_no_wrap(name.to_string(), FontId::proportional(9.0), p.text_faint)
+                .size()
+                .x
+                + 4.0
+        } else {
+            0.0
+        };
+        // name + bar + gap + text + the 8 pt gap that separates two clusters.
+        let need = name_w + bar_w + 5.0 + text_w + 8.0;
         // The task title keeps its space even when a second metric would fit:
         // dropping it to show a percentage is the wrong trade.
         let reserve = if st.task.is_some() { 70.0 } else { 24.0 };
         if right - need < left + reserve {
             continue;
+        }
+
+        if labelled {
+            widgets::text(
+                ui,
+                Pos2::new(right - need + 8.0, mid_y),
+                Align2::LEFT_CENTER,
+                name,
+                9.0,
+                p.text_faint,
+            );
         }
         let x = right - text_w;
         ui.painter()
@@ -235,7 +262,7 @@ pub fn draw(
             Vec2::new(bar_w, 3.0),
         );
         widgets::bar(ui, bar, *value / 100.0, *color, p.track);
-        right = bar.left() - 8.0;
+        right = bar.left() - name_w - 8.0;
     }
 
     // Network rates live in the capsule only when there is room left over; the
@@ -280,38 +307,33 @@ pub fn draw(
         }
     }
 
-    hit.clicked = row_resp.clicked() && !hit.close && !hit.archive;
+    hit.clicked = row_resp.clicked() && !hit.close;
     hit
 }
 
-/// Small circular icon button whose whole glyph — not just its hover plate —
-/// fades with `alpha`, so the corner buttons can grow in with the panel instead
-/// of popping into place on the frame the unfold ends.
+/// Small icon button whose whole glyph — not just its hover plate — fades with
+/// `alpha`, so the close button can grow in with the panel instead of popping
+/// into place on the frame the unfold ends.
+///
+/// The glyph size is a parameter because this is the one button that shares a
+/// row with text: it has to be measured against the text's optical size, not
+/// against the panel's 13 pt icon grid. The hover plate follows the glyph
+/// (2×) rather than the hit box, so a small ✕ does not get a bubble around it.
 fn corner_button(
     ui: &mut egui::Ui,
     rect: Rect,
     which: Glyph,
     p: &Palette,
     alpha: f32,
-    danger: bool,
+    glyph: f32,
 ) -> egui::Response {
     let resp = ui.allocate_rect(rect, egui::Sense::click());
     if resp.hovered() {
-        let fill = if danger {
-            with_alpha(p.danger, 0.14)
-        } else {
-            p.accent_soft
-        };
-        widgets::round_rect(ui, rect, rect.height() * 0.5, fill, Stroke::NONE);
+        let plate = Rect::from_center_size(rect.center(), Vec2::splat(glyph * 2.0));
+        widgets::round_rect(ui, plate, plate.height() * 0.5, p.accent_soft, Stroke::NONE);
     }
-    let base = if !resp.hovered() {
-        p.text_dim
-    } else if danger {
-        p.danger
-    } else {
-        p.accent
-    };
-    widgets::glyph(ui, rect.center(), 13.0, which, with_alpha(base, alpha));
+    let base = if resp.hovered() { p.accent } else { p.text_dim };
+    widgets::glyph_weighted(ui, rect.center(), glyph, which, with_alpha(base, alpha), 1.25);
     resp
 }
 

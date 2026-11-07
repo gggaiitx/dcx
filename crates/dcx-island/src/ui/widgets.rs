@@ -150,9 +150,24 @@ pub enum Glyph {
 }
 
 pub fn glyph(ui: &Ui, center: Pos2, size: f32, which: Glyph, color: Color32) {
+    glyph_weighted(ui, center, size, which, color, 1.5);
+}
+
+/// Same glyph, explicit stroke width. A 9 pt icon drawn with the default 1.5 pt
+/// stem has more ink than the 10 pt text beside it and reads as bold; the title
+/// row's close button therefore asks for a thinner stem than the panel's icon
+/// buttons, which are larger.
+pub fn glyph_weighted(
+    ui: &Ui,
+    center: Pos2,
+    size: f32,
+    which: Glyph,
+    color: Color32,
+    width: f32,
+) {
     let p = ui.painter();
     let s = size * 0.5;
-    let stroke = Stroke::new(1.5_f32, color);
+    let stroke = Stroke::new(width, color);
     let line = |a: Pos2, b: Pos2| {
         p.add(Shape::line_segment([a, b], stroke));
     };

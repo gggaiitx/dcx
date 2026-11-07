@@ -169,6 +169,10 @@ struct Island {
     task_input: String,
     task_time: String,
     task_repeat: tasks::Repeat,
+    /// Minutes between reminders for the task being composed. 0 = a single
+    /// reminder. Purely composer state; the value is copied into the task on
+    /// submit and then reset, so it never drifts from what was actually saved.
+    task_every: u32,
     clip_query: String,
     /// Wheel offset of the two scrollable lists, in points. Kept per tab so
     /// switching tabs does not lose the position.
@@ -244,6 +248,7 @@ impl Island {
             task_input: String::new(),
             task_time: String::new(),
             task_repeat: tasks::Repeat::Once,
+            task_every: 0,
             clip_query: String::new(),
             clip_scroll: 0.0,
             inbox_scroll: 0.0,
@@ -777,6 +782,7 @@ impl Island {
                                 task_input: &mut self.task_input,
                                 task_time: &mut self.task_time,
                                 task_repeat: &mut self.task_repeat,
+                                task_every: &mut self.task_every,
                                 clip_query: &mut self.clip_query,
                                 clip_scroll: &mut self.clip_scroll,
                                 inbox_scroll: &mut self.inbox_scroll,
@@ -820,14 +826,10 @@ impl Island {
                         shell: anim < 0.02,
                         pad: 0.0,
                         corner: anim,
-                        archive: true,
                     },
                 );
                 if hit.close {
                     self.set_open(false, ctx);
-                }
-                if hit.archive {
-                    self.apply(Action::Archive, ctx);
                 }
                 // Collapsed, the whole pill is the open button. Open, that row
                 // belongs to the panel and only the close button brings it
@@ -981,24 +983,59 @@ impl Island {
                 if title.is_empty() {
                     return;
                 }
-                let at = if self.task_time.trim().is_empty() {
-                    None
-                } else {
-                    match clock::parse_hhmm(&self.task_time) {
-                        Some(secs) => Some(secs),
+                // The time field accepts both `09:00` and `09:00-18:00`. With an
+                // interval the end is the last slot; without one the end is
+                // meaningless and is dropped inside `Store::add`.
+                let mut at = None;
+                let mut until = None;
+                if !self.task_time.trim().is_empty() {
+                    match clock::parse_hhmm_span(&self.task_time) {
+                        Some((start, end)) => {
+                            at = Some(start);
+                            until = end;
+                        }
                         None => {
-                            self.toast = Some(("时间格式应为 15:30".to_string(), Instant::now()));
+                            self.toast =
+                                Some(("时间格式应为 09:00 或 09:00-18:00".to_string(), Instant::now()));
                             return;
                         }
                     }
-                };
-                let id = self.tasks.add(&title, &self.today, at, self.task_repeat);
+                }
+                let every = (self.task_every > 0).then_some(self.task_every);
+                // Typing a range without an interval obviously means "spread it
+                // out": the range has no other reading. Default to 30 minutes
+                // rather than saving a window that does nothing.
+                let every = every.or_else(|| until.map(|_| 30));
+                let id = self.tasks.add(tasks::NewTask {
+                    title: &title,
+                    day: &self.today,
+                    at,
+                    until,
+                    every,
+                    repeat: self.task_repeat,
+                });
                 if self.tasks.current().is_none() {
                     self.tasks.set_current(id);
+                }
+                // Say what was actually created. "每半小时" silently becoming a
+                // nine-to-five window is exactly the kind of assumption the user
+                // should be able to see and correct.
+                if let Some(t) = self.tasks.get(id) {
+                    if t.is_interval() {
+                        let mut parts = vec![t.repeat.label().to_string()];
+                        if let Some(w) = t.window_label() {
+                            parts.push(w);
+                        }
+                        if let Some(e) = t.every_label() {
+                            parts.push(e);
+                        }
+                        self.toast = Some((format!("已添加：{}", parts.join(" ")), Instant::now()));
+                    }
                 }
                 self.task_input.clear();
                 self.task_time.clear();
                 self.task_repeat = tasks::Repeat::Once;
+                self.task_every = 0;
                 self.dirty_at = Some(Instant::now());
             }
             Action::ToggleDone(id) => {
