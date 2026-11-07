@@ -28,8 +28,8 @@ impl Notifier {
         if cfg.inbox.wechat || cfg.inbox.wecom {
             shell = Some(shell_hook::start());
         }
-        if cfg.inbox.qq {
-            qq = qq::start();
+        if cfg.inbox.qq || cfg.inbox.system {
+            qq = qq::start(cfg.inbox.qq, cfg.inbox.system);
         }
         if cfg.inbox.mail {
             if let Some(password) = mail_password {
@@ -72,6 +72,11 @@ impl Notifier {
         } else if self.qq.is_none() {
             inbox.set_state(Source::Qq, Unavailable("通知监听线程未能启动".into()));
         }
+        if !cfg.inbox.system {
+            inbox.set_state(Source::System, Off);
+        } else if self.qq.is_none() {
+            inbox.set_state(Source::System, Unavailable("通知监听线程未能启动".into()));
+        }
         if !cfg.inbox.mail {
             inbox.set_state(Source::Mail, Off);
         } else if self.mail.is_none() {
@@ -106,17 +111,46 @@ impl Notifier {
 
         if let Some(qq) = &self.qq {
             while let Ok(hit) = qq.rx.try_recv() {
+                // QQ keeps its own channel while its switch is on; with the
+                // switch off (system-only mode) a QQ toast is just another
+                // app's row.
+                let source = if hit.is_qq && qq.qq_enabled {
+                    Source::Qq
+                } else {
+                    Source::System
+                };
                 let title = if hit.title.trim().is_empty() {
-                    "QQ 新消息".to_string()
+                    if source == Source::Qq {
+                        "QQ 新消息".to_string()
+                    } else {
+                        format!("{} 通知", hit.app)
+                    }
                 } else {
                     hit.title.clone()
                 };
-                inbox.push(Source::Qq, &title, &hit.body, &format!("qq-{}", hit.id));
+                inbox.push_with_app(
+                    source,
+                    &hit.app,
+                    &title,
+                    &hit.body,
+                    &format!("toast-{}", hit.id),
+                );
             }
+            // One listener, two channels: mirror its health to whichever
+            // switches are on. The other stays `Off` from `seed_states`.
             if let Ok(state) = qq.state.lock() {
-                if let Some(ch) = inbox.channel(Source::Qq) {
-                    if ch.state != *state {
-                        inbox.set_state(Source::Qq, state.clone());
+                for source in [Source::Qq, Source::System] {
+                    let enabled = match source {
+                        Source::Qq => qq.qq_enabled,
+                        _ => qq.system_enabled,
+                    };
+                    if !enabled {
+                        continue;
+                    }
+                    if let Some(ch) = inbox.channel(source) {
+                        if ch.state != *state {
+                            inbox.set_state(source, state.clone());
+                        }
                     }
                 }
             }

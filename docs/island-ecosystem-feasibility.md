@@ -59,9 +59,9 @@ HTTP 服务端不背重依赖（axum 带 tokio 与 egui 线程模型不符），
 
 - `[inbox] system: bool = false`。开启后 WinRT 监听不再按 QQ 过滤，全量 Toast 进收件箱；
   QQ 渠道开关语义不变（`system=false` 时维持现状）。
-- `Source` 增加 `System(String)`（应用显示名，取 `AppInfo.DisplayInfo.DisplayName`，
-  缺省回退 AUMID 末段）；渠道圆点/激活逻辑对 System 不做 App 激活（无可靠 AUMID 激活路径），
-  点击仅标已读。
+- `Source` 增加单元变体 `System`（保持 `Copy`，全仓按值传递），应用显示名放
+  `InboxItem.app: String`（取 `AppInfo.DisplayInfo.DisplayName`，缺省回退 AUMID 末段）；
+  渠道圆点/激活逻辑对 System 不做 App 激活（无可靠 AUMID 激活路径），点击仅标已读。
 - 监听线程启动条件从 `inbox.qq` 放宽为 `inbox.qq || inbox.system`。
 - 隐私：内存 ring（现有 keep 裁剪），**不落盘**；设置页文案「默认关闭 · 只读 · 不落盘」。
 - 授权不可用时沿用现有 `ChannelState::Unavailable/Denied` 降级。

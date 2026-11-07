@@ -48,6 +48,9 @@ fn belongs(exe: &str, source: Source) -> bool {
         Source::Qq => matches!(name.as_str(), "qq.exe" | "qqnt.exe" | "tim.exe"),
         // No local mail client is owned by this channel.
         Source::Mail => false,
+        // "Every app" has no single window to activate; the caller marks the
+        // row read instead of asking.
+        Source::System => false,
     }
 }
 

@@ -906,7 +906,7 @@ fn inbox_tab(
     let items: Vec<_> = st
         .inbox
         .items()
-        .map(|i| (i.id, i.source, i.title.clone(), i.detail.clone(), i.at, i.read))
+        .map(|i| (i.id, i.source, i.app.clone(), i.title.clone(), i.detail.clone(), i.at, i.read))
         .collect();
     if items.is_empty() {
         empty_state(
@@ -914,7 +914,7 @@ fn inbox_tab(
             Rect::from_min_max(Pos2::new(rect.left(), y), rect.max),
             p,
             "没有新消息提醒",
-            "QQ / 微信 / 企业微信 / 邮箱的提醒会汇总到这里",
+            "开启的渠道（QQ / 微信 / 邮箱 / 系统通知…）会汇总到这里",
         );
         return;
     }
@@ -938,12 +938,12 @@ fn inbox_tab(
             + if detail.is_empty() { 0.0 } else { lh_small };
         h.max(40.0)
     };
-    let content_h: f32 = items.iter().map(|(_, _, _, d, _, _)| row_h_for(d)).sum();
+    let content_h: f32 = items.iter().map(|(_, _, _, _, d, _, _)| row_h_for(d)).sum();
     let offset = scroll(ui, list, content_h, st.inbox_scroll);
     let prev_clip = ui.clip_rect();
     ui.set_clip_rect(list);
     y = list.top() - offset;
-    for (id, source, title, detail, at, read) in items {
+    for (id, source, app, title, detail, at, read) in items {
         let row_h = row_h_for(&detail);
         if y + row_h < list.top() {
             y += row_h;
@@ -967,13 +967,20 @@ fn inbox_tab(
             );
         }
         // Line 1: source on the left, age on the right, both on the same
-        // measured baseline so neither can climb into the headline.
+        // measured baseline so neither can climb into the headline. A System
+        // row names the raising app instead — "系统" on every row would say
+        // nothing about which of the twenty apps toasted.
         let line1_y = row.top() + PAD_TOP;
+        let caption = if source == Source::System && !app.is_empty() {
+            app.as_str()
+        } else {
+            source.label()
+        };
         widgets::text(
             ui,
             Pos2::new(row.left() + 12.0, line1_y),
             Align2::LEFT_TOP,
-            source.label(),
+            caption,
             9.5,
             p.text_faint,
         );
@@ -1415,6 +1422,7 @@ fn channel_glyph(source: Source) -> Glyph {
         // and two bubble outlines side by side were indistinguishable at 15 px.
         Source::WeCom => Glyph::Briefcase,
         Source::Mail => Glyph::Mail,
+        Source::System => Glyph::Bell,
     }
 }
 

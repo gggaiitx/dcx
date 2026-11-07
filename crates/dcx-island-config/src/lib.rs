@@ -151,6 +151,10 @@ pub struct InboxCfg {
     pub wecom: bool,
     pub qq: bool,
     pub mail: bool,
+    /// Mirror every app's toast from the notification centre, not just QQ.
+    /// Off by default: it is the widest read the island can do, so the user
+    /// has to ask for it. Memory-only, same as every other channel.
+    pub system: bool,
     /// How many items each channel keeps in memory.
     pub keep: usize,
     /// Incoming items also raise the capsule badge.
@@ -298,6 +302,7 @@ impl Default for InboxCfg {
             wecom: true,
             qq: false,
             mail: false,
+            system: false,
             keep: 20,
             badge: true,
         }

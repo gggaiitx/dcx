@@ -20,6 +20,10 @@ pub enum Source {
     WeChat,
     WeCom,
     Mail,
+    /// Every app's toast, via the same WinRT listener as QQ. The app's display
+    /// name lives on the item (`InboxItem::app`), not in the variant: `Source`
+    /// is `Copy` and passed by value everywhere.
+    System,
 }
 
 impl Source {
@@ -29,6 +33,7 @@ impl Source {
             Source::WeChat => "微信",
             Source::WeCom => "企业微信",
             Source::Mail => "邮箱",
+            Source::System => "系统",
         }
     }
 
@@ -38,6 +43,7 @@ impl Source {
             Source::WeChat => "wechat",
             Source::WeCom => "wecom",
             Source::Mail => "mail",
+            Source::System => "system",
         }
     }
 
@@ -47,6 +53,8 @@ impl Source {
             Source::WeChat => (0x18, 0x9A, 0x4A),
             Source::WeCom => (0x1E, 0x8E, 0xD8),
             Source::Mail => (0xE0, 0x8A, 0x1E),
+            // Neutral: "every app" has no brand colour.
+            Source::System => (0x6E, 0x6E, 0x7A),
         }
     }
 }
@@ -63,6 +71,9 @@ pub struct InboxItem {
     /// Channel-side identity (notification id, message uid). Repeats are
     /// ignored so a poll every 15 s does not build 40 identical rows.
     pub key: String,
+    /// Display name of the app that raised a `System` toast; empty for every
+    /// other source (their label already names the app).
+    pub app: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -147,6 +158,10 @@ impl Inbox {
                 ),
                 (Source::Qq, Channel::new("系统通知镜像，需要通知访问权限")),
                 (Source::Mail, Channel::new("IMAP 仅同步邮件头，正文按需读取")),
+                (
+                    Source::System,
+                    Channel::new("全部应用的系统通知，默认关闭；只读、不落盘"),
+                ),
             ],
             version: 0,
         }
@@ -171,6 +186,12 @@ impl Inbox {
     }
 
     pub fn push(&mut self, source: Source, title: &str, detail: &str, key: &str) {
+        self.push_with_app(source, "", title, detail, key);
+    }
+
+    /// Same as [`push`](Self::push), with the raising app's display name —
+    /// only the `System` channel has more than one app behind it.
+    pub fn push_with_app(&mut self, source: Source, app: &str, title: &str, detail: &str, key: &str) {
         if !key.is_empty() && self.items.iter().any(|i| i.source == source && i.key == key) {
             return;
         }
@@ -184,6 +205,7 @@ impl Inbox {
             at: now_secs(),
             read: false,
             key: key.to_string(),
+            app: app.to_string(),
         });
         while self.items.len() > self.keep {
             self.items.pop_back();

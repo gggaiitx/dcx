@@ -1,4 +1,5 @@
-//! QQ notification mirror through the WinRT `UserNotificationListener`.
+//! Toast mirror through the WinRT `UserNotificationListener` — QQ-only by
+//! default, every app when `[inbox] system` is on.
 //!
 //! This is the only part of the island that uses the `windows` crate: the WinRT
 //! ABI for `IAsyncOperation`, `IVectorView` and the notification objects is not
@@ -40,11 +41,22 @@ pub struct QqHit {
     pub id: u32,
     pub title: String,
     pub body: String,
+    /// Display name of the raising app (`AppInfo.DisplayInfo.DisplayName`,
+    /// falling back to the AUMID's last meaningful segment).
+    pub app: String,
+    /// The AUMID classified as QQ. Routing decision is the caller's: QQ hits
+    /// go to the QQ channel only while that switch is on, everything else is
+    /// a `System` row.
+    pub is_qq: bool,
 }
 
 pub struct QqProbe {
     pub rx: Receiver<QqHit>,
     pub state: Arc<Mutex<ChannelState>>,
+    /// Which switches were on when the thread started; the notifier is
+    /// rebuilt whenever either changes, so these stay accurate.
+    pub qq_enabled: bool,
+    pub system_enabled: bool,
     stop: Arc<AtomicBool>,
 }
 
@@ -66,7 +78,7 @@ impl Drop for RoApartment {
     }
 }
 
-pub fn start() -> Option<QqProbe> {
+pub fn start(qq_enabled: bool, system: bool) -> Option<QqProbe> {
     let (tx, rx) = channel();
     if let Ok(mut slot) = SINK.lock() {
         *slot = Some(tx);
@@ -80,7 +92,7 @@ pub fn start() -> Option<QqProbe> {
     let stop2 = Arc::clone(&stop);
 
     std::thread::Builder::new()
-        .name("dcx-island-qq".to_string())
+        .name("dcx-island-toast".to_string())
         .spawn(move || {
             // S_FALSE / RPC_E_CHANGED_MODE are both non-fatal: COM may already
             // be initialised on this thread, or in STA. WinRT activation still
@@ -123,7 +135,11 @@ pub fn start() -> Option<QqProbe> {
                     set(
                         &state2,
                         ChannelState::Unavailable(
-                            "系统未授权通知访问（桌面程序常见），QQ 渠道不可用".into(),
+                            if system {
+                                "系统未授权通知访问（桌面程序常见），通知渠道不可用".into()
+                            } else {
+                                "系统未授权通知访问（桌面程序常见），QQ 渠道不可用".into()
+                            },
                         ),
                     );
                     return;
@@ -151,7 +167,10 @@ pub fn start() -> Option<QqProbe> {
                                     .AppUserModelId()
                                     .map(|s| s.to_string())
                                     .unwrap_or_default();
-                                if !classify(&app_id) {
+                                let is_qq = classify(&app_id);
+                                // System mode widens the filter to every app;
+                                // with only QQ on, the old behaviour is exact.
+                                if !(system || (qq_enabled && is_qq)) {
                                     continue;
                                 }
                                 let Ok(id) = n.Id() else { continue };
@@ -163,9 +182,16 @@ pub fn start() -> Option<QqProbe> {
                                     seen.insert(id);
                                 }
                                 let (title, body) = texts(&n);
+                                let app_name = display_name(&app, &app_id);
                                 if let Ok(slot) = SINK.lock() {
                                     if let Some(tx) = slot.as_ref() {
-                                        let _ = tx.send(QqHit { id, title, body });
+                                        let _ = tx.send(QqHit {
+                                            id,
+                                            title,
+                                            body,
+                                            app: app_name,
+                                            is_qq,
+                                        });
                                     }
                                 }
                             }
@@ -178,7 +204,13 @@ pub fn start() -> Option<QqProbe> {
         })
         .ok()?;
 
-    Some(QqProbe { rx, state, stop })
+    Some(QqProbe {
+        rx,
+        state,
+        qq_enabled,
+        system_enabled: system,
+        stop,
+    })
 }
 
 fn set(state: &Arc<Mutex<ChannelState>>, next: ChannelState) {
@@ -223,6 +255,46 @@ fn texts(n: &windows::UI::Notifications::UserNotification) -> (String, String) {
     (title, body)
 }
 
+/// The name a `System` row prints. `DisplayName` is the app's own localised
+/// name and works for packaged apps; unpackaged ones often have none, so the
+/// AUMID is stripped to something readable: `Microsoft.WindowsCalculator_8we…!App`
+/// → `WindowsCalculator`, plain `QQ` stays `QQ`.
+fn display_name(
+    app: &windows::ApplicationModel::AppInfo,
+    app_id: &str,
+) -> String {
+    if let Ok(info) = app.DisplayInfo() {
+        if let Ok(name) = info.DisplayName() {
+            let name = name.to_string();
+            if !name.trim().is_empty() {
+                return name;
+            }
+        }
+    }
+    fallback_name(app_id)
+}
+
+/// Pure half of [`display_name`], testable without a WinRT object.
+fn fallback_name(app_id: &str) -> String {
+    let base = app_id.split('!').next().unwrap_or(app_id);
+    let base = base.split('_').next().unwrap_or(base);
+    // An unpackaged app's AUMID is often its exe path; without this the
+    // "readable" last segment of `...\tool.exe` is `exe`.
+    let file = base.rsplit(['\\', '/']).next().unwrap_or(base);
+    let stem = match file.get(file.len().saturating_sub(4)..) {
+        Some(ext) if ext.eq_ignore_ascii_case(".exe") && file.len() > 4 => {
+            &file[..file.len() - 4]
+        }
+        _ => file,
+    };
+    let last = stem.rsplit('.').next().unwrap_or(stem).trim();
+    if last.is_empty() {
+        "未知应用".to_string()
+    } else {
+        last.to_string()
+    }
+}
+
 /// Is this AppUserModelId QQ's? QQ registers plain `QQ`; some builds use
 /// `Tencent.QQ`. `QQBrowser` and `QQMusic` must not match.
 pub fn classify(app_id: &str) -> bool {
@@ -250,5 +322,14 @@ mod tests {
         assert!(!classify("QQMusic"));
         assert!(!classify(""));
         assert!(!classify("WeChat"));
+    }
+
+    #[test]
+    fn aumid_fallback_names_are_readable() {
+        assert_eq!(fallback_name("Microsoft.WindowsCalculator_8wekyb3d8bbwe!App"), "WindowsCalculator");
+        assert_eq!(fallback_name("QQ"), "QQ");
+        assert_eq!(fallback_name(r"C:\Apps\SomeTool\tool.exe"), "tool");
+        assert_eq!(fallback_name(r"C:\Apps\SomeTool\tool.Exe"), "tool");
+        assert_eq!(fallback_name(""), "未知应用");
     }
 }

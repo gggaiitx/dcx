@@ -2578,6 +2578,7 @@ impl SettingsApp {
             let mut wecom = iv.inbox.wecom;
             let mut qq = iv.inbox.qq;
             let mut mail = iv.inbox.mail;
+            let mut system = iv.inbox.system;
             row_tight(
                 ui,
                 p,
@@ -2621,10 +2622,22 @@ impl SettingsApp {
                     switch(ui, p, &mut mail);
                 },
             );
+            row_separator(ui, p);
+            row_tight(
+                ui,
+                p,
+                RowIcon::Info,
+                "系统通知（全部应用）",
+                "默认关闭 · 只读通知中心 · 不写入磁盘；与 QQ 渠道共用系统授权",
+                |ui| {
+                    switch(ui, p, &mut system);
+                },
+            );
             iv.inbox.wechat = wechat;
             iv.inbox.wecom = wecom;
             iv.inbox.qq = qq;
             iv.inbox.mail = mail;
+            iv.inbox.system = system;
             row_separator(ui, p);
             row(
                 ui,

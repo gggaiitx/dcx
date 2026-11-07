@@ -1144,15 +1144,19 @@ impl Island {
             Action::RemoveInbox(id) => self.inbox.remove(id),
             Action::OpenInbox(id, source) => {
                 self.inbox.mark_read(id);
-                if crate::activate::activate(source) {
-                    // The other app has the foreground now; a topmost island
-                    // left open would sit over it for no reason.
-                    self.set_open(false, ctx);
-                } else {
-                    self.toast = Some((
-                        format!("没有找到正在运行的「{}」窗口", source.label()),
-                        Instant::now(),
-                    ));
+                // A System row is "some app toasted" — there is no reliable
+                // AUMID→window activation path, so the click only marks read.
+                if source != crate::inbox::Source::System {
+                    if crate::activate::activate(source) {
+                        // The other app has the foreground now; a topmost island
+                        // left open would sit over it for no reason.
+                        self.set_open(false, ctx);
+                    } else {
+                        self.toast = Some((
+                            format!("没有找到正在运行的「{}」窗口", source.label()),
+                            Instant::now(),
+                        ));
+                    }
                 }
             }
         }
