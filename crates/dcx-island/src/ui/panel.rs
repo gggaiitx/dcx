@@ -64,6 +64,7 @@ pub struct PanelState<'a> {
     /// Wheel offset of the two scrollable lists, in points (see [`scroll`]).
     pub clip_scroll: &'a mut f32,
     pub inbox_scroll: &'a mut f32,
+    pub perf_scroll: &'a mut f32,
     pub textures: &'a mut TextureCache,
     pub toast: Option<&'a str>,
     pub dispatch_note: Option<&'a str>,
@@ -763,7 +764,6 @@ fn inbox_tab(
     st: &mut PanelState<'_>,
     actions: &mut Vec<Action>,
 ) {
-    let card_h = 26.0;
     let channels: Vec<(Source, ChannelState, Option<u64>, &'static str)> = st
         .inbox
         .channels
@@ -771,73 +771,39 @@ fn inbox_tab(
         .map(|(s, c)| (*s, c.state.clone(), c.last_at, c.note))
         .collect();
 
-    // Order on this page: channel health, then the two list actions, then the
-    // list. The actions used to sit above the health rows, which meant "全部已读
-    // / 清空" hung a line away from the only thing they act on and the page
-    // opened with a toolbar for an empty list.
-    let mut y = rect.top();
-    for (source, state, last_at, note) in &channels {
-        let row = Rect::from_min_size(Pos2::new(rect.left(), y), Vec2::new(rect.width(), card_h));
-        let resp = ui.interact(row, ui.id().with(("ch", source.key())), egui::Sense::hover());
-        if resp.hovered() {
-            widgets::round_rect(ui, row, 7.0, with_alpha(p.surface_alt, 0.7), Stroke::NONE);
-        }
-        // The dot reports the connection, not the brand. Four brand-coloured
-        // dots read as four working channels, and one of them was an account
-        // that is not even filled in; now colour means "live" and grey means
-        // "not live", which is the only reading that survives a glance.
-        let connected = state.is_ok();
-        let dot_color = if connected {
-            let (r, g, b) = source.color();
-            Color32::from_rgb(r, g, b)
-        } else {
-            p.text_faint
-        };
-        let dot = Pos2::new(row.left() + 6.0, row.center().y);
-        ui.painter().circle_filled(dot, 3.5, dot_color);
-        widgets::text(
-            ui,
-            Pos2::new(dot.x + 10.0, row.center().y),
-            Align2::LEFT_CENTER,
-            source.label(),
-            11.0,
-            if connected { p.text } else { p.text_dim },
-        );
-        let (label, state_color) = channel_status(state, *last_at, st.today, p);
-        let galley = ui
-            .painter()
-            .layout_no_wrap(label.clone(), FontId::proportional(10.0), state_color);
-        let max_w = row.width() - 150.0;
-        let clipped = if galley.size().x > max_w {
-            ui.painter()
-                .layout(label.clone(), FontId::proportional(10.0), state_color, max_w)
-        } else {
-            galley
-        };
-        ui.painter().with_clip_rect(row).galley(
-            Pos2::new(row.right() - clipped.size().x - 4.0, row.center().y - clipped.size().y * 0.5),
-            clipped,
-            state_color,
-        );
-        // The row explains itself on hover: the right-hand label has room for
-        // a state, not for how the channel listens, and "已接入" alone does not
-        // tell anyone what the island can see from that app.
-        resp.on_hover_text(format!("{}\n{}", label, note));
-        y += card_h;
-    }
+    // One tool row does both jobs: the channels as dot+icon chips on the left,
+    // the two list actions on the right.
+    //
+    // The channels used to be four full-width rows above the list. They cost
+    // ~110 pt of height on every visit to report something that changes twice a
+    // day, and they pushed "全部已读 / 清空" into a band of their own — a line
+    // away from the only thing those buttons act on. The list is what this tab
+    // is for, so it gets the height back.
+    let bar_h = 22.0;
+    let bar = Rect::from_min_size(rect.min, Vec2::new(rect.width(), bar_h));
 
-    y += 4.0;
-    let toolbar = Rect::from_min_size(
-        Pos2::new(rect.left(), y),
-        Vec2::new(rect.width(), 20.0),
+    // Buttons are as wide as their labels, not a fixed 64 pt: a 64 pt box for
+    // "清空" is a third of the row spent on air.
+    let btn_w = |label: &str| {
+        ui.painter()
+            .layout_no_wrap(
+                label.to_string(),
+                FontId::proportional(10.0),
+                Color32::WHITE,
+            )
+            .size()
+            .x
+            + 18.0
+    };
+    let clear_w = btn_w("清空").max(42.0);
+    let read_w = btn_w("全部已读").max(56.0);
+    let clear = Rect::from_min_size(
+        Pos2::new(bar.right() - clear_w, bar.top()),
+        Vec2::new(clear_w, bar_h),
     );
     let read_all = Rect::from_min_size(
-        Pos2::new(toolbar.right() - 140.0, toolbar.top()),
-        Vec2::new(64.0, 20.0),
-    );
-    let clear = Rect::from_min_size(
-        Pos2::new(toolbar.right() - 68.0, toolbar.top()),
-        Vec2::new(64.0, 20.0),
+        Pos2::new(clear.left() - 4.0 - read_w, bar.top()),
+        Vec2::new(read_w, bar_h),
     );
     if small_button(ui, read_all, p, "全部已读").clicked() {
         actions.push(Action::MarkAllRead);
@@ -846,12 +812,96 @@ fn inbox_tab(
         actions.push(Action::ClearInbox);
     }
 
-    y = toolbar.bottom() + 4.0;
+    // Channel chips. The **dot** is the only thing that carries state — source
+    // colour = live, grey ring = not live, orange ring = needs attention — and
+    // the icon carries identity and stays neutral. Colouring the icons by brand
+    // is what made four of them read as "four channels working" while one of
+    // them had no account configured at all.
+    //
+    // 29 pt per chip with 8 pt between them: at 2 pt apart the four marks fused
+    // into one strip of ink, and a 12 pt outline at 15 px has no room to breathe
+    // — the silhouettes live at the edges of the shape.
+    const CHIP_W: f32 = 29.0;
+    const CHIP_GAP: f32 = 8.0;
+    let mut x = bar.left();
+    for (source, state, last_at, note) in &channels {
+        let chip = Rect::from_min_size(Pos2::new(x, bar.top()), Vec2::new(CHIP_W, bar_h));
+        if chip.right() > read_all.left() - 6.0 {
+            break;
+        }
+        let live = state.is_ok();
+        let hovered = ui.rect_contains_pointer(chip);
+        // Opaque, and the same colour the two-bubble mark is filled with: a
+        // translucent plate would leave a paler square inside the front bubble.
+        let plate = if hovered { p.surface_alt } else { p.surface };
+        if hovered {
+            widgets::round_rect(ui, chip, 6.0, p.surface_alt, Stroke::NONE);
+        }
+        let dot = Pos2::new(chip.left() + 6.0, chip.center().y);
+        if live {
+            let (r, g, b) = source.color();
+            ui.painter()
+                .circle_filled(dot, 3.0, Color32::from_rgb(r, g, b));
+        } else {
+            // Hollow ring: filled means "listening", and nothing else does.
+            let ring = if state.is_problem() { p.warn } else { p.text_faint };
+            ui.painter()
+                .circle_stroke(dot, 2.6, Stroke::new(1.1_f32, ring));
+        }
+        widgets::glyph_on(
+            ui,
+            Pos2::new(dot.x + 11.0, chip.center().y),
+            13.5,
+            channel_glyph(*source),
+            if live { p.text_dim } else { p.text_faint },
+            1.1,
+            plate,
+        );
+        // The status text and the listening note both live in the tooltip now:
+        // the row has room for state-as-colour, not for "已接入 · 尚未收到信号"
+        // written four times over.
+        let (status, _) = channel_status(state, *last_at, st.today, p);
+        ui.interact(
+            chip,
+            ui.id().with(("ch", source.key())),
+            egui::Sense::hover(),
+        )
+        .on_hover_text(format!("{} · {}\n{}", source.label(), status, note));
+        x += CHIP_W + CHIP_GAP;
+    }
+
+    // A count, not a row: an orange ring says *which* chip, this says how many
+    // so the problem is visible without hovering each one. Dropped entirely when
+    // the row is too narrow to hold it — the ring is still there.
+    let offline = channels
+        .iter()
+        .filter(|(_, c, _, _)| !c.is_ok() && !matches!(c, ChannelState::Idle))
+        .count();
+    if offline > 0 {
+        let label = format!("{offline} 个渠道未接入");
+        let w = ui
+            .painter()
+            .layout_no_wrap(label.clone(), FontId::proportional(9.5), p.warn)
+            .size()
+            .x;
+        if x + 6.0 + w < read_all.left() - 8.0 {
+            widgets::text(
+                ui,
+                Pos2::new(read_all.left() - 10.0, bar.center().y),
+                Align2::RIGHT_CENTER,
+                &label,
+                9.5,
+                p.warn,
+            );
+        }
+    }
+
+    let mut y = bar.bottom() + 5.0;
     ui.painter().line_segment(
         [Pos2::new(rect.left(), y), Pos2::new(rect.right(), y)],
         Stroke::new(1.0_f32, p.divider),
     );
-    y += 6.0;
+    y += 7.0;
 
     let items: Vec<_> = st
         .inbox
@@ -994,9 +1044,12 @@ fn inbox_tab(
 // Performance
 // ---------------------------------------------------------------------------
 
-fn perf_tab(ui: &mut egui::Ui, rect: Rect, p: &Palette, st: &PanelState<'_>) {
-    let snap = st.snap;
-    let ring_d = 78.0;
+fn perf_tab(ui: &mut egui::Ui, rect: Rect, p: &Palette, st: &mut PanelState<'_>) {
+    // Cloned because the rows below borrow `st.perf_scroll` mutably while they
+    // read the snapshot; it is a handful of numbers and a small `Vec`.
+    let snap = st.snap.clone();
+    let disk_on = st.cfg.metrics.disk;
+    let ring_d = 66.0;
     let gap = 12.0;
     let top = Rect::from_min_size(rect.min, Vec2::new(rect.width(), ring_d));
     let card_w = (top.width() - gap) * 0.5;
@@ -1020,82 +1073,195 @@ fn perf_tab(ui: &mut egui::Ui, rect: Rect, p: &Palette, st: &PanelState<'_>) {
         }
     }
 
-    let mut y = top.bottom() + 12.0;
-    let mut rows: Vec<(String, String, Option<f32>)> = vec![
-        (
-            "内存".to_string(),
-            format!(
-                "{} / {}",
-                crate::metrics::human_bytes(snap.mem_used),
-                crate::metrics::human_bytes(snap.mem_total)
-            ),
-            None,
-        ),
-        (
-            "系统盘".to_string(),
-            if snap.disk_total > 0 {
-                format!(
-                    "{} / {}",
-                    crate::metrics::human_bytes(snap.disk_used),
-                    crate::metrics::human_bytes(snap.disk_total)
-                )
-            } else {
-                "不可用".to_string()
-            },
-            None,
-        ),
-        (
-            "网络".to_string(),
-            format!(
-                "↓ {} · ↑ {}",
-                crate::metrics::human_rate(snap.net_down_bps),
-                crate::metrics::human_rate(snap.net_up_bps)
-            ),
-            None,
-        ),
-        (
-            "开机".to_string(),
-            format!("{} 小时", crate::sys::uptime_secs() / 3600),
-            None,
-        ),
-    ];
-    // `metrics.disk` is a switch in the settings centre; the row was always
-    // shown regardless of it.
-    if !st.cfg.metrics.disk {
-        rows.retain(|(label, _, _)| label != "系统盘");
+    // Everything under the two cards is a single scrolling column. It has to
+    // scroll because the number of rows is no longer fixed: one row per mounted
+    // volume means a machine with four disks needs ~60 pt more than a laptop
+    // with one, and silently dropping the last volumes is worse than a wheel
+    // turn.
+    enum Row {
+        Line { label: String, value: String },
+        Caption(String),
+        Volume { name: String, value: String, frac: f32, level: u8 },
+        Error(String),
     }
-    for (label, value, _) in rows.drain(..) {
-        if y + 24.0 > rect.bottom() {
-            break;
+    let mut rows: Vec<Row> = Vec::new();
+    rows.push(Row::Line {
+        label: "内存".to_string(),
+        value: format!(
+            "{} / {}",
+            crate::metrics::human_bytes(snap.mem_used),
+            crate::metrics::human_bytes(snap.mem_total)
+        ),
+    });
+    rows.push(Row::Line {
+        label: "网络".to_string(),
+        value: format!(
+            "↓ {} · ↑ {}",
+            crate::metrics::human_rate(snap.net_down_bps),
+            crate::metrics::human_rate(snap.net_up_bps)
+        ),
+    });
+    if disk_on {
+        rows.push(Row::Line {
+            label: "磁盘读写".to_string(),
+            value: format!(
+                "↓ {} · ↑ {}",
+                crate::metrics::human_rate(snap.disk_read_bps),
+                crate::metrics::human_rate(snap.disk_write_bps)
+            ),
+        });
+    }
+    rows.push(Row::Line {
+        label: "开机".to_string(),
+        value: format!("{} 小时", crate::sys::uptime_secs() / 3600),
+    });
+    if disk_on {
+        rows.push(Row::Caption("磁盘容量".to_string()));
+        if snap.volumes.is_empty() {
+            rows.push(Row::Line {
+                label: "未找到可读的磁盘".to_string(),
+                value: String::new(),
+            });
         }
-        widgets::text(
-            ui,
-            Pos2::new(rect.left() + 2.0, y + 12.0),
-            Align2::LEFT_CENTER,
-            &label,
-            11.0,
-            p.text_dim,
-        );
-        widgets::mono_text(
-            ui,
-            Pos2::new(rect.right() - 2.0, y + 12.0),
-            Align2::RIGHT_CENTER,
-            &value,
-            10.5,
-            p.text,
-        );
-        y += 24.0;
+        for v in &snap.volumes {
+            let name = format!(
+                "{}: {}",
+                v.letter,
+                if v.label.is_empty() {
+                    "本地磁盘"
+                } else {
+                    v.label.as_str()
+                }
+            );
+            rows.push(Row::Volume {
+                name,
+                value: format!(
+                    "{} / {}",
+                    crate::metrics::human_bytes(v.used()),
+                    crate::metrics::human_bytes(v.total)
+                ),
+                frac: v.percent() / 100.0,
+                level: crate::metrics::level(v.percent()),
+            });
+        }
+    }
+    if let Some(err) = &st.metrics_error {
+        rows.push(Row::Error(err.clone()));
     }
 
-    if let Some(err) = &st.metrics_error {
-        widgets::text(
-            ui,
-            Pos2::new(rect.left() + 2.0, (y + 14.0).min(rect.bottom() - 6.0)),
-            Align2::LEFT_CENTER,
-            err,
-            10.0,
-            p.danger,
-        );
+    // 20 pt a row, 16 pt for a caption: with the cards at 66 pt this leaves room
+    // for three volumes in the default 292 pt panel, and the column scrolls when
+    // the machine has more. Rows were 24 pt when the list had a fixed length;
+    // a variable-length list cannot afford that.
+    let height_of = |row: &Row| match row {
+        Row::Caption(_) => 16.0,
+        _ => 20.0,
+    };
+    let content_h: f32 = rows.iter().map(height_of).sum();
+    let view = Rect::from_min_max(Pos2::new(rect.left(), top.bottom() + 10.0), rect.max);
+    let offset = scroll(ui, view, content_h, st.perf_scroll);
+
+    let prev_clip = ui.clip_rect();
+    ui.set_clip_rect(view);
+    let mut y = view.top() - offset;
+    for row in &rows {
+        let h = height_of(row);
+        if y + h > view.top() && y < view.bottom() {
+            paint(ui, view, y, h, row, p);
+        }
+        y += h;
+    }
+    ui.set_clip_rect(prev_clip);
+    scroll_bar(ui, view, p, content_h, offset);
+
+    /// One line of the performance column. Labels are proportional, every
+    /// number is monospace so a changing value never shifts the ones beside it,
+    /// and a volume puts a bar in the gap between the two: the same order as
+    /// the metric rows, so the whole column reads as one table instead of three
+    /// widget styles.
+    fn paint(ui: &mut egui::Ui, view: Rect, y: f32, h: f32, row: &Row, p: &Palette) {
+    let mid = y + h * 0.5;
+    match row {
+        Row::Caption(text) => {
+            widgets::text(
+                ui,
+                Pos2::new(view.left() + 1.0, mid),
+                Align2::LEFT_CENTER,
+                text,
+                9.0,
+                p.text_faint,
+            );
+        }
+        Row::Line { label, value } => {
+            widgets::text(
+                ui,
+                Pos2::new(view.left() + 1.0, mid),
+                Align2::LEFT_CENTER,
+                label,
+                11.0,
+                p.text_dim,
+            );
+            if !value.is_empty() {
+                widgets::mono_text(
+                    ui,
+                    Pos2::new(view.right() - 1.0, mid),
+                    Align2::RIGHT_CENTER,
+                    value,
+                    10.5,
+                    p.text,
+                );
+            }
+        }
+        Row::Error(text) => {
+            widgets::text(
+                ui,
+                Pos2::new(view.left() + 1.0, mid),
+                Align2::LEFT_CENTER,
+                text,
+                10.0,
+                p.danger,
+            );
+        }
+        Row::Volume {
+            name,
+            value,
+            frac,
+            level,
+        } => {
+            let name_galley =
+                ui.painter()
+                    .layout_no_wrap(name.clone(), FontId::proportional(10.5), p.text_dim);
+            let name_w = name_galley.size().x;
+            ui.painter().galley(
+                Pos2::new(view.left() + 1.0, mid - name_galley.size().y * 0.5),
+                name_galley,
+                p.text_dim,
+            );
+            let value_galley =
+                ui.painter()
+                    .layout_no_wrap(value.clone(), FontId::monospace(10.0), p.text);
+            let value_w = value_galley.size().x;
+            ui.painter().galley(
+                Pos2::new(view.right() - 1.0 - value_w, mid - value_galley.size().y * 0.5),
+                value_galley,
+                p.text,
+            );
+            let bar_left = view.left() + 1.0 + name_w + 10.0;
+            let bar_right = view.right() - 1.0 - value_w - 10.0;
+            if bar_right - bar_left > 18.0 {
+                widgets::bar(
+                    ui,
+                    Rect::from_min_max(
+                        Pos2::new(bar_left, mid - 2.0),
+                        Pos2::new(bar_right, mid + 2.0),
+                    ),
+                    *frac,
+                    p.level(*level),
+                    p.track,
+                );
+            }
+        }
+    }
     }
 }
 
@@ -1237,10 +1403,26 @@ fn empty_state(ui: &mut egui::Ui, rect: Rect, p: &Palette, title: &str, sub: &st
     );
 }
 
-/// Right-hand status of a channel row, with the colour it is written in.
+/// Outline that identifies a channel at 13.5 pt. Silhouette only — see the
+/// channel marks in [`Glyph`]: at this size any inner detail turns to mush, so
+/// the four shapes differ by outline (two bubbles / one round bubble /
+/// briefcase / envelope) and never by colour.
+fn channel_glyph(source: Source) -> Glyph {
+    match source {
+        Source::Qq => Glyph::Bubble,
+        Source::WeChat => Glyph::BubbleTwo,
+        // A briefcase, not a second chat bubble: 企业微信 is the *work* channel,
+        // and two bubble outlines side by side were indistinguishable at 15 px.
+        Source::WeCom => Glyph::Briefcase,
+        Source::Mail => Glyph::Mail,
+    }
+}
+
+/// Right-hand status of a channel, with the colour it is written in.
 ///
-/// "已接入 / 未接入" rather than the state machine's own vocabulary: the dot on
-/// the left says the same thing in colour, and both have to agree.
+/// Now that the status is no longer a row of its own this string only appears
+/// in the chip's tooltip; it is kept in one place so the tooltip cannot drift
+/// from the dot, which says the same thing in colour.
 fn channel_status(
     state: &ChannelState,
     last_at: Option<u64>,

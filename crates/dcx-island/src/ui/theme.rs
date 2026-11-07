@@ -95,49 +95,76 @@ pub struct Palette {
 }
 
 impl Palette {
-    pub fn system() -> Palette {
-        if dcx_win32::apps_use_light_theme() {
-            Palette {
-                light: true,
-                // Fully opaque: the panel is a solid card. It used to be 95 %
-                // (`0xF2`) and a wallpaper with any colour in it showed through,
-                // which reads as "the island still has a transparent
-                // background". The translucent look belongs to the capsule
-                // only — that is what the opacity setting says it controls.
-                surface: Color32::from_rgba_unmultiplied(0xFA, 0xFA, 0xFC, 0xFF),
-                surface_alt: Color32::from_rgba_unmultiplied(0xEE, 0xEE, 0xF4, 0xFF),
-                stroke: Color32::from_rgba_unmultiplied(0x1A, 0x1A, 0x22, 0x1F),
-                text: Color32::from_rgb(0x1B, 0x1B, 0x22),
-                text_dim: Color32::from_rgb(0x5E, 0x5E, 0x6B),
-                text_faint: Color32::from_rgb(0x8E, 0x8E, 0x9B),
-                accent: Color32::from_rgb(0x50, 0x36, 0xE2),
-                accent_soft: Color32::from_rgba_unmultiplied(0x50, 0x36, 0xE2, 0x1F),
-                ok: Color32::from_rgb(0x18, 0x9A, 0x4A),
-                warn: Color32::from_rgb(0xC0, 0x77, 0x00),
-                danger: Color32::from_rgb(0xC4, 0x2B, 0x1C),
-                track: Color32::from_rgba_unmultiplied(0x1A, 0x1A, 0x22, 0x14),
-                shadow: Color32::from_rgba_unmultiplied(0x1A, 0x1A, 0x22, 0x24),
-                divider: Color32::from_rgba_unmultiplied(0x1A, 0x1A, 0x22, 0x12),
-            }
+    /// The user's theme choice: `"system"` follows Windows, `"light"` and
+    /// `"dark"` pin the island's own appearance. Only the island is themed;
+    /// the settings window keeps following Windows.
+    pub fn for_theme(theme: &str) -> Palette {
+        let light = match theme {
+            "light" => true,
+            "dark" => false,
+            _ => dcx_win32::apps_use_light_theme(),
+        };
+        if light {
+            Palette::light()
         } else {
-            Palette {
-                light: false,
-                // Opaque for the same reason as the light palette.
-                surface: Color32::from_rgba_unmultiplied(0x1C, 0x1C, 0x22, 0xFF),
-                surface_alt: Color32::from_rgba_unmultiplied(0x2A, 0x2A, 0x33, 0xFF),
-                stroke: Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 0x20),
-                text: Color32::from_rgb(0xF2, 0xF2, 0xF6),
-                text_dim: Color32::from_rgb(0xB4, 0xB4, 0xC0),
-                text_faint: Color32::from_rgb(0x82, 0x82, 0x8E),
-                accent: Color32::from_rgb(0x92, 0x82, 0xFF),
-                accent_soft: Color32::from_rgba_unmultiplied(0x92, 0x82, 0xFF, 0x2E),
-                ok: Color32::from_rgb(0x4A, 0xCF, 0x7E),
-                warn: Color32::from_rgb(0xE8, 0xB0, 0x4B),
-                danger: Color32::from_rgb(0xF0, 0x6A, 0x5C),
-                track: Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 0x1C),
-                shadow: Color32::from_rgba_unmultiplied(0x00, 0x00, 0x00, 0x50),
-                divider: Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 0x14),
-            }
+            Palette::dark()
+        }
+    }
+
+    fn light() -> Palette {
+        Palette {
+            light: true,
+            // Fully opaque: the panel is a solid card. It used to be 95 %
+            // (`0xF2`) and a wallpaper with any colour in it showed through,
+            // which reads as "the island still has a transparent
+            // background". The translucent look belongs to the capsule
+            // only — that is what the opacity setting says it controls.
+            surface: Color32::from_rgba_unmultiplied(0xFA, 0xFA, 0xFC, 0xFF),
+            surface_alt: Color32::from_rgba_unmultiplied(0xEE, 0xEE, 0xF4, 0xFF),
+            stroke: Color32::from_rgba_unmultiplied(0x1A, 0x1A, 0x22, 0x1F),
+            text: Color32::from_rgb(0x1B, 0x1B, 0x22),
+            text_dim: Color32::from_rgb(0x5E, 0x5E, 0x6B),
+            text_faint: Color32::from_rgb(0x8E, 0x8E, 0x9B),
+            accent: Color32::from_rgb(0x50, 0x36, 0xE2),
+            accent_soft: Color32::from_rgba_unmultiplied(0x50, 0x36, 0xE2, 0x1F),
+            ok: Color32::from_rgb(0x18, 0x9A, 0x4A),
+            warn: Color32::from_rgb(0xC0, 0x77, 0x00),
+            danger: Color32::from_rgb(0xC4, 0x2B, 0x1C),
+            track: Color32::from_rgba_unmultiplied(0x1A, 0x1A, 0x22, 0x14),
+            shadow: Color32::from_rgba_unmultiplied(0x1A, 0x1A, 0x22, 0x24),
+            divider: Color32::from_rgba_unmultiplied(0x1A, 0x1A, 0x22, 0x12),
+        }
+    }
+
+    fn dark() -> Palette {
+        Palette {
+            light: false,
+            // Opaque for the same reason as the light palette.
+            surface: Color32::from_rgba_unmultiplied(0x1C, 0x1C, 0x22, 0xFF),
+            surface_alt: Color32::from_rgba_unmultiplied(0x2A, 0x2A, 0x33, 0xFF),
+            // A white hairline at 12 % is what the light theme's dark hairline
+            // becomes at the same *perceived* strength — but white on dark reads
+            // far stronger: the card's edge and the field's border looked like
+            // drawn-on lines. Win11's dark surfaces use ~6 % white; this is that.
+            stroke: Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 0x10),
+            text: Color32::from_rgb(0xF2, 0xF2, 0xF6),
+            text_dim: Color32::from_rgb(0xB4, 0xB4, 0xC0),
+            text_faint: Color32::from_rgb(0x82, 0x82, 0x8E),
+            accent: Color32::from_rgb(0x92, 0x82, 0xFF),
+            accent_soft: Color32::from_rgba_unmultiplied(0x92, 0x82, 0xFF, 0x12),
+            ok: Color32::from_rgb(0x4A, 0xCF, 0x7E),
+            warn: Color32::from_rgb(0xE8, 0xB0, 0x4B),
+            danger: Color32::from_rgb(0xF0, 0x6A, 0x5C),
+            // This window blends its surface in linear space, so a white overlay
+            // lands much closer to white than its alpha suggests: 11 % rendered
+            // as a pale block (the two "bar cylinders"). The dark palette's
+            // translucent whites are therefore roughly a quarter of the light
+            // palette's, which is what makes them read as hairlines.
+            track: Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 0x04),
+            shadow: Color32::from_rgba_unmultiplied(0x00, 0x00, 0x00, 0x50),
+            // Separators and the search field's outline: one step below the
+            // card edge, as in the light palette.
+            divider: Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 0x02),
         }
     }
 

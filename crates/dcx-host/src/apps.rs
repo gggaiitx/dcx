@@ -58,7 +58,7 @@ static REGISTRY: &[AppEntry] = &[
         exe: "dcx-search.exe",
         // 必须与 dcx-search/src/app.rs::WIN_TITLE 逐字一致。
         window_title: "文件检索",
-        description: "全盘文件名与内容检索，默认关闭，由全局热键唤起",
+        description: "全盘文件名与内容检索，由全局热键唤起",
         default_on: false,
     },
     AppEntry {
@@ -67,7 +67,7 @@ static REGISTRY: &[AppEntry] = &[
         exe: "dcx-island.exe",
         // 必须与 dcx-island/src/app.rs::WIN_TITLE 逐字一致。
         window_title: "桌面信息岛",
-        description: "时间、系统性能、任务提醒、剪贴板与消息聚合，默认关闭",
+        description: "时间、系统性能、任务提醒、剪贴板与消息聚合",
         // 常驻 topmost 悬浮窗会改变现有桌面；与文件检索一样由设置中心显式开启。
         default_on: false,
     },

@@ -64,6 +64,28 @@ extern "system" {
     fn GlobalFree(mem: Handle) -> Handle;
     fn GetTickCount64() -> u64;
     fn MessageBeep(kind: u32) -> Bool;
+    fn GetLogicalDrives() -> u32;
+    fn GetDriveTypeW(root: *const u16) -> u32;
+    fn GetVolumeInformationW(
+        root: *const u16,
+        name: *mut u16,
+        name_len: u32,
+        serial: *mut u32,
+        max_component: *mut u32,
+        flags: *mut u32,
+        fs_name: *mut u16,
+        fs_name_len: u32,
+    ) -> Bool;
+}
+
+#[link(name = "ntdll")]
+extern "system" {
+    fn NtQuerySystemInformation(
+        class: u32,
+        info: *mut c_void,
+        len: u32,
+        ret_len: *mut u32,
+    ) -> i32;
 }
 
 /// A raw CPU sample: idle and busy counters in 100 ns units.
@@ -127,12 +149,243 @@ pub fn uptime_secs() -> u64 {
     (unsafe { GetTickCount64() }) / 1000
 }
 
+// ---------------------------------------------------------------------------
+// Volumes and disk throughput
+// ---------------------------------------------------------------------------
+
+/// One mounted fixed volume.
+#[derive(Clone, Debug, Default)]
+pub struct Volume {
+    /// Drive letter, `C`, `D`, …
+    pub letter: char,
+    /// Volume label; empty when the volume has none.
+    pub label: String,
+    pub total: u64,
+    pub free: u64,
+}
+
+impl Volume {
+    pub fn used(&self) -> u64 {
+        self.total.saturating_sub(self.free)
+    }
+
+    pub fn percent(&self) -> f32 {
+        if self.total == 0 {
+            0.0
+        } else {
+            (self.used() as f64 / self.total as f64 * 100.0) as f32
+        }
+    }
+}
+
+const DRIVE_FIXED: u32 = 3;
+const DRIVE_REMOVABLE: u32 = 2;
+
+/// Every ready fixed (or removable-with-media) volume, A: .. Z:.
+///
+/// `GetDiskFreeSpaceExW` doubles as the readiness test — a card reader with an
+/// empty slot fails it, and an entry that cannot report its size has no place
+/// in a "disk usage" list.
+pub fn volumes() -> Vec<Volume> {
+    let mask = unsafe { GetLogicalDrives() };
+    let mut out = Vec::new();
+    for i in 0..26u32 {
+        if mask & (1 << i) == 0 {
+            continue;
+        }
+        let letter = (b'A' + i as u8) as char;
+        let root = dcx_win32::wide(&format!("{letter}:\\"));
+        let kind = unsafe { GetDriveTypeW(root.as_ptr()) };
+        if kind != DRIVE_FIXED && kind != DRIVE_REMOVABLE {
+            continue;
+        }
+        let (mut free, mut total, mut total_free) = (0u64, 0u64, 0u64);
+        if unsafe { GetDiskFreeSpaceExW(root.as_ptr(), &mut free, &mut total, &mut total_free) } == 0 {
+            continue;
+        }
+        if total == 0 {
+            continue;
+        }
+        let mut name = [0u16; 64];
+        let (mut serial, mut max_component, mut flags) = (0u32, 0u32, 0u32);
+        let ok = unsafe {
+            GetVolumeInformationW(
+                root.as_ptr(),
+                name.as_mut_ptr(),
+                name.len() as u32,
+                &mut serial,
+                &mut max_component,
+                &mut flags,
+                core::ptr::null_mut(),
+                0,
+            )
+        };
+        let label = if ok == 0 {
+            String::new()
+        } else {
+            let end = name.iter().position(|c| *c == 0).unwrap_or(0);
+            String::from_utf16_lossy(&name[..end])
+        };
+        out.push(Volume {
+            letter,
+            label,
+            total,
+            free,
+        });
+    }
+    out
+}
+
+/// Cumulative bytes read and written by the I/O manager since boot.
+///
+/// `SystemPerformanceInformation` is the only delta-friendly source that needs
+/// no handle: PDH's `PhysicalDisk` counters need a query, two collections
+/// before the first value, and a counter name that changes with the display
+/// language. The counters here are system-wide (they include the network
+/// redirector and pipes), which is the same trade Task Manager makes for its
+/// single "Disk" graph.
+pub fn disk_io_bytes() -> Option<(u64, u64)> {
+    const SYSTEM_PERFORMANCE_INFORMATION: u32 = 2;
+    let mut buf = [0u8; 1024];
+    let mut ret = 0u32;
+    let mut rc = unsafe {
+        NtQuerySystemInformation(
+            SYSTEM_PERFORMANCE_INFORMATION,
+            buf.as_mut_ptr() as *mut c_void,
+            buf.len() as u32,
+            &mut ret,
+        )
+    };
+    // Newer builds grew the struct; the call reports the size it wants.
+    let mut grow = Vec::new();
+    if rc < 0 && ret as usize > buf.len() {
+        grow = vec![0u8; ret as usize];
+        rc = unsafe {
+            NtQuerySystemInformation(
+                SYSTEM_PERFORMANCE_INFORMATION,
+                grow.as_mut_ptr() as *mut c_void,
+                grow.len() as u32,
+                &mut ret,
+            )
+        };
+    }
+    if rc < 0 || ret < 24 {
+        return None;
+    }
+    let bytes: &[u8] = if grow.is_empty() { &buf } else { &grow };
+    // IdleProcessTime, then IoReadTransferCount and IoWriteTransferCount: the
+    // first three LARGE_INTEGERs of SYSTEM_PERFORMANCE_INFORMATION.
+    let read = i64::from_le_bytes(bytes[8..16].try_into().ok()?);
+    let write = i64::from_le_bytes(bytes[16..24].try_into().ok()?);
+    if read < 0 || write < 0 {
+        return None;
+    }
+    Some((read as u64, write as u64))
+}
+
 pub fn beep() {
     const MB_ICONASTERISK: u32 = 0x0000_0040;
     unsafe {
         MessageBeep(MB_ICONASTERISK);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Reminder chime
+// ---------------------------------------------------------------------------
+
+#[link(name = "winmm")]
+extern "system" {
+    /// With `SND_MEMORY`, `sound` points at a complete WAV image rather than at
+    /// a file name, so the first parameter is declared as a byte pointer.
+    fn PlaySoundW(sound: *const u8, module: Handle, flags: u32) -> Bool;
+}
+
+const SND_ASYNC: u32 = 0x0001;
+const SND_NODEFAULT: u32 = 0x0002;
+const SND_MEMORY: u32 = 0x0004;
+
+/// Play the reminder chime.
+///
+/// [`beep`] asks the sound *scheme* for the "asterisk" entry, and the schemes
+/// machines actually run — 无声, or an emptied Asterisk slot — play nothing at
+/// all. That is the "到点了没有声音" report. A WAV we synthesise ourselves cannot
+/// be silenced by a scheme; only the system volume can.
+///
+/// `SND_ASYNC` returns immediately, so the render thread is never blocked by
+/// the 0.7 s of audio. The buffer is a `'static` `OnceLock`, which is the one
+/// hard requirement of `SND_MEMORY`: winmm keeps reading it after we return.
+pub fn chime() {
+    let wav = chime_wav();
+    let played = unsafe { PlaySoundW(wav.as_ptr(), 0, SND_MEMORY | SND_ASYNC | SND_NODEFAULT) };
+    if played == 0 {
+        // Recorded rather than swallowed: a silent reminder looks exactly like a
+        // broken reminder, and the log is the only place to tell them apart.
+        crate::win::trace("chime: PlaySound refused the in-memory WAV; fell back to MessageBeep");
+        beep();
+    }
+}
+
+fn chime_wav() -> &'static [u8] {
+    use std::sync::OnceLock;
+    static WAV: OnceLock<Vec<u8>> = OnceLock::new();
+    WAV.get_or_init(build_chime)
+}
+
+/// A two-note rising chime (B5 → E6) as a 16-bit mono 44.1 kHz WAV image.
+///
+/// Two notes rather than one beep because a single tone at this length reads as
+/// an error, and a reminder is not an error. Each note has a 6 ms attack and an
+/// exponential decay — a struck bell, not a test tone — plus a quiet octave so
+/// it still carries at low volume.
+fn build_chime() -> Vec<u8> {
+    const RATE: u32 = 44_100;
+    const SECONDS: f32 = 0.75;
+    // (start s, Hz, length s, peak)
+    const NOTES: [(f32, f32, f32, f32); 2] = [
+        (0.00, 987.77, 0.34, 0.42),  // B5
+        (0.13, 1318.51, 0.55, 0.36), // E6
+    ];
+
+    let frames = (RATE as f32 * SECONDS) as usize;
+    let mut samples = vec![0.0f32; frames];
+    for (start, freq, len, peak) in NOTES {
+        let first = (start * RATE as f32) as usize;
+        let n = (len * RATE as f32) as usize;
+        for i in 0..n {
+            let idx = first + i;
+            if idx >= frames {
+                break;
+            }
+            let t = i as f32 / RATE as f32;
+            let attack = (t / 0.006).min(1.0);
+            let decay = (-t / (len * 0.42)).exp();
+            let phase = std::f32::consts::TAU * freq * t;
+            samples[idx] += peak * attack * decay * (phase.sin() + 0.25 * (2.0 * phase).sin());
+        }
+    }
+
+    let mut wav = Vec::with_capacity(44 + frames * 2);
+    let data_bytes = (frames * 2) as u32;
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data_bytes).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    wav.extend_from_slice(&1u16.to_le_bytes()); // mono
+    wav.extend_from_slice(&RATE.to_le_bytes());
+    wav.extend_from_slice(&(RATE * 2).to_le_bytes()); // byte rate
+    wav.extend_from_slice(&2u16.to_le_bytes()); // block align
+    wav.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_bytes.to_le_bytes());
+    for s in samples {
+        let v = (s.clamp(-1.0, 1.0) * 32_767.0) as i16;
+        wav.extend_from_slice(&v.to_le_bytes());
+    }
+    wav
+}
+
 
 // ---------------------------------------------------------------------------
 // Network — GetIfTable2 / MIB_IF_ROW2
@@ -697,6 +950,27 @@ mod tests {
         assert_eq!(core::mem::size_of::<MibIfRow2>(), 1352);
         assert_eq!(core::mem::size_of::<MemoryStatusEx>(), 64);
         assert!(sizes_are_sane().is_empty());
+    }
+
+    #[test]
+    fn chime_is_a_valid_pcm_wav() {
+        let wav = build_chime();
+        assert_eq!(&wav[0..4], b"RIFF");
+        assert_eq!(&wav[8..12], b"WAVE");
+        assert_eq!(&wav[36..40], b"data");
+        assert_eq!(u16::from_le_bytes([wav[20], wav[21]]), 1, "PCM");
+        assert_eq!(u16::from_le_bytes([wav[22], wav[23]]), 1, "mono");
+        assert_eq!(u16::from_le_bytes([wav[34], wav[35]]), 16, "16-bit");
+        let declared = u32::from_le_bytes([wav[40], wav[41], wav[42], wav[43]]) as usize;
+        assert_eq!(declared, wav.len() - 44);
+        // A buffer of silence would also "play successfully", so the samples
+        // themselves are the thing worth asserting.
+        let peak = wav[44..]
+            .chunks_exact(2)
+            .map(|c| i16::from_le_bytes([c[0], c[1]]).abs())
+            .max()
+            .unwrap_or(0);
+        assert!(peak > 8_000, "chime peak {peak} is too quiet to hear");
     }
 
     #[test]

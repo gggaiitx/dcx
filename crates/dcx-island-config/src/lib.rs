@@ -194,6 +194,9 @@ pub struct UiCfg {
     /// Pin the island to a monitor: empty = primary, otherwise a device name
     /// such as `\\.\DISPLAY2`.
     pub monitor: String,
+    /// The island's own appearance: "system" | "light" | "dark". Only the
+    /// island is themed — the settings window keeps following Windows.
+    pub theme: String,
 }
 
 impl Default for Config {
@@ -333,6 +336,7 @@ impl Default for UiCfg {
             panel_height: 436.0,
             last_tab: "tasks".to_string(),
             monitor: String::new(),
+            theme: "system".to_string(),
         }
     }
 }
@@ -366,6 +370,9 @@ impl Config {
             "tasks" | "clip" | "inbox" | "perf"
         ) {
             self.ui.last_tab = "tasks".to_string();
+        }
+        if !matches!(self.ui.theme.as_str(), "system" | "light" | "dark") {
+            self.ui.theme = "system".to_string();
         }
     }
 }

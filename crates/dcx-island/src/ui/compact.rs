@@ -30,6 +30,9 @@ pub struct CapsuleState {
     /// its border thickens, once every ~0.85 s. This is the alert now that the
     /// panel no longer pops open by itself.
     pub flash: f32,
+    /// Seconds since the reminder fired; the bell's shake and the sweep are
+    /// driven by this, while `flash` is the envelope that fades them out.
+    pub flash_t: f32,
 }
 
 /// How the row should be drawn. The same layout runs in both states; only the
@@ -70,12 +73,40 @@ pub fn draw(
     let flash = st.flash.clamp(0.0, 1.0);
 
     if opts.shell {
-        let surface = with_alpha(p.surface, opacity);
+        // Painting order matters here. The accent wash used to be drawn *over*
+        // the pill's own border, so the ring was dimmed by its own highlight and
+        // the whole pill went lavender with purple text on top: at 22 % over a
+        // 2.3 pt ring it read as an invalid-input focus ring, not as a reminder.
+        // Now the wash goes first and stays at 2–8 %, the sheen sits over it, and
+        // the border is the last thing painted.
+        widgets::round_rect_smooth(
+            ui,
+            rect,
+            radius,
+            with_alpha(p.surface, opacity),
+            Stroke::NONE,
+        );
+        if flash > 0.01 {
+            widgets::round_rect_smooth(
+                ui,
+                rect,
+                radius,
+                with_alpha(p.accent, 0.02 + 0.06 * flash),
+                Stroke::NONE,
+            );
+        }
+
+        // No top sheen. It was meant to make a translucent capsule read as
+        // glass, but this window blends its surface in linear space: a 4 %
+        // white overlay lands at roughly a fifth of the way to white, and the
+        // sheen turned into a light band across the upper half of the pill.
+        // The fill and its hairline border are enough in both palettes.
+
+        // The reminder owns the border while it runs. Fixed 1.2 pt width: a ring
+        // that also thickens makes the pill's edge move every frame, which reads
+        // as a rendering glitch rather than as an alert.
         let stroke = if flash > 0.01 {
-            // The reminder owns the border while it runs: a thin accent ring
-            // that breathes, so "something is due" is visible from across the
-            // room without a second window.
-            Stroke::new(1.0 + 1.3 * flash, with_alpha(p.accent, 0.25 + 0.75 * flash))
+            Stroke::new(1.2_f32, with_alpha(p.accent, 0.30 + 0.65 * flash))
         } else if st.open {
             Stroke::new(1.0_f32, with_alpha(p.accent, 0.55))
         } else if st.hovered {
@@ -83,38 +114,17 @@ pub fn draw(
         } else {
             Stroke::new(1.0_f32, p.stroke)
         };
-        // No drop shadow here. The window is exactly the pill, so every shadow
-        // ring would be clipped at the window edge — the soft gradient survived
-        // only on the two ends (the content row was inset) and the cut-off at
-        // the window border is what read as "a transparent box behind the
-        // island". The card has the same geometry, so it never had a shadow
-        // either.
-        widgets::round_rect(ui, rect, radius, surface, stroke);
-        if flash > 0.01 {
-            widgets::round_rect(
-                ui,
-                rect,
-                radius,
-                with_alpha(p.accent, 0.06 + 0.16 * flash),
-                Stroke::NONE,
-            );
-        }
-
-        // A very light top sheen, the same trick the taskbar pill uses: it makes
-        // a translucent capsule read as glass instead of as flat grey.
-        if !p.light {
-            let sheen = Rect::from_min_max(
-                rect.min + Vec2::new(radius * 0.6, 1.0),
-                Pos2::new(rect.right() - radius * 0.6, rect.center().y),
-            );
-            widgets::round_rect(
-                ui,
-                sheen,
-                sheen.height() * 0.5,
-                Color32::from_rgba_unmultiplied(255, 255, 255, 10),
-                Stroke::NONE,
-            );
-        }
+        // The border is stroked on a path inset by half its width so it lands
+        // flush on the pill's outer edge instead of forming a second, smaller
+        // outline inside it: an inset of a full point left a visible white gap
+        // between the border and the fill's edge.
+        widgets::round_rect_smooth(
+            ui,
+            rect.shrink(0.5),
+            (radius - 0.5).max(1.0),
+            Color32::TRANSPARENT,
+            stroke,
+        );
     }
 
     let pad = opts.pad;
@@ -322,22 +332,42 @@ pub fn draw(
     if let Some(task) = &st.task {
         let avail = (right - left).max(0.0);
         if avail > 40.0 {
-            // A bell marks the text as a reminder rather than as part of the
-            // clock, and the accent colour matches the pulsing border.
-            let bell_x = left + 5.0;
-            widgets::glyph(ui, Pos2::new(bell_x, mid_y), 10.0, Glyph::Bell, p.accent);
-            let text_left = bell_x + 9.0;
+            // Motion, not colour, is what says "ringing": the bell swings twice
+            // per breath and settles, on the same envelope as the border, so the
+            // alert has one rhythm instead of two competing ones.
+            let phase = (st.flash_t / 0.85).fract();
+            let swing = if flash > 0.01 {
+                2.4 * flash
+                    * (-4.5 * phase).exp()
+                    * (phase * std::f32::consts::TAU * 2.0).sin()
+            } else {
+                0.0
+            };
+            let bell_c = Pos2::new(left + 5.0 + swing, mid_y);
+            if flash > 0.01 {
+                // Halo behind the bell instead of a wash over the whole pill:
+                // lighting one end says where the alert comes from without
+                // tinting the clock and the text beside it.
+                for (r, a) in [(9.0_f32, 0.05_f32), (6.5, 0.07), (4.0, 0.11)] {
+                    ui.painter()
+                        .circle_filled(bell_c, r, with_alpha(p.accent, a * flash));
+                }
+            }
+            widgets::glyph(ui, bell_c, 10.0, Glyph::Bell, p.accent);
+            let text_left = left + 14.0;
             let avail = (right - text_left).max(0.0);
+            // Body colour, not accent: the task name has to stay as readable as
+            // the clock it sits next to. The bell and the ring carry "reminder".
             let galley = ui.painter().layout(
                 task.clone(),
                 FontId::proportional(11.0),
-                p.accent,
+                p.text,
                 avail,
             );
             let h = galley.size().y.min(rect.height() - 6.0);
             let pos = Pos2::new(text_left, mid_y - h * 0.5);
             let clip = Rect::from_min_size(pos, Vec2::new(avail, h));
-            ui.painter().with_clip_rect(clip).galley(pos, galley, p.accent);
+            ui.painter().with_clip_rect(clip).galley(pos, galley, p.text);
         }
     }
 
@@ -376,15 +406,21 @@ fn with_alpha(color: Color32, factor: f32) -> Color32 {
     Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), a)
 }
 
-/// Tiny resize handle drawn in the panel's bottom-right corner.
+/// Tiny resize grip drawn in the panel's bottom-right corner.
+///
+/// Three 45° ticks placed along the corner's diagonal and *inside* the 14 pt
+/// radius. The old version put them 4–10 px from the corner, which is outside
+/// the arc — and on a rounded window those pixels are transparent, so the grip
+/// floated in the wallpaper past the card's edge. That was the second
+/// "透明的尖尖".
 pub fn resize_grip(ui: &egui::Ui, rect: Rect, p: &Palette) {
     let c = p.text_faint;
     for i in 0..3 {
-        let off = i as f32 * 3.0;
+        let t = 8.0 + i as f32 * 3.0;
         ui.painter().line_segment(
             [
-                Pos2::new(rect.right() - 4.0 - off, rect.bottom() - 4.0),
-                Pos2::new(rect.right() - 4.0, rect.bottom() - 4.0 - off),
+                Pos2::new(rect.right() - t - 2.5, rect.bottom() - t + 2.5),
+                Pos2::new(rect.right() - t + 2.5, rect.bottom() - t - 2.5),
             ],
             Stroke::new(1.0_f32, c),
         );

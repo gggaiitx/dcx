@@ -2192,14 +2192,22 @@ impl SettingsApp {
 
     // -- 桌面信息岛 ---------------------------------------------------------
 
-    /// Write `island.toml`. Both processes write this document, so the `ui`
-    /// table (last tab, panel size) is re-read from disk and kept; without the
-    /// merge a slider edit here would roll back the island's own geometry.
+    /// Write `island.toml`. Both processes write this document, so the
+    /// geometry the island owns (panel size, last tab, monitor) is re-read from
+    /// disk and kept; the theme belongs to this window and comes from the
+    /// edit in progress. Without the merge a slider edit here would roll back
+    /// the island's own geometry.
     fn persist_island(&mut self) {
         let prev_enabled = self.island_saved.enabled;
         let disk = dcx_island_config::load();
         let merged = dcx_island_config::Config {
-            ui: disk.ui.clone(),
+            ui: dcx_island_config::UiCfg {
+                panel_width: disk.ui.panel_width,
+                panel_height: disk.ui.panel_height,
+                last_tab: disk.ui.last_tab.clone(),
+                monitor: disk.ui.monitor.clone(),
+                theme: self.island.ui.theme.clone(),
+            },
             ..self.island.clone()
         };
         match dcx_island_config::save(&merged) {
@@ -2245,7 +2253,7 @@ impl SettingsApp {
                 p,
                 RowIcon::Power,
                 "启用桌面信息岛",
-                "唯一启停开关：同时写入 island.toml 与 apps.toml；默认关闭，开启后顶部常驻悬浮胶囊",
+                "总开关；开启后屏幕顶部常驻胶囊，关闭后热键与下面的外观设置都不再生效",
                 |ui| {
                     switch(ui, p, &mut enabled);
                 },
@@ -2261,7 +2269,7 @@ impl SettingsApp {
                 p,
                 RowIcon::Power,
                 "启用全局快捷键",
-                "由 dcx-host 常驻监听；仅在信息岛已启用时有效，按下展开/收起面板",
+                "按下快捷键展开或收起面板；仅信息岛启用时生效",
                 |ui| {
                     switch(ui, p, &mut hk_on);
                 },
@@ -2274,7 +2282,7 @@ impl SettingsApp {
                 p,
                 RowIcon::Info,
                 "全局快捷键",
-                "默认 Alt+i；必须带 Alt / Ctrl / Shift / Win 之一，改键约 1 秒后生效",
+                "需包含 Alt / Ctrl / Shift / Win 之一，默认 Alt+i；修改后约 1 秒生效",
                 |ui| {
                     ui.add(egui::TextEdit::singleline(&mut iv.hotkey).desired_width(130.0));
                     if let Err(why) = crate::hotkey::validate(&iv.hotkey) {
@@ -2285,14 +2293,14 @@ impl SettingsApp {
             row_separator(ui, p);
 
             let mut hour24 = iv.clock.hour24;
-            row_tight(ui, p, RowIcon::Info, "24 小时制", "关闭后显示 AM / PM", |ui| {
+            row_tight(ui, p, RowIcon::Info, "24 小时制", "关闭后显示上午 / 下午", |ui| {
                 switch(ui, p, &mut hour24);
             });
             iv.clock.hour24 = hour24;
             row_separator(ui, p);
 
             let mut show_seconds = iv.clock.show_seconds;
-            row_tight(ui, p, RowIcon::Info, "显示秒", "紧凑态显示 HH:MM:SS", |ui| {
+            row_tight(ui, p, RowIcon::Info, "显示秒", "胶囊上的时间精确到秒", |ui| {
                 switch(ui, p, &mut show_seconds);
             });
             iv.clock.show_seconds = show_seconds;
@@ -2300,11 +2308,11 @@ impl SettingsApp {
 
             let mut show_weekday = iv.clock.show_weekday;
             let mut show_date = iv.clock.show_date;
-            row_tight(ui, p, RowIcon::Info, "显示星期", "紧凑态显示中文星期", |ui| {
+            row_tight(ui, p, RowIcon::Info, "显示星期", "在时间后显示周几", |ui| {
                 switch(ui, p, &mut show_weekday);
             });
             row_separator(ui, p);
-            row_tight(ui, p, RowIcon::Info, "显示日期", "紧凑态同时显示年月日", |ui| {
+            row_tight(ui, p, RowIcon::Info, "显示日期", "在时间后显示月日", |ui| {
                 switch(ui, p, &mut show_date);
             });
             iv.clock.show_weekday = show_weekday;
@@ -2317,12 +2325,44 @@ impl SettingsApp {
                 p,
                 RowIcon::Desktop,
                 "全屏时自动隐藏",
-                "视频、游戏、演示文稿处于前台时收起胶囊，避免遮挡",
+                "全屏应用在前台时收起胶囊，避免遮挡视频、游戏和演示",
                 |ui| {
                     switch(ui, p, &mut hide_fs);
                 },
             );
             iv.behavior.hide_fullscreen = hide_fs;
+        });
+
+        ui.add_space(18.0);
+        caption(ui, p, "外观");
+        card(ui, p, |ui| {
+            let mut theme = match iv.ui.theme.as_str() {
+                "light" => 1u8,
+                "dark" => 2u8,
+                _ => 0u8,
+            };
+            row_reserve(
+                ui,
+                p,
+                RowIcon::Shape,
+                "主题",
+                "跟随系统，或固定浅色 / 深色；只影响信息岛，不改系统设置",
+                300.0,
+                |ui| {
+                    radios(
+                        ui,
+                        p,
+                        &mut theme,
+                        &[(0u8, "跟随系统"), (1u8, "浅色"), (2u8, "深色")],
+                    );
+                },
+            );
+            iv.ui.theme = match theme {
+                1 => "light",
+                2 => "dark",
+                _ => "system",
+            }
+            .to_string();
             row_separator(ui, p);
 
             slider_row(
@@ -2330,7 +2370,7 @@ impl SettingsApp {
                 p,
                 RowIcon::Width,
                 "胶囊宽度",
-                "逻辑点，125% DPI 下乘以 1.25 为物理像素",
+                "胶囊的横向尺寸；调宽才能放下更多指标",
                 &mut iv.behavior.capsule_width,
                 150.0_f32,
                 420.0_f32,
@@ -2343,7 +2383,7 @@ impl SettingsApp {
                 p,
                 RowIcon::Tall,
                 "胶囊高度",
-                "逻辑点；过小会让文字被裁切",
+                "过矮会把时间与读数裁掉",
                 &mut iv.behavior.capsule_height,
                 26.0_f32,
                 64.0_f32,
@@ -2351,34 +2391,39 @@ impl SettingsApp {
                 true,
             );
             row_separator(ui, p);
-            slider_row(
+            // Percent, not the stored 0.6–1.0 fraction: an integer range makes
+            // the track step 1 % at a time and the value reads at a glance.
+            let mut percent = (iv.behavior.opacity * 100.0).round().clamp(60.0, 100.0) as u32;
+            if slider_row(
                 ui,
                 p,
                 RowIcon::Shape,
                 "背景不透明度",
-                "只作用于胶囊背景，文字保持不透明",
-                &mut iv.behavior.opacity,
-                0.6_f32,
-                1.0_f32,
-                "",
+                "只调胶囊底色，文字始终不透明",
+                &mut percent,
+                60u32,
+                100u32,
+                " %",
                 true,
-            );
+            ) {
+                iv.behavior.opacity = percent as f32 / 100.0;
+            }
         });
 
         ui.add_space(18.0);
         caption(ui, p, "系统性能");
         card(ui, p, |ui| {
             let mut show = iv.metrics.show;
-            row_tight(ui, p, RowIcon::Power, "显示性能指标", "紧凑态显示 CPU / 内存等读数", |ui| {
+            row_tight(ui, p, RowIcon::Power, "显示性能指标", "在胶囊右侧显示 CPU、内存等读数", |ui| {
                 switch(ui, p, &mut show);
             });
             iv.metrics.show = show;
             row_separator(ui, p);
             for (flag, title, subtitle) in [
-                (&mut iv.metrics.cpu, "CPU 占用", "GetSystemTimes 两次采样差分"),
-                (&mut iv.metrics.memory, "内存占用", "GlobalMemoryStatusEx"),
-                (&mut iv.metrics.disk, "磁盘已用", "GetDiskFreeSpaceExW（系统盘）"),
-                (&mut iv.metrics.network, "网络速率", "GetIfTable2 差分上下行"),
+                (&mut iv.metrics.cpu, "CPU 占用", "当前 CPU 总占用率"),
+                (&mut iv.metrics.memory, "内存占用", "物理内存使用率"),
+                (&mut iv.metrics.disk, "磁盘已用", "系统盘已用空间"),
+                (&mut iv.metrics.network, "网络速率", "实时上下行传输速率"),
             ] {
                 let mut on = *flag;
                 row_tight(ui, p, RowIcon::Size, title, subtitle, |ui| {
@@ -2393,7 +2438,7 @@ impl SettingsApp {
                 p,
                 RowIcon::Info,
                 "采样间隔",
-                "后台线程采样周期，1–10 秒；越长越省电",
+                "1–10 秒；间隔越长越省电，读数也越迟钝",
                 |ui| {
                     ui.add(egui::DragValue::new(&mut iv.metrics.interval_secs).range(1..=10).suffix(" 秒"));
                 },
@@ -2412,11 +2457,11 @@ impl SettingsApp {
             let mut carry = iv.tasks.carry_over;
             let mut sound = iv.tasks.sound;
             let mut dispatch_due = iv.tasks.dispatch_due;
-            row_tight(ui, p, RowIcon::Sort, "未完成任务自动结转", "每日首次启动时把昨天未完成的任务移到今天", |ui| {
+            row_tight(ui, p, RowIcon::Sort, "未完成任务自动结转", "每天首次启动时，把昨天未完成的任务移到今天", |ui| {
                 switch(ui, p, &mut carry);
             });
             row_separator(ui, p);
-            row_tight(ui, p, RowIcon::Info, "提醒声音", "到点时提示音", |ui| {
+            row_tight(ui, p, RowIcon::Info, "提醒声音", "提醒到点时发出提示音", |ui| {
                 switch(ui, p, &mut sound);
             });
             row_separator(ui, p);
@@ -2425,7 +2470,7 @@ impl SettingsApp {
                 p,
                 RowIcon::Link,
                 "到点推送到出站渠道",
-                "同时按下方「出站推送」的开关发送；未配置任何渠道时只做岛内弹层",
+                "按下方渠道设置推送提醒；一个渠道都没配时只在岛内提示",
                 |ui| {
                     switch(ui, p, &mut dispatch_due);
                 },
@@ -2440,7 +2485,7 @@ impl SettingsApp {
                 p,
                 RowIcon::Folder,
                 "Markdown 归档目录",
-                "留空表示不归档；任务按天导出",
+                "留空不归档；每天导出一次 Markdown",
                 320.0,
                 |ui| {
                     ui.add(
@@ -2460,13 +2505,13 @@ impl SettingsApp {
                 p,
                 RowIcon::Doc,
                 "记录剪贴板历史",
-                "文本与图片只存本地；首次开启请确认本机无合规限制",
+                "只保存在本机、不上传；请留意所在单位的合规要求",
                 |ui| {
                     switch(ui, p, &mut clip_on);
                 },
             );
             row_separator(ui, p);
-            row_tight(ui, p, RowIcon::Shape, "记录图片", "关闭后只保留文本", |ui| {
+            row_tight(ui, p, RowIcon::Shape, "记录图片", "关闭后只记录文本", |ui| {
                 switch(ui, p, &mut images);
             });
             row_separator(ui, p);
@@ -2475,7 +2520,7 @@ impl SettingsApp {
                 p,
                 RowIcon::Hide,
                 "跳过密码框内容",
-                "焦点位于密码输入控件时不记录；这是尽力而为，不是安全保证",
+                "密码输入框获得焦点时不记录；仅为尽力而为，不构成安全保证",
                 |ui| {
                     switch(ui, p, &mut skip_pwd);
                 },
@@ -2490,7 +2535,7 @@ impl SettingsApp {
                 p,
                 RowIcon::Size,
                 "历史上限 / 单条上限",
-                "条数 20–2000；单条文本字符数 200–200000，超出截断",
+                "条数 20–2000，单条文本 200–200000 字，超出截断",
                 |ui| {
                     ui.add(egui::DragValue::new(&mut iv.clipboard.max_items).range(20..=2000));
                     ui.add(egui::DragValue::new(&mut iv.clipboard.max_text_chars).range(200..=200_000));
@@ -2502,7 +2547,7 @@ impl SettingsApp {
                 p,
                 RowIcon::Size,
                 "图片目录预算",
-                "超过后按时间清理最旧图片，单位 MB",
+                "超出后从最旧的图片开始清理，单位 MB",
                 |ui| {
                     ui.add(egui::DragValue::new(&mut iv.clipboard.max_image_mb).range(0..=4096).suffix(" MB"));
                 },
@@ -2510,7 +2555,7 @@ impl SettingsApp {
             row_separator(ui, p);
             let mut excludes = iv.clipboard.exclude_patterns.join("\n");
             ui.add_space(4.0);
-            ui.label(RichText::new("不记录的文本规则（每行一条正则）").size(12.5).color(p.secondary));
+            ui.label(RichText::new("不记录的文本规则（每行一条正则，命中即跳过）").size(12.5).color(p.secondary));
             ui.add_space(4.0);
             ui.add(
                 egui::TextEdit::multiline(&mut excludes)
@@ -2538,7 +2583,7 @@ impl SettingsApp {
                 p,
                 RowIcon::Info,
                 "微信",
-                "SHELLHOOK 任务栏关注信号；不读正文、发送人或准确未读数",
+                "通过任务栏闪烁识别新消息；不读取聊天内容与发送人",
                 |ui| {
                     switch(ui, p, &mut wechat);
                 },
@@ -2549,7 +2594,7 @@ impl SettingsApp {
                 p,
                 RowIcon::Info,
                 "企业微信",
-                "复用同一 SHELLHOOK 关注信号；是否触发 HSHELL_FLASH 以实机为准",
+                "同样依赖任务栏闪烁；部分客户端版本可能不触发",
                 |ui| {
                     switch(ui, p, &mut wecom);
                 },
@@ -2560,7 +2605,7 @@ impl SettingsApp {
                 p,
                 RowIcon::Info,
                 "QQ",
-                "WinRT UserNotificationListener 按 AUMID 过滤；未打包桌面程序常被系统拒绝授权",
+                "读取系统通知中心；未安装或未授权通知的 QQ 读不到",
                 |ui| {
                     switch(ui, p, &mut qq);
                 },
@@ -2571,7 +2616,7 @@ impl SettingsApp {
                 p,
                 RowIcon::Info,
                 "邮箱（IMAP）",
-                "只同步未读邮件头，首次同步不提醒历史邮件；需要授权码",
+                "只同步未读邮件；首次同步不回放历史，需要授权码",
                 |ui| {
                     switch(ui, p, &mut mail);
                 },
@@ -2586,7 +2631,7 @@ impl SettingsApp {
                 p,
                 RowIcon::Info,
                 "每项保留条数",
-                "消息条目只在本次运行的内存中保存，不落盘聊天内容",
+                "只保留在本次运行的内存中，不写入磁盘",
                 |ui| {
                     ui.add(egui::DragValue::new(&mut iv.inbox.keep).range(5..=200));
                 },
@@ -2604,7 +2649,7 @@ impl SettingsApp {
                 p,
                 RowIcon::Info,
                 "邮箱账号 / IMAP / SMTP",
-                "授权码在下方凭据区保存，不写进配置文件",
+                "授权码保存在 Windows 凭据里，不写入配置文件",
                 330.0,
                 |ui| {
                     ui.add(egui::TextEdit::singleline(&mut iv.mail.user).desired_width(150.0).hint_text("账号"));
@@ -2618,7 +2663,7 @@ impl SettingsApp {
                 p,
                 RowIcon::Info,
                 "发件地址 / SMTP",
-                "收件人留空表示发给自己；SMTP 走隐式 TLS（465）",
+                "收件人留空表示发给自己；使用 465 端口隐式加密",
                 330.0,
                 |ui| {
                     ui.add(egui::TextEdit::singleline(&mut iv.mail.to).desired_width(140.0).hint_text("收件人（可选）"));
@@ -2632,14 +2677,14 @@ impl SettingsApp {
                 p,
                 RowIcon::Info,
                 "邮箱轮询间隔",
-                "分钟；1–240，关闭渠道不会空转轮询",
+                "1–240 分钟；渠道关闭时不轮询",
                 |ui| {
                     ui.add(egui::DragValue::new(&mut iv.mail.poll_minutes).range(1..=240).suffix(" 分钟"));
                 },
             );
             row_separator(ui, p);
             let mut skip_backlog = iv.mail.skip_backlog;
-            row_tight(ui, p, RowIcon::Info, "首次同步忽略历史邮件", "避免开启时补报一周的旧邮件", |ui| {
+            row_tight(ui, p, RowIcon::Info, "首次同步忽略历史邮件", "避免一开启就补报一堆旧邮件", |ui| {
                 switch(ui, p, &mut skip_backlog);
             });
             iv.mail.skip_backlog = skip_backlog;
@@ -2655,7 +2700,7 @@ impl SettingsApp {
                 p,
                 RowIcon::Link,
                 "企业微信群机器人",
-                "官方 webhook，20 条/分钟上限；需要 Webhook Key",
+                "通过群机器人推送，每分钟最多 20 条；需要 Webhook Key",
                 |ui| {
                     switch(ui, p, &mut dw);
                 },
@@ -2672,7 +2717,7 @@ impl SettingsApp {
                 p,
                 RowIcon::Info,
                 "最小发送间隔",
-                "两次推送之间的最短秒数，默认 5 秒，远低于 webhook 限流",
+                "两条推送之间的最短间隔，默认 5 秒",
                 |ui| {
                     ui.add(egui::DragValue::new(&mut iv.dispatch.min_gap_secs).range(0..=60).suffix(" 秒"));
                 },
@@ -2711,14 +2756,14 @@ impl SettingsApp {
         });
 
         ui.add_space(18.0);
-        caption(ui, p, "能力边界（避免误解）");
+        caption(ui, p, "能力边界");
         card(ui, p, |ui| {
             row_info(
                 ui,
                 p,
                 RowIcon::Info,
                 "QQ / 微信个人号",
-                "无官方出站发送接口；不做协议逆向、不做 UI 自动化模拟发送，设置页不提供「发消息」开关",
+                "没有官方发消息接口；不做协议逆向或界面模拟，所以这里没有「发消息」开关",
                 |ui| {
                     ui.allocate_exact_size(egui::vec2(8.0, 8.0), Sense::hover());
                 },
@@ -2729,7 +2774,7 @@ impl SettingsApp {
                 p,
                 RowIcon::Info,
                 "企业微信入站",
-                "官方智能机器人「长连接」API 模式无需公网回调即可收消息；当前版本未实现，只做本地关注信号",
+                "官方机器人长连接可以免公网回调收消息；当前版本尚未接入，只做本地提醒",
                 |ui| {
                     ui.allocate_exact_size(egui::vec2(8.0, 8.0), Sense::hover());
                 },
@@ -3953,7 +3998,11 @@ fn slider_row<T: egui::emath::Numeric>(
                         let dv = egui::DragValue::new(value)
                             .range(lo..=hi)
                             .suffix(unit)
-                            .speed(0.4);
+                            .speed(if (hi.to_f64() - lo.to_f64()) >= 1.0 {
+                                0.4
+                            } else {
+                                ((hi.to_f64() - lo.to_f64()) / 100.0) as f32
+                            });
                         if ui.add_enabled(enabled, dv).changed() {
                             changed = true;
                         }
@@ -4404,7 +4453,12 @@ fn slider<T: egui::emath::Numeric>(
     if enabled && (resp.dragged() || resp.clicked()) {
         if let Some(pos) = resp.interact_pointer_pos() {
             let nt = ((pos.x - track.left()) / track.width()).clamp(0.0, 1.0);
-            let nv = T::from_f64((lo.to_f64() + nt as f64 * span).round());
+            // Integer ranges step by one; fractional ones by 1 %. `round()`
+            // alone snapped a 0.6–1.0 slider to 1.0 at every click position,
+            // so the opacity track could not be dragged at all.
+            let raw = lo.to_f64() + nt as f64 * span;
+            let whole = lo.to_f64().fract() == 0.0 && hi.to_f64().fract() == 0.0;
+            let nv = T::from_f64(if whole { raw.round() } else { (raw * 100.0).round() / 100.0 });
             if nv.to_f64() != value.to_f64() {
                 *value = nv;
                 changed = true;

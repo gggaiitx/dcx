@@ -76,6 +76,13 @@ extern "system" {
     fn IsZoomed(hwnd: isize) -> i32;
     fn GetDpiForSystem() -> u32;
     fn WindowFromPoint(point: dcx_win32::POINT) -> isize;
+    fn SetWindowRgn(hwnd: isize, rgn: isize, redraw: i32) -> i32;
+}
+
+#[link(name = "gdi32")]
+extern "system" {
+    fn CreateRoundRectRgn(x1: i32, y1: i32, x2: i32, y2: i32, w: i32, h: i32) -> isize;
+    fn DeleteObject(obj: isize) -> i32;
 }
 
 #[link(name = "shell32")]
@@ -309,6 +316,10 @@ pub struct Window {
     applied: Option<[i32; 4]>,
     frame_fix_at: Option<std::time::Instant>,
     raise_at: Option<std::time::Instant>,
+    /// Shape requested on the previous frame: (width, height, radius) in pixels.
+    asked: Option<(i32, i32, i32)>,
+    /// The rounded region currently set — always the previous frame's request.
+    region: Option<(i32, i32, i32)>,
 }
 
 impl Window {
@@ -318,6 +329,8 @@ impl Window {
             applied: None,
             frame_fix_at: None,
             raise_at: None,
+            asked: None,
+            region: None,
         }
     }
 
@@ -382,6 +395,70 @@ impl Window {
                 SWP_NOACTIVATE | SWP_SHOWWINDOW,
             );
         }
+    }
+
+    /// Shape the window to the rounded rectangle that is actually painted.
+    ///
+    /// The window carries `WS_CAPTION` (winit gives every undecorated window a
+    /// frame style), so DWM draws its drop shadow around the **window
+    /// rectangle**. The surface is transparent outside the capsule's round ends
+    /// and the card's rounded corners, so that square shadow — and the 1 px
+    /// frame DWM puts on the right/bottom edges — leaks out next to the arcs as
+    /// a translucent spike. A window region makes DWM follow the painted
+    /// outline instead, and stops clicks in the transparent corner slivers from
+    /// landing on a window that shows nothing there. Same trick as
+    /// `dcx-box/src/win.rs`.
+    ///
+    /// The region lags the request by one frame **while the card grows**.
+    /// `SetWindowPos` gives the window its new size before egui has painted
+    /// it — the surface is still the old size for that frame. A region that
+    /// already had the new size would expose that unpainted strip, which is
+    /// the transparent block that appeared at the bottom corners during every
+    /// unfold and while dragging the resize grip. One frame behind, the region
+    /// only ever covers pixels that were painted. Shrinking needs no lag: the
+    /// surface is still the larger one, so the new (smaller) shape is painted
+    /// in full — and applying it at once keeps the last frame of the collapse
+    /// from showing a square edge for one frame.
+    pub fn set_shape(&mut self, w: i32, h: i32, radius: i32) {
+        if self.hwnd == 0 || w <= 0 || h <= 0 {
+            return;
+        }
+        let radius = radius.clamp(0, w.min(h) / 2);
+        let key = (w, h, radius);
+        // First frame after the window is (re)created or unparked: there is no
+        // earlier shape, so the current one is the only safe one to apply.
+        let prev = self.asked.unwrap_or(key);
+        self.asked = Some(key);
+        let grew = w > prev.0 || h > prev.1;
+        let target = if grew { prev } else { key };
+        if self.region == Some(target) {
+            return;
+        }
+        self.region = Some(target);
+        unsafe {
+            // `+ 1`: GDI region rectangles exclude their right/bottom edge, and
+            // one column short clipped the card's own border into a hairline.
+            let rgn = CreateRoundRectRgn(0, 0, target.0 + 1, target.1 + 1, target.2 * 2, target.2 * 2);
+            if rgn == 0 {
+                self.region = None;
+                return;
+            }
+            // On success the system owns the region; deleting it would be a
+            // use-after-free inside the window manager.
+            if SetWindowRgn(self.hwnd, rgn, 1) == 0 {
+                DeleteObject(rgn);
+                self.region = None;
+            }
+        }
+    }
+
+    /// Drop the shape (the window is parked off-screen at another size).
+    pub fn clear_shape(&mut self) {
+        if self.hwnd != 0 && self.region.is_some() {
+            unsafe { SetWindowRgn(self.hwnd, 0, 1) };
+        }
+        self.region = None;
+        self.asked = None;
     }
 
     /// Put the window back on top after something raised itself over it.

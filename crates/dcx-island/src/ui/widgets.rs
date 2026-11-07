@@ -41,6 +41,85 @@ pub fn shadow(ui: &Ui, rect: Rect, radius: f32, color: Color32) {
     }
 }
 
+/// A rounded rectangle: epaint fills it, and the border is stroked along a path
+/// with a real arc at each corner (20 segments per corner).
+///
+/// The fill deliberately uses [`Shape::rect_filled`]. It used to be
+/// `Shape::convex_polygon(round_path(..))`, on the theory that a hand-sampled
+/// path would beat epaint's segment count on the card's own edge — that was
+/// wrong twice over. epaint fills a path as a **triangle fan from the first
+/// point**, and on a pill (where the two corner centres of a side coincide, so
+/// half the path is a half-circle) the fan does not reproduce the outline: the
+/// corners came out square. On the capsule that was a flat right end clipped by
+/// the window edge; on the card it was the two bottom corners turning into pale
+/// blocks. Fills are the one thing epaint already does correctly.
+///
+/// The stroke stays on the sampled path because `Shape::rect_stroke` centres
+/// the line on the outline, and half of it lands outside the window — a 1 px
+/// edge on a 14 pt radius reads as a shaved corner.
+pub fn round_rect_smooth(ui: &Ui, rect: Rect, radius: f32, fill: Color32, stroke: Stroke) {
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return;
+    }
+    let pts = round_path(rect, radius);
+    if fill.a() > 0 {
+        ui.painter()
+            .add(Shape::rect_filled(rect, radius, fill));
+    }
+    if stroke.width > 0.0 && stroke.color.a() > 0 {
+        ui.painter().add(Shape::closed_line(pts, stroke));
+    }
+}
+
+/// Clockwise outline of a rounded rectangle, starting at the top-left corner's
+/// top tangent. 20 points per corner: at a 20 px radius the chord error is
+/// under 0.05 px, which is below one subpixel of the anti-aliasing.
+pub fn round_path(rect: Rect, radius: f32) -> Vec<Pos2> {
+    const SEGMENTS: usize = 20;
+    let r = radius.max(0.0).min(rect.width() * 0.5).min(rect.height() * 0.5);
+    let mut pts = Vec::with_capacity(SEGMENTS * 4 + 4);
+    if r <= 0.5 {
+        return vec![
+            rect.left_top(),
+            rect.right_top(),
+            rect.right_bottom(),
+            rect.left_bottom(),
+        ];
+    }
+    // (centre, start angle, end angle) per corner; angles run clockwise in
+    // screen space, where +y points down.
+    let corners = [
+        (
+            Pos2::new(rect.left() + r, rect.top() + r),
+            std::f32::consts::PI,
+            std::f32::consts::PI * 1.5,
+        ),
+        (
+            Pos2::new(rect.right() - r, rect.top() + r),
+            std::f32::consts::PI * 1.5,
+            std::f32::consts::TAU,
+        ),
+        (
+            Pos2::new(rect.right() - r, rect.bottom() - r),
+            0.0,
+            std::f32::consts::FRAC_PI_2,
+        ),
+        (
+            Pos2::new(rect.left() + r, rect.bottom() - r),
+            std::f32::consts::FRAC_PI_2,
+            std::f32::consts::PI,
+        ),
+    ];
+    for (c, a0, a1) in corners {
+        for i in 0..=SEGMENTS {
+            let t = i as f32 / SEGMENTS as f32;
+            let a = a0 + (a1 - a0) * t;
+            pts.push(Pos2::new(c.x + r * a.cos(), c.y + r * a.sin()));
+        }
+    }
+    pts
+}
+
 pub fn bar(ui: &Ui, rect: Rect, frac: f32, color: Color32, track: Color32) {
     let radius = rect.height() * 0.5;
     round_rect(ui, rect, radius, track, Stroke::NONE);
@@ -147,10 +226,19 @@ pub enum Glyph {
     Copy,
     /// Document / export-to-file outline.
     Doc,
+    /// Round chat bubble (QQ).
+    Bubble,
+    /// Two overlapping bubbles — WeChat's own mark, and the only silhouette
+    /// that stays distinguishable from the single bubble at 12 pt.
+    BubbleTwo,
+    /// Briefcase — the enterprise-messaging channel.
+    Briefcase,
+    /// Envelope.
+    Mail,
 }
 
 pub fn glyph(ui: &Ui, center: Pos2, size: f32, which: Glyph, color: Color32) {
-    glyph_weighted(ui, center, size, which, color, 1.5);
+    draw_glyph(ui, center, size, which, color, 1.5, None);
 }
 
 /// Same glyph, explicit stroke width. A 9 pt icon drawn with the default 1.5 pt
@@ -164,6 +252,33 @@ pub fn glyph_weighted(
     which: Glyph,
     color: Color32,
     width: f32,
+) {
+    draw_glyph(ui, center, size, which, color, width, None);
+}
+
+/// A glyph that overlaps itself, with the background passed in so the front
+/// shape can be filled and occlude the back one. Only the two-bubble mark needs
+/// this: a stroke-only overlap reads as a bubble with a hook attached.
+pub fn glyph_on(
+    ui: &Ui,
+    center: Pos2,
+    size: f32,
+    which: Glyph,
+    color: Color32,
+    width: f32,
+    bg: Color32,
+) {
+    draw_glyph(ui, center, size, which, color, width, Some(bg));
+}
+
+fn draw_glyph(
+    ui: &Ui,
+    center: Pos2,
+    size: f32,
+    which: Glyph,
+    color: Color32,
+    width: f32,
+    bg: Option<Color32>,
 ) {
     let p = ui.painter();
     let s = size * 0.5;
@@ -275,6 +390,63 @@ pub fn glyph_weighted(
                 2.0,
                 stroke,
             ));
+        }
+        // -- channel marks --------------------------------------------------
+        //
+        // Four 12 pt marks have to be told apart at a glance, and detail does
+        // not survive at 12 pt — only silhouette does. So each channel gets a
+        // different outline: round bubble, double bubble, squared bubble,
+        // envelope. Nothing is drawn inside them.
+        Glyph::Bubble => {
+            p.add(Shape::circle_stroke(
+                c + Vec2::new(0.0, -s * 0.12),
+                s * 0.76,
+                stroke,
+            ));
+            line(c + Vec2::new(-s * 0.4, s * 0.5), c + Vec2::new(-s * 0.57, s * 0.94));
+            line(c + Vec2::new(-s * 0.57, s * 0.94), c + Vec2::new(-s * 0.02, s * 0.6));
+        }
+        Glyph::BubbleTwo => {
+            // Drawn back-to-front with a real occlusion: the back bubble is a
+            // whole outline, the front bubble is filled with the surface colour
+            // before it is stroked. The previous version drew the back one as a
+            // bare arc, and an arc that stops in mid-air is what read as "a
+            // bubble with a hook".
+            let back = Rect::from_center_size(
+                c + Vec2::new(s * 0.38, -s * 0.36),
+                Vec2::new(s * 1.04, s * 0.78),
+            );
+            p.add(Shape::rect_stroke(back, s * 0.34, stroke));
+            let front = Rect::from_center_size(
+                c + Vec2::new(-s * 0.16, s * 0.18),
+                Vec2::new(s * 1.38, s * 0.98),
+            );
+            if let Some(bg) = bg {
+                p.add(Shape::rect_filled(front, s * 0.46, bg));
+            }
+            p.add(Shape::rect_stroke(front, s * 0.46, stroke));
+            line(c + Vec2::new(-s * 0.5, s * 0.63), c + Vec2::new(-s * 0.62, s * 0.92));
+            line(c + Vec2::new(-s * 0.62, s * 0.92), c + Vec2::new(-s * 0.22, s * 0.66));
+        }
+        Glyph::Briefcase => {
+            let body = Rect::from_center_size(
+                c + Vec2::new(0.0, s * 0.18),
+                Vec2::new(s * 1.56, s * 1.1),
+            );
+            p.add(Shape::rect_stroke(body, s * 0.26, stroke));
+            line(c + Vec2::new(-s * 0.32, -s * 0.37), c + Vec2::new(-s * 0.32, s * 0.05));
+            line(c + Vec2::new(s * 0.32, -s * 0.37), c + Vec2::new(s * 0.32, s * 0.05));
+            line(c + Vec2::new(-s * 0.32, -s * 0.37), c + Vec2::new(s * 0.32, -s * 0.37));
+            // A single seam across the body: without it the briefcase is a
+            // rounded rectangle, and the handle alone does not carry.
+            line(c + Vec2::new(-s * 0.78, s * 0.05), c + Vec2::new(s * 0.78, s * 0.05));
+        }
+        Glyph::Mail => {
+            let body = Rect::from_center_size(c, Vec2::new(s * 1.66, s * 1.24));
+            p.add(Shape::rect_stroke(body, s * 0.2, stroke));
+            let fold = Pos2::new(c.x, c.y + s * 0.3);
+            line(Pos2::new(body.left() + s * 0.14, body.top() + s * 0.14), fold);
+            line(Pos2::new(body.right() - s * 0.14, body.top() + s * 0.14), fold);
         }
     }
 }

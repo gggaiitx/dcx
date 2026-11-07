@@ -115,6 +115,8 @@ struct Geo {
     /// Panel in window-local points; `None` while collapsed.
     panel: Option<Rect>,
     scale: f32,
+    /// Corner radius of the painted surface, snapped to physical pixels.
+    radius_px: i32,
 }
 
 enum MailMsg {
@@ -181,6 +183,7 @@ struct Island {
     /// switching tabs does not lose the position.
     clip_scroll: f32,
     inbox_scroll: f32,
+    perf_scroll: f32,
 
     today: String,
     last_secs: u32,
@@ -219,7 +222,7 @@ impl Island {
             win: win::Window::new(),
             mon: win::monitor(0),
             scale: 1.0,
-            pal: theme::Palette::system(),
+            pal: theme::Palette::for_theme(&cfg.ui.theme),
             pal_at: None,
             open: false,
             passive: false,
@@ -255,6 +258,7 @@ impl Island {
             clip_query: String::new(),
             clip_scroll: 0.0,
             inbox_scroll: 0.0,
+            perf_scroll: 0.0,
             today,
             last_secs: 0,
             last_tick: Instant::now(),
@@ -312,7 +316,9 @@ impl Island {
 
         if self.pal_at.map(|t| t.elapsed() >= Duration::from_secs(3)).unwrap_or(true) {
             self.pal_at = Some(now);
-            self.pal = theme::Palette::system();
+            // Re-evaluated periodically so "跟随系统" follows a Windows theme
+            // change; a pinned light/dark choice is stable and costs nothing.
+            self.pal = theme::Palette::for_theme(&self.cfg.ui.theme);
         }
 
         let auto = self.cfg.behavior.auto_collapse_secs;
@@ -337,7 +343,10 @@ impl Island {
             let text = dispatch::reminder_text(&first.title, first.at);
             self.reminder = Some((first.title.clone(), Instant::now()));
             if self.cfg.tasks.sound {
-                sys::beep();
+                // A synthesised two-note chime, not `MessageBeep`: the system
+                // sound is whatever the active sound *scheme* says, and on a
+                // machine set to "无声" the reminder fired in total silence.
+                sys::chime();
             }
             self.toast = Some((format!("提醒：{}", first.title), Instant::now()));
             if self.cfg.tasks.dispatch_due {
@@ -417,6 +426,12 @@ impl Island {
             || next.clipboard.max_image_mb != old.clipboard.max_image_mb
         {
             self.clip.trim(&next.clipboard);
+        }
+        if next.ui.theme != self.cfg.ui.theme {
+            // Applied before the tick can repaint, so switching the theme in
+            // the settings window takes effect on the island immediately.
+            self.pal = theme::Palette::for_theme(&next.ui.theme);
+            self.pal_at = Some(Instant::now());
         }
         self.cfg = next;
         ctx.request_repaint();
@@ -686,11 +701,21 @@ impl Island {
             None
         };
 
+        // Corner radius of the one surface the window shows: the pill when
+        // collapsed, the card when open, and the interpolation between them
+        // while it unfolds. Snapped to whole physical pixels — 14 pt at 125 %
+        // is 17.5 px, and a corner whose centre sits on a half pixel breaks
+        // into an irregular staircase. The window region (see `draw`) uses the
+        // very same number, so the DWM shadow follows the painted arc.
+        let raw_radius = 14.0 + (capsule.height() * 0.5 - 14.0) * (1.0 - e);
+        let radius_px = (raw_radius * scale).round().max(1.0) as i32;
+
         Geo {
             window_px: [x, y, x + win_w.round() as i32, y + win_h.round() as i32],
             capsule,
             panel,
             scale,
+            radius_px,
         }
     }
 
@@ -749,18 +774,32 @@ impl Island {
                 // Painting the card over the whole window also leaves the
                 // desktop visible only outside the rounded corners, which is
                 // unavoidable for a rounded window and invisible in practice.
-                let radius = 14.0 + (cap_rect.height() * 0.5 - 14.0) * (1.0 - anim);
+                // The radius comes from `Geo` so the window region set before
+                // painting (see `update`) describes exactly this arc.
+                let radius = geo.radius_px as f32 / geo.scale;
                 if anim > 0.005 {
                     let card = Rect::from_min_max(Pos2::ZERO, full.max);
                     // No `shadow()` call: the card is the whole window, so every
-                    // ring of it fell outside the window and was clipped. The
-                    // only place a shadow ever showed was the collapsed pill,
-                    // where it was cut off mid-gradient — the "transparent box".
-                    crate::ui::widgets::round_rect(
+                    // ring of it fell outside the window and was clipped.
+                    //
+                    // DWM's own shadow is shaped by the window region (see
+                    // `win::Window::set_shape`); without it the square shadow
+                    // showed through the card's transparent corners.
+                    crate::ui::widgets::round_rect_smooth(
                         ui,
                         card,
                         radius,
                         pal.surface,
+                        egui::Stroke::NONE,
+                    );
+                    // The border is stroked on a rect inset by half its width so
+                    // it lands flush on the card's outer edge; the window region
+                    // cuts the same profile, so the two lines coincide.
+                    crate::ui::widgets::round_rect_smooth(
+                        ui,
+                        card.shrink(0.5),
+                        (radius - 0.5).max(1.0),
+                        egui::Color32::TRANSPARENT,
                         egui::Stroke::new(1.0_f32, pal.stroke),
                     );
                 }
@@ -797,6 +836,7 @@ impl Island {
                                 clip_query: &mut self.clip_query,
                                 clip_scroll: &mut self.clip_scroll,
                                 inbox_scroll: &mut self.inbox_scroll,
+                                perf_scroll: &mut self.perf_scroll,
                                 textures: &mut self.textures,
                                 toast: self.toast.as_ref().map(|(t, _)| t.as_str()),
                                 dispatch_note: self.send_note.as_ref().map(|(t, _)| t.as_str()),
@@ -895,9 +935,12 @@ impl Island {
         // this it showed whatever task was marked "current", all day: a pill
         // permanently displaying "喝水" reads as an unread alert, and the task
         // list is one click away.
-        let (task, flash) = match &self.reminder {
-            Some((title, at)) => (Some(title.clone()), flash_envelope(at.elapsed().as_secs_f32())),
-            None => (None, 0.0),
+        let (task, flash, flash_t) = match &self.reminder {
+            Some((title, at)) => {
+                let t = at.elapsed().as_secs_f32();
+                (Some(title.clone()), flash_envelope(t), t)
+            }
+            None => (None, 0.0, 0.0),
         };
         crate::ui::compact::CapsuleState {
             // `clock.show = false` hides the whole clock module, weekday
@@ -944,6 +987,7 @@ impl Island {
             hovered: self.hovered,
             open: self.open,
             flash,
+            flash_t,
         }
     }
 
@@ -1171,7 +1215,21 @@ impl eframe::App for Island {
         if self.parked {
             // Full-screen content in front: park off-screen and stop drawing.
             // A hidden eframe window still runs `update`, so this is cheap.
-            self.win.place([-32_000, -32_000, -32_000 + 120, -32_000 + 24]);
+            // The region is dropped as well: the parked window has a different
+            // size, and a stale shape would clip it.
+            //
+            // Parked at the *open* footprint, not at a thumbnail: coming back
+            // into the open state is then a pure move, with no resize whose
+            // first frame would show an unpainted strip. The footprint is read
+            // from `compute_geo` at `anim = 1` so the two can never drift.
+            let closed = self.anim;
+            self.anim = 1.0;
+            let open = self.compute_geo();
+            self.anim = closed;
+            let w = open.window_px[2] - open.window_px[0];
+            let h = open.window_px[3] - open.window_px[1];
+            self.win.place([-32_000, -32_000, -32_000 + w, -32_000 + h]);
+            self.win.clear_shape();
             ctx.request_repaint_after(Duration::from_millis(700));
             return;
         }
@@ -1181,6 +1239,15 @@ impl eframe::App for Island {
         // so a window that is still collapsed would drop the first expanded
         // frame — the frame in which every panel button first appears.
         self.win.place(geo.window_px);
+        // Shape the window to the same rounded rectangle `draw` paints next.
+        // DWM's drop shadow follows this region, which is what keeps the
+        // capsule's round ends and the card's corners free of square shadow
+        // spikes.
+        self.win.set_shape(
+            geo.window_px[2] - geo.window_px[0],
+            geo.window_px[3] - geo.window_px[1],
+            geo.radius_px,
+        );
         self.draw(ctx, &geo);
         self.win.housekeeping();
 

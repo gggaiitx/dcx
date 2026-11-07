@@ -13,15 +13,21 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct Snapshot {
     /// 0–100, smoothed.
     pub cpu: f32,
     pub mem_used: u64,
     pub mem_total: u64,
     pub mem_percent: f32,
+    /// System drive only; kept for the capsule, which has room for one number.
     pub disk_used: u64,
     pub disk_total: u64,
+    /// System-wide disk throughput, smoothed like the network rates.
+    pub disk_read_bps: f64,
+    pub disk_write_bps: f64,
+    /// Every ready fixed volume, in drive-letter order.
+    pub volumes: Vec<crate::sys::Volume>,
     pub net_down_bps: f64,
     pub net_up_bps: f64,
 }
@@ -52,6 +58,7 @@ impl Sampler {
             .spawn(move || {
                 let mut prev_cpu = crate::sys::cpu_sample();
                 let mut prev_net = crate::sys::net_octets();
+                let mut prev_io = crate::sys::disk_io_bytes();
                 let mut prev_at = Instant::now();
                 let mut smoothed: Option<Snapshot> = None;
 
@@ -105,6 +112,18 @@ impl Sampler {
                             s.disk_used = total.saturating_sub(free);
                         }
                     }
+                    // One `GetLogicalDrives` walk per sample: four to six
+                    // `GetDiskFreeSpaceExW` calls, ~50 µs, on the sampler thread.
+                    s.volumes = crate::sys::volumes();
+
+                    let io_now = crate::sys::disk_io_bytes();
+                    if let (Some((pr, pw)), Some((nr, nw))) = (prev_io, io_now) {
+                        s.disk_read_bps = nr.saturating_sub(pr) as f64 / elapsed;
+                        s.disk_write_bps = nw.saturating_sub(pw) as f64 / elapsed;
+                    }
+                    if io_now.is_some() {
+                        prev_io = io_now;
+                    }
 
                     let net_now = crate::sys::net_octets();
                     match (&prev_net, &net_now) {
@@ -131,11 +150,14 @@ impl Sampler {
                             mem_percent: ease(prev.mem_percent, s.mem_percent),
                             disk_used: s.disk_used,
                             disk_total: s.disk_total,
+                            disk_read_bps: ease64(prev.disk_read_bps, s.disk_read_bps),
+                            disk_write_bps: ease64(prev.disk_write_bps, s.disk_write_bps),
+                            volumes: s.volumes,
                             net_down_bps: ease64(prev.net_down_bps, s.net_down_bps),
                             net_up_bps: ease64(prev.net_up_bps, s.net_up_bps),
                         },
                     };
-                    smoothed = Some(out);
+                    smoothed = Some(out.clone());
                     *snap.lock().unwrap_or_else(|e| e.into_inner()) = out;
                 }
             })
@@ -150,7 +172,10 @@ impl Sampler {
     }
 
     pub fn read(&self) -> Snapshot {
-        *self.snapshot.lock().unwrap_or_else(|e| e.into_inner())
+        self.snapshot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     pub fn set_interval(&self, secs: u64) {
@@ -260,5 +285,12 @@ mod tests {
         assert!(snap.mem_total > 0, "memory total must be readable");
         assert!(snap.mem_percent <= 100.0);
         assert!(snap.cpu >= 0.0 && snap.cpu <= 100.0);
+        // The system volume always exists, so an empty list means the
+        // enumeration (not the machine) is broken.
+        assert!(
+            !snap.volumes.is_empty(),
+            "no volumes: GetLogicalDrives / GetDiskFreeSpaceExW path is broken"
+        );
+        assert!(snap.volumes.iter().all(|v| v.total > 0 && v.used() <= v.total));
     }
 }
