@@ -1,0 +1,11 @@
+[package]
+name = "dcx-island-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DCX island — shared island.toml schema, read by both dcx-island and the host settings centre"
+
+[dependencies]
+dcx-win32 = { path = "../dcx-win32" }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"

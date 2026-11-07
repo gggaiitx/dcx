@@ -1,0 +1,49 @@
+[package]
+name = "dcx-island"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DCX desktop info island — clock, system metrics, tasks, clipboard history and notification inbox"
+build = "build.rs"
+
+[[bin]]
+name = "dcx-island"
+path = "src/main.rs"
+
+[dependencies]
+dcx-win32 = { path = "../dcx-win32" }
+dcx-island-config = { path = "../dcx-island-config" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+regex = "1"
+# Mail headers carry GB2312/GBK encoded words from older clients; decoding them
+# by hand would need a 200 KB table.
+encoding_rs = "0.8"
+# PNG only: clipboard thumbnails. BMP would be smaller code but egui cannot
+# decode it and the extra dependency weight is a few hundred KB.
+image = { version = "0.25", default-features = false, features = ["png"] }
+# IMAP/SMTP over SChannel on Windows: no OpenSSL, no vendored build.
+native-tls = "0.2"
+# WinRT notification listener (QQ). Hand-writing the WinRT ABI for
+# `UserNotificationListener` is not economical; only the smallest feature set.
+windows = { version = "0.62", features = [
+    "UI_Notifications",
+    "UI_Notifications_Management",
+    # `UserNotification::AppInfo` / `AppInfo::AppUserModelId` are gated behind
+    # this feature; without it the AUMID filter cannot be compiled at all.
+    "ApplicationModel",
+    "Foundation",
+    "Foundation_Collections",
+    # `RoInitialize` from windows-link (raw-dylib) needs no SDK import library,
+    # so the workspace still builds without vcvars / Windows SDK LIB paths.
+    "Win32_System_WinRT",
+] }
+
+egui = "0.29"
+eframe = "0.29"
+memmap2 = "0.9"
+# Exact pin: the same 0.30.13 eframe links, so `EventLoopBuilder::with_any_thread`
+# is applied to the identical builder type.
+winit = "=0.30.13"

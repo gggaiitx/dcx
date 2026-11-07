@@ -8,10 +8,19 @@
 //! option of one app stay on that app's page.
 //!
 //! Visual rules borrowed from Win11 Settings:
-//!   * **one surface**: the navigation column and the page share a single
-//!     backdrop — a two-stop vertical gradient (Mica stand-in), painted once
+//!   * **one surface**: the native title bar, the navigation column and the
+//!     page share a single backdrop — a flat top band exactly matching the DWM
+//!     caption colour, then a slow Mica-like gradient below it, painted once
 //!     into the background layer. No panel fills, so there is no seam, no
-//!     divider and no tonal step between left and right;
+//!     divider and no tonal step between title bar, left and right;
+//!   * coloured navigation glyphs with no tile or badge behind them; selection
+//!     is carried by Win11's solid selected pill, an indicator bar and the
+//!     primary text colour — the label keeps its regular weight;
+//!   * rail colours sampled from the Win11 Settings app: #ECF6F8 caption /
+//!     #E9F7F9 rail, #E3EDEF selected pill — see `Palette::light`; the row
+//!     pitch is 46 pt (≈58 physical px at 125 % DPI), a little taller than
+//!     Win11's 40 pt so the list does not feel cramped; selection changes the
+//!     pill, the indicator and the text colour, never the font weight;
 //!   * one column of cards floating on that surface: white fill, hairline
 //!     border, 6 px radius, 1 px soft shadow, 16 px row padding, 1 px
 //!     separators inset from the text column;
@@ -66,12 +75,15 @@ static MIGRATE_RESULT: std::sync::Mutex<
     Option<(std::path::PathBuf, std::io::Result<dcx_organizer::MigrateReport>)>,
 > = std::sync::Mutex::new(None);
 
-const WIN_W: f32 = 900.0;
+/// Default window size. Win11 Settings opens wider than 900 px; the wider
+/// default gives the (also wider) navigation column and the card column room
+/// to breathe at 125 % DPI instead of squeezing the cards into a narrow strip.
+const WIN_W: f32 = 1080.0;
 const WIN_H: f32 = 700.0;
 const CARD_RADIUS: f32 = 6.0;
-const SIDEBAR_W: f32 = 208.0;
+const SIDEBAR_W: f32 = 256.0;
 /// Horizontal gutter between the window edge and the content column.
-const PAGE_GUTTER: f32 = 30.0;
+const PAGE_GUTTER: f32 = 34.0;
 /// How long the 「恢复并退出」 button stays armed after the first click.
 const CONFIRM_WINDOW: Duration = Duration::from_secs(5);
 /// Width kept clear on the right of a [`row`] for its action widget. Text is
@@ -100,7 +112,7 @@ fn fitted_window_size() -> ([f32; 2], [f32; 2]) {
     let dpi = unsafe { GetDpiForSystem() }.max(96) as f32 / 96.0;
     let screen_w = unsafe { GetSystemMetrics(SM_CXSCREEN) } as f32 / dpi;
     let screen_h = unsafe { GetSystemMetrics(SM_CYSCREEN) } as f32 / dpi;
-    let w = WIN_W.min((screen_w - 80.0).max(520.0));
+    let w = WIN_W.min((screen_w - 80.0).max(640.0));
     let h = WIN_H.min((screen_h - 160.0).max(520.0));
     // Centred horizontally, slightly above centre vertically (taskbar + title
     // bar). Without an explicit position Win11's default cascade can put the
@@ -121,6 +133,8 @@ pub const PAGE_ABOUT: u8 = 1;
 pub const PAGE_BOX: u8 = 2;
 /// File search: its enable switch, running state and its own options.
 pub const PAGE_SEARCH: u8 = 3;
+/// Desktop info island: its one master switch and all module options.
+pub const PAGE_ISLAND: u8 = 4;
 
 /// Which page a freshly spawned settings process should open on.
 pub fn set_start_page(page: u8) {
@@ -341,7 +355,7 @@ fn native_options() -> eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size(size)
             .with_position(pos)
-            .with_min_inner_size([520.0, 520.0])
+            .with_min_inner_size([640.0, 520.0])
             .with_resizable(true)
             .with_icon(app_icon()),
         // eframe/winit refuse to build an EventLoop off the main thread by
@@ -494,6 +508,8 @@ mod glyph {
     pub const MONITOR: char = '\u{E7F4}';
     pub const FOLDER: char = '\u{E8B7}';
     pub const SEARCH: char = '\u{E721}';
+    /// Segoe MDL2 Assets 「Clock」— the island's compact capsule is a clock.
+    pub const CLOCK: char = '\u{E823}';
     pub const INFO: char = '\u{E946}';
     pub const TRASH: char = '\u{E74D}';
     pub const PLUS: char = '\u{E710}';
@@ -511,8 +527,18 @@ struct Palette {
     /// Window backdrop, top and bottom stops. Painted once across the whole
     /// window, behind both columns: that single surface is what makes the
     /// navigation and the page read as one piece instead of two panels.
+    /// `bg_top` is a **flat** colour for the whole width: the native caption is
+    /// a solid DWM fill, so any horizontal variation at the top of the client
+    /// area reads as a seam under the title bar. The warm variation lives at
+    /// the bottom only.
     bg_top: Color32,
     bg_bottom: Color32,
+    bg_bottom_warm: Color32,
+    /// Translucent cool wash over the navigation column. It fades out inside
+    /// the page, so the columns get a tonal difference without a divider line.
+    nav_tint: Color32,
+    /// Translucent light spot near the top-right of the page.
+    glow: Color32,
     card: Color32,
     /// Drop shadow under a card; a barely-there lift, like Win11's card layer.
     card_shadow: Color32,
@@ -533,6 +559,9 @@ struct Palette {
     danger: Color32,
     nav_selected: Color32,
     nav_hover: Color32,
+    /// Short vertical stroke at the left edge of the selected navigation item.
+    /// Win11 uses the shell accent here, not the app's own brand colour.
+    nav_indicator: Color32,
     /// Scrollbar thumb (Win11: thin grey overlay).
     scroll_thumb: Color32,
     scroll_thumb_hover: Color32,
@@ -542,61 +571,74 @@ impl Palette {
     fn light() -> Self {
         Self {
             dark: false,
-            bg_top: Color32::from_rgb(0xF8, 0xF8, 0xF8),
-            bg_bottom: Color32::from_rgb(0xEF, 0xEF, 0xEF),
+            // Sampled from the Win11 Settings navigation column: #ECF6F8 at
+            // the title bar / top of the page, #E9F7F9 further down. A pale
+            // cyan Mica surface, not neutral white. The caption band uses
+            // exactly `bg_top`, so the DWM title bar stays seamless.
+            bg_top: Color32::from_rgb(0xEC, 0xF6, 0xF8),
+            bg_bottom: Color32::from_rgb(0xE9, 0xF7, 0xF9),
+            bg_bottom_warm: Color32::from_rgb(0xEB, 0xF5, 0xF6),
+            // Only a whisper of extra colour: Win11's rail and page are the
+            // same Mica surface, so no separate panel fill or warm glow.
+            nav_tint: Color32::from_rgba_unmultiplied(0x4A, 0xA8, 0xC0, 6),
+            glow: Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 5),
             card: Color32::WHITE,
-            card_shadow: Color32::from_black_alpha(14),
-            border: Color32::from_rgb(0xE9, 0xE9, 0xE9),
-            separator: Color32::from_rgb(0xEE, 0xEE, 0xEE),
+            card_shadow: Color32::from_black_alpha(12),
+            border: Color32::from_rgb(0xDC, 0xE9, 0xEC),
+            separator: Color32::from_rgb(0xE2, 0xED, 0xEF),
             text: Color32::from_rgb(0x1A, 0x1A, 0x1A),
-            secondary: Color32::from_rgb(0x5A, 0x5A, 0x5A),
-            tertiary: Color32::from_rgb(0x8A, 0x8A, 0x8A),
+            secondary: Color32::from_rgb(0x55, 0x5A, 0x63),
+            tertiary: Color32::from_rgb(0x86, 0x8C, 0x96),
             accent: Color32::from_rgb(0x0E, 0x7C, 0x7E),
             accent_soft: Color32::from_rgb(0xE4, 0xF2, 0xF1),
-            track: Color32::from_rgb(0xE3, 0xE3, 0xE3),
-            hover: Color32::from_rgb(0xF4, 0xF4, 0xF4),
-            switch_off: Color32::from_rgb(0xE6, 0xE6, 0xE6),
-            switch_off_border: Color32::from_rgb(0xDA, 0xDA, 0xDA),
+            track: Color32::from_rgb(0xDD, 0xE9, 0xEC),
+            hover: Color32::from_rgb(0xED, 0xF5, 0xF6),
+            switch_off: Color32::from_rgb(0xDC, 0xE8, 0xEA),
+            switch_off_border: Color32::from_rgb(0xCF, 0xDF, 0xE2),
             ok: Color32::from_rgb(0x0F, 0x7B, 0x0F),
             warn: Color32::from_rgb(0x9D, 0x5D, 0x00),
             danger: Color32::from_rgb(0xC4, 0x2B, 0x1C),
-            // The sidebar has no fill of its own: nav items sit straight on the
-            // window gradient (≈#F6F6F6 up here). Keep both states within a few
-            // levels of that, so the accent bar and the label carry the
-            // selection instead of a grey block.
-            nav_selected: Color32::from_rgb(0xEA, 0xEA, 0xEA),
-            // 4 levels below the window gradient would be invisible; 6 keeps the
-            // hover readable while staying lighter than the old #EDEDED.
-            nav_hover: Color32::from_rgb(0xF0, 0xF0, 0xF0),
-            scroll_thumb: Color32::from_rgb(0x9A, 0x9A, 0x9A),
-            scroll_thumb_hover: Color32::from_rgb(0x7A, 0x7A, 0x7A),
+            // Sampled Win11 values: selected pill #E3EDEF on a #E9F7F9 rail
+            // (≈7–10 levels deeper, plainly visible), hover one step lighter,
+            // indicator bar #1D6978. Opaque, not the near-invisible alpha
+            // washes the previous build used.
+            nav_selected: Color32::from_rgb(0xE3, 0xED, 0xEF),
+            nav_hover: Color32::from_rgb(0xE8, 0xF3, 0xF4),
+            nav_indicator: Color32::from_rgb(0x1D, 0x69, 0x78),
+            scroll_thumb: Color32::from_rgb(0x9A, 0xA6, 0xA8),
+            scroll_thumb_hover: Color32::from_rgb(0x7A, 0x86, 0x88),
         }
     }
 
     fn dark() -> Self {
         Self {
             dark: true,
-            bg_top: Color32::from_rgb(0x27, 0x27, 0x27),
-            bg_bottom: Color32::from_rgb(0x1C, 0x1C, 0x1C),
-            card: Color32::from_rgb(0x2C, 0x2C, 0x2C),
+            bg_top: Color32::from_rgb(0x28, 0x2B, 0x30),
+            bg_bottom: Color32::from_rgb(0x1D, 0x20, 0x24),
+            bg_bottom_warm: Color32::from_rgb(0x23, 0x20, 0x24),
+            nav_tint: Color32::from_rgba_unmultiplied(0x54, 0x8C, 0xD8, 16),
+            glow: Color32::from_rgba_unmultiplied(0x4F, 0xD8, 0xCC, 8),
+            card: Color32::from_rgb(0x2C, 0x2F, 0x35),
             card_shadow: Color32::from_black_alpha(80),
-            border: Color32::from_rgb(0x39, 0x39, 0x39),
-            separator: Color32::from_rgb(0x38, 0x38, 0x38),
+            border: Color32::from_rgb(0x3B, 0x40, 0x48),
+            separator: Color32::from_rgb(0x36, 0x3B, 0x43),
             text: Color32::from_rgb(0xFF, 0xFF, 0xFF),
             secondary: Color32::from_rgb(0xC5, 0xC5, 0xC5),
             tertiary: Color32::from_rgb(0x9A, 0x9A, 0x9A),
             accent: Color32::from_rgb(0x4F, 0xD8, 0xCC),
             accent_soft: Color32::from_rgb(0x10, 0x39, 0x3A),
             track: Color32::from_rgb(0x3A, 0x3A, 0x3A),
-            hover: Color32::from_rgb(0x33, 0x33, 0x33),
+            hover: Color32::from_rgb(0x2F, 0x33, 0x3A),
             switch_off: Color32::from_rgb(0x3A, 0x3A, 0x3A),
             switch_off_border: Color32::from_rgb(0x46, 0x46, 0x46),
             ok: Color32::from_rgb(0x6C, 0xCB, 0x5F),
             warn: Color32::from_rgb(0xF0, 0xC6, 0x74),
             danger: Color32::from_rgb(0xFF, 0x99, 0xA4),
-            // Same idea on the dark gradient (≈#26 at the top): darker = calmer.
-            nav_selected: Color32::from_rgb(0x31, 0x31, 0x31),
-            nav_hover: Color32::from_rgb(0x2B, 0x2B, 0x2B),
+            // Dark counterpart of the same three sampled states: a visible
+            // but quiet pill, a lighter hover, a bright accent indicator.
+            nav_selected: Color32::from_rgb(0x33, 0x3B, 0x42),
+            nav_hover: Color32::from_rgb(0x2D, 0x34, 0x3A),
+            nav_indicator: Color32::from_rgb(0x4F, 0xC3, 0xD8),
             scroll_thumb: Color32::from_rgb(0x6A, 0x6A, 0x6A),
             scroll_thumb_hover: Color32::from_rgb(0x8A, 0x8A, 0x8A),
         }
@@ -610,16 +652,16 @@ fn font(size: f32) -> FontId {
 fn apply_style(ctx: &egui::Context, p: &Palette) {
     let mut style = (*ctx.style()).clone();
     style.text_styles = [
-        (egui::TextStyle::Small, font(11.5)),
-        (egui::TextStyle::Body, font(13.5)),
-        (egui::TextStyle::Button, font(13.5)),
-        (egui::TextStyle::Heading, bold(22.0)),
-        (egui::TextStyle::Monospace, FontId::monospace(12.0)),
+        (egui::TextStyle::Small, font(12.5)),
+        (egui::TextStyle::Body, font(14.5)),
+        (egui::TextStyle::Button, font(14.0)),
+        (egui::TextStyle::Heading, bold(24.0)),
+        (egui::TextStyle::Monospace, FontId::monospace(13.0)),
     ]
     .into();
-    style.spacing.item_spacing = egui::vec2(8.0, 6.0);
-    style.spacing.button_padding = egui::vec2(12.0, 6.0);
-    style.spacing.interact_size = egui::vec2(24.0, 24.0);
+    style.spacing.item_spacing = egui::vec2(8.0, 7.0);
+    style.spacing.button_padding = egui::vec2(13.0, 7.0);
+    style.spacing.interact_size = egui::vec2(26.0, 26.0);
     // Win11 scrollbars are thin overlays that sit on the window edge instead of
     // taking a column of their own.
     style.spacing.scroll = egui::style::ScrollStyle {
@@ -681,25 +723,100 @@ fn apply_style(ctx: &egui::Context, p: &Palette) {
     ctx.set_style(style);
 }
 
-/// Paint the one window surface: a two-stop vertical gradient across the whole
-/// window, under every panel.
+/// Height of the flat band at the top of the client area, in points. The
+/// native caption is a **solid** DWM fill (`DWMWA_CAPTION_COLOR`), so the first
+/// band of the page has to be exactly that colour: a gradient starting at
+/// y = 0 shows up as a seam immediately under the title bar.
+const CAPTION_BAND_H: f32 = 44.0;
+/// Vertical distance over which the navigation wash fades in below that band.
+const WASH_FADE_H: f32 = 96.0;
+
+/// Paint the one window surface: a flat caption-matching band, a slow gradient
+/// below it, and two translucent washes that only begin under the band.
 ///
 /// This replaces the per-panel fills. A `SidePanel` filled with one grey and a
 /// `CentralPanel` filled with another always leaves a tonal step at the seam,
 /// which reads as a divider line even when no line is drawn. Painting once in
-/// the background layer makes the two columns literally the same surface, and
-/// gives the flat Win11 look a hint of Mica depth.
+/// the background layer keeps the columns — and now the native title bar — on
+/// literally the same surface.
 fn paint_backdrop(ctx: &egui::Context, p: &Palette) {
     let rect = ctx.screen_rect();
-    let mut mesh = egui::Mesh::default();
-    mesh.colored_vertex(rect.left_top(), p.bg_top);
-    mesh.colored_vertex(rect.right_top(), p.bg_top);
-    mesh.colored_vertex(rect.right_bottom(), p.bg_bottom);
-    mesh.colored_vertex(rect.left_bottom(), p.bg_bottom);
-    mesh.add_triangle(0, 1, 2);
-    mesh.add_triangle(0, 2, 3);
-    ctx.layer_painter(egui::LayerId::background())
-        .add(egui::Shape::mesh(mesh));
+    let painter = ctx.layer_painter(egui::LayerId::background());
+    let band_y = (rect.top() + CAPTION_BAND_H).min(rect.bottom());
+    let clear = Color32::TRANSPARENT;
+
+    // 1. Base. The top band is one flat colour across the full width, matching
+    //    the DWM caption exactly. Only below it does the Mica-like gradient
+    //    begin, so no horizontal step exists anywhere along the title edge.
+    let mut top = egui::Mesh::default();
+    top.colored_vertex(rect.left_top(), p.bg_top);
+    top.colored_vertex(rect.right_top(), p.bg_top);
+    top.colored_vertex(egui::pos2(rect.right(), band_y), p.bg_top);
+    top.colored_vertex(egui::pos2(rect.left(), band_y), p.bg_top);
+    top.add_triangle(0, 1, 2);
+    top.add_triangle(0, 2, 3);
+    painter.add(egui::Shape::mesh(top));
+
+    if band_y < rect.bottom() {
+        let mut base = egui::Mesh::default();
+        base.colored_vertex(egui::pos2(rect.left(), band_y), p.bg_top);
+        base.colored_vertex(egui::pos2(rect.right(), band_y), p.bg_top);
+        base.colored_vertex(rect.right_bottom(), p.bg_bottom_warm);
+        base.colored_vertex(rect.left_bottom(), p.bg_bottom);
+        base.add_triangle(0, 1, 2);
+        base.add_triangle(0, 2, 3);
+        painter.add(egui::Shape::mesh(base));
+    }
+
+    // 2. Cool wash behind the navigation column: fades in vertically from the
+    //    bottom of the flat band, and out horizontally well inside the page.
+    //    Neither edge is visible, so the columns still read as one surface.
+    let fade_x = (rect.left() + SIDEBAR_W + 64.0).min(rect.right());
+    let wash_y = (band_y + WASH_FADE_H).min(rect.bottom());
+    let mut rise = egui::Mesh::default();
+    rise.colored_vertex(egui::pos2(rect.left(), band_y), clear);
+    rise.colored_vertex(egui::pos2(fade_x, band_y), clear);
+    rise.colored_vertex(egui::pos2(fade_x, wash_y), clear);
+    rise.colored_vertex(egui::pos2(rect.left(), wash_y), p.nav_tint);
+    rise.add_triangle(0, 1, 2);
+    rise.add_triangle(0, 2, 3);
+    painter.add(egui::Shape::mesh(rise));
+
+    if wash_y < rect.bottom() {
+        let mut hold = egui::Mesh::default();
+        hold.colored_vertex(egui::pos2(rect.left(), wash_y), p.nav_tint);
+        hold.colored_vertex(egui::pos2(fade_x, wash_y), clear);
+        hold.colored_vertex(egui::pos2(fade_x, rect.bottom()), clear);
+        hold.colored_vertex(egui::pos2(rect.left(), rect.bottom()), p.nav_tint);
+        hold.add_triangle(0, 1, 2);
+        hold.add_triangle(0, 2, 3);
+        painter.add(egui::Shape::mesh(hold));
+    }
+
+    // 3. Soft light spot, confined to the area below the caption band. Four
+    //    fully transparent corners mean its top edge cannot read as a line.
+    let gx0 = (rect.right() - rect.width() * 0.62).max(fade_x - 40.0);
+    let gx1 = rect.right();
+    let gy0 = band_y;
+    let gy1 = (band_y + (rect.bottom() - band_y) * 0.62).min(rect.bottom());
+    let corners = [
+        egui::pos2(gx0, gy0),
+        egui::pos2(gx1, gy0),
+        egui::pos2(gx1, gy1),
+        egui::pos2(gx0, gy1),
+    ];
+    let mut glow = egui::Mesh::default();
+    glow.colored_vertex(
+        egui::pos2((gx0 + gx1) / 2.0, (gy0 + gy1) / 2.0),
+        p.glow,
+    );
+    for &q in &corners {
+        glow.colored_vertex(q, clear);
+    }
+    for i in 0u32..4 {
+        glow.add_triangle(0, 1 + i, 1 + ((i + 1) % 4));
+    }
+    painter.add(egui::Shape::mesh(glow));
 }
 
 // ---------------------------------------------------------------------------
@@ -715,6 +832,9 @@ enum Page {
     Box,
     /// File search: app enable/state, hotkey, scope and content limits.
     Search,
+    /// Desktop info island: app enable/state, clock, metrics, tasks,
+    /// clipboard, inbox and outbound channels.
+    Island,
     About,
 }
 
@@ -724,6 +844,7 @@ impl Page {
         match code {
             PAGE_BOX => Page::Box,
             PAGE_SEARCH => Page::Search,
+            PAGE_ISLAND => Page::Island,
             PAGE_ABOUT => Page::About,
             _ => Page::Look,
         }
@@ -1124,6 +1245,20 @@ struct SettingsApp {
     /// Half-typed exclusion rule; kept out of `SearchValues` so typing does not
     /// mark the document dirty before「添加」is pressed.
     exclude_new: String,
+
+    // -- desktop info island ------------------------------------------------
+    /// `island.toml` being edited. The island process also writes this document
+    /// (tab, panel size), so `persist_island` merges the `ui` table from disk.
+    island: dcx_island_config::Config,
+    island_saved: dcx_island_config::Config,
+    island_dirty: Option<Instant>,
+    island_error: Option<String>,
+    /// Credential edit buffers. They are deliberately **not** part of the
+    /// document: secrets go to the Windows credential manager on an explicit
+    /// button press, never into a TOML or a debounced auto-save.
+    island_imap_secret: String,
+    island_mail_secret: String,
+    island_wecom_secret: String,
 }
 
 impl SettingsApp {
@@ -1141,6 +1276,10 @@ impl SettingsApp {
         // icons an earlier build hid and left an ownership marker behind.
         restore_desktop_icons_if_owned();
         let search = load_search_values();
+        let mut island = dcx_island_config::load();
+        // `apps.toml` is the host's registry; mirror it into the document so
+        // the single master switch always shows one consistent state.
+        island.enabled = crate::apps::is_enabled("island");
         SettingsApp {
             saved: s.clone(),
             auto_hide: crate::auto_hide::is_enabled(),
@@ -1166,6 +1305,13 @@ impl SettingsApp {
             search_dirty: None,
             search_error: None,
             exclude_new: String::new(),
+            island_saved: island.clone(),
+            island,
+            island_dirty: None,
+            island_error: None,
+            island_imap_secret: String::new(),
+            island_mail_secret: String::new(),
+            island_wecom_secret: String::new(),
             page: Page::from_code(START_PAGE.swap(PAGE_LOOK, Ordering::SeqCst)),
             bx,
         }
@@ -1198,17 +1344,22 @@ impl SettingsApp {
     // -- page ---------------------------------------------------------------
 
     fn sidebar(&mut self, ui: &mut egui::Ui, p: &Palette) {
-        ui.add_space(10.0);
+        // No inter-item gap: egui's default 7 pt item spacing plus the old
+        // 3 pt add_space stretched the pitch to 56 pt (70 physical px at
+        // 125 %). Win11 measures 50 px, but a 40 pt row felt too cramped, so
+        // the row is 46 pt with zero gap — a 46 pt pitch (≈58 physical px).
+        ui.spacing_mut().item_spacing.y = 0.0;
+        ui.add_space(14.0);
         for (page, icon, label) in [
             (Page::Look, NavIcon::Appearance, "任务栏样式"),
             (Page::Box, NavIcon::Box, "桌面整理"),
             (Page::Search, NavIcon::Search, "文件检索"),
+            (Page::Island, NavIcon::Island, "桌面信息岛"),
             (Page::About, NavIcon::About, "关于"),
         ] {
             if nav_item(ui, p, self.page == page, icon, label).clicked() {
                 self.page = page;
             }
-            ui.add_space(1.0);
         }
 
         ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
@@ -1220,9 +1371,9 @@ impl SettingsApp {
     fn page_head(&mut self, ui: &mut egui::Ui, p: &Palette, title: &str, subtitle: &str) {
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
-                ui.label(RichText::new(title).font(bold(26.0)).color(p.text));
-                ui.add_space(4.0);
-                ui.label(RichText::new(subtitle).size(12.5).color(p.secondary));
+                ui.label(RichText::new(title).font(bold(30.0)).color(p.text));
+                ui.add_space(5.0);
+                ui.label(RichText::new(subtitle).size(13.5).color(p.secondary));
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let is_dark = self.s.ui_theme == UiTheme::Dark;
@@ -2039,6 +2190,579 @@ impl SettingsApp {
         ui.add_space(18.0);
     }
 
+    // -- 桌面信息岛 ---------------------------------------------------------
+
+    /// Write `island.toml`. Both processes write this document, so the `ui`
+    /// table (last tab, panel size) is re-read from disk and kept; without the
+    /// merge a slider edit here would roll back the island's own geometry.
+    fn persist_island(&mut self) {
+        let prev_enabled = self.island_saved.enabled;
+        let disk = dcx_island_config::load();
+        let merged = dcx_island_config::Config {
+            ui: disk.ui.clone(),
+            ..self.island.clone()
+        };
+        match dcx_island_config::save(&merged) {
+            Ok(()) => {
+                // One master switch, two documents: the island process reads
+                // `island.toml`, the host's watchdog reads `apps.toml`.
+                if merged.enabled != prev_enabled {
+                    if let Err(e) = crate::apps::set_enabled("island", merged.enabled) {
+                        self.island_error = Some(e);
+                        self.island_dirty = Some(Instant::now());
+                        return;
+                    }
+                }
+                self.island_saved = self.island.clone();
+                self.island_dirty = None;
+                self.island_error = None;
+            }
+            Err(e) => {
+                self.island_error = Some(e);
+                self.island_dirty = Some(Instant::now());
+            }
+        }
+    }
+
+    /// Island edits are flushed even after the user leaves the page.
+    fn island_tick(&mut self, ctx: &egui::Context) {
+        if let Some(t) = self.island_dirty {
+            if t.elapsed() >= Duration::from_millis(220) {
+                self.persist_island();
+            }
+            ctx.request_repaint_after(Duration::from_millis(120));
+        }
+    }
+
+    fn island_cards(&mut self, ui: &mut egui::Ui, p: &Palette) {
+        let mut iv = self.island.clone();
+
+        caption(ui, p, "常规");
+        card(ui, p, |ui| {
+            let mut enabled = iv.enabled;
+            row_tight(
+                ui,
+                p,
+                RowIcon::Power,
+                "启用桌面信息岛",
+                "唯一启停开关：同时写入 island.toml 与 apps.toml；默认关闭，开启后顶部常驻悬浮胶囊",
+                |ui| {
+                    switch(ui, p, &mut enabled);
+                },
+            );
+            iv.enabled = enabled;
+            row_separator(ui, p);
+            self.app_status_row(ui, p, "island", RowIcon::Info);
+            row_separator(ui, p);
+
+            let mut hk_on = iv.hotkey_enabled;
+            row_tight(
+                ui,
+                p,
+                RowIcon::Power,
+                "启用全局快捷键",
+                "由 dcx-host 常驻监听；仅在信息岛已启用时有效，按下展开/收起面板",
+                |ui| {
+                    switch(ui, p, &mut hk_on);
+                },
+            );
+            iv.hotkey_enabled = hk_on;
+            row_separator(ui, p);
+
+            row(
+                ui,
+                p,
+                RowIcon::Info,
+                "全局快捷键",
+                "默认 Alt+i；必须带 Alt / Ctrl / Shift / Win 之一，改键约 1 秒后生效",
+                |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut iv.hotkey).desired_width(130.0));
+                    if let Err(why) = crate::hotkey::validate(&iv.hotkey) {
+                        ui.label(RichText::new(why).size(11.0).color(p.danger));
+                    }
+                },
+            );
+            row_separator(ui, p);
+
+            let mut hour24 = iv.clock.hour24;
+            row_tight(ui, p, RowIcon::Info, "24 小时制", "关闭后显示 AM / PM", |ui| {
+                switch(ui, p, &mut hour24);
+            });
+            iv.clock.hour24 = hour24;
+            row_separator(ui, p);
+
+            let mut show_seconds = iv.clock.show_seconds;
+            row_tight(ui, p, RowIcon::Info, "显示秒", "紧凑态显示 HH:MM:SS", |ui| {
+                switch(ui, p, &mut show_seconds);
+            });
+            iv.clock.show_seconds = show_seconds;
+            row_separator(ui, p);
+
+            let mut show_weekday = iv.clock.show_weekday;
+            let mut show_date = iv.clock.show_date;
+            row_tight(ui, p, RowIcon::Info, "显示星期", "紧凑态显示中文星期", |ui| {
+                switch(ui, p, &mut show_weekday);
+            });
+            row_separator(ui, p);
+            row_tight(ui, p, RowIcon::Info, "显示日期", "紧凑态同时显示年月日", |ui| {
+                switch(ui, p, &mut show_date);
+            });
+            iv.clock.show_weekday = show_weekday;
+            iv.clock.show_date = show_date;
+            row_separator(ui, p);
+
+            let mut hide_fs = iv.behavior.hide_fullscreen;
+            row_tight(
+                ui,
+                p,
+                RowIcon::Desktop,
+                "全屏时自动隐藏",
+                "视频、游戏、演示文稿处于前台时收起胶囊，避免遮挡",
+                |ui| {
+                    switch(ui, p, &mut hide_fs);
+                },
+            );
+            iv.behavior.hide_fullscreen = hide_fs;
+            row_separator(ui, p);
+
+            slider_row(
+                ui,
+                p,
+                RowIcon::Width,
+                "胶囊宽度",
+                "逻辑点，125% DPI 下乘以 1.25 为物理像素",
+                &mut iv.behavior.capsule_width,
+                150.0_f32,
+                420.0_f32,
+                " pt",
+                true,
+            );
+            row_separator(ui, p);
+            slider_row(
+                ui,
+                p,
+                RowIcon::Tall,
+                "胶囊高度",
+                "逻辑点；过小会让文字被裁切",
+                &mut iv.behavior.capsule_height,
+                26.0_f32,
+                64.0_f32,
+                " pt",
+                true,
+            );
+            row_separator(ui, p);
+            slider_row(
+                ui,
+                p,
+                RowIcon::Shape,
+                "背景不透明度",
+                "只作用于胶囊背景，文字保持不透明",
+                &mut iv.behavior.opacity,
+                0.6_f32,
+                1.0_f32,
+                "",
+                true,
+            );
+        });
+
+        ui.add_space(18.0);
+        caption(ui, p, "系统性能");
+        card(ui, p, |ui| {
+            let mut show = iv.metrics.show;
+            row_tight(ui, p, RowIcon::Power, "显示性能指标", "紧凑态显示 CPU / 内存等读数", |ui| {
+                switch(ui, p, &mut show);
+            });
+            iv.metrics.show = show;
+            row_separator(ui, p);
+            for (flag, title, subtitle) in [
+                (&mut iv.metrics.cpu, "CPU 占用", "GetSystemTimes 两次采样差分"),
+                (&mut iv.metrics.memory, "内存占用", "GlobalMemoryStatusEx"),
+                (&mut iv.metrics.disk, "磁盘已用", "GetDiskFreeSpaceExW（系统盘）"),
+                (&mut iv.metrics.network, "网络速率", "GetIfTable2 差分上下行"),
+            ] {
+                let mut on = *flag;
+                row_tight(ui, p, RowIcon::Size, title, subtitle, |ui| {
+                    switch(ui, p, &mut on);
+                });
+                *flag = on;
+                row_separator(ui, p);
+            }
+
+            row(
+                ui,
+                p,
+                RowIcon::Info,
+                "采样间隔",
+                "后台线程采样周期，1–10 秒；越长越省电",
+                |ui| {
+                    ui.add(egui::DragValue::new(&mut iv.metrics.interval_secs).range(1..=10).suffix(" 秒"));
+                },
+            );
+            row_separator(ui, p);
+            let mut style = if iv.metrics.style == "ring" { 1u8 } else { 0u8 };
+            row_reserve(ui, p, RowIcon::Shape, "指标样式", "条形或环形，超过 75% 变色", 240.0, |ui| {
+                radios(ui, p, &mut style, &[(0u8, "条形"), (1u8, "环形")]);
+            });
+            iv.metrics.style = if style == 1 { "ring" } else { "bar" }.to_string();
+        });
+
+        ui.add_space(18.0);
+        caption(ui, p, "任务与剪贴板");
+        card(ui, p, |ui| {
+            let mut carry = iv.tasks.carry_over;
+            let mut sound = iv.tasks.sound;
+            let mut dispatch_due = iv.tasks.dispatch_due;
+            row_tight(ui, p, RowIcon::Sort, "未完成任务自动结转", "每日首次启动时把昨天未完成的任务移到今天", |ui| {
+                switch(ui, p, &mut carry);
+            });
+            row_separator(ui, p);
+            row_tight(ui, p, RowIcon::Info, "提醒声音", "到点时提示音", |ui| {
+                switch(ui, p, &mut sound);
+            });
+            row_separator(ui, p);
+            row_tight(
+                ui,
+                p,
+                RowIcon::Link,
+                "到点推送到出站渠道",
+                "同时按下方「出站推送」的开关发送；未配置任何渠道时只做岛内弹层",
+                |ui| {
+                    switch(ui, p, &mut dispatch_due);
+                },
+            );
+            iv.tasks.carry_over = carry;
+            iv.tasks.sound = sound;
+            iv.tasks.dispatch_due = dispatch_due;
+            row_separator(ui, p);
+
+            row_reserve(
+                ui,
+                p,
+                RowIcon::Folder,
+                "Markdown 归档目录",
+                "留空表示不归档；任务按天导出",
+                320.0,
+                |ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut iv.tasks.archive_dir)
+                            .desired_width(230.0)
+                            .hint_text("例如 D:\\文档\\岛归档"),
+                    );
+                },
+            );
+            row_separator(ui, p);
+
+            let mut clip_on = iv.clipboard.enabled;
+            let mut images = iv.clipboard.capture_images;
+            let mut skip_pwd = iv.clipboard.skip_password_fields;
+            row_tight(
+                ui,
+                p,
+                RowIcon::Doc,
+                "记录剪贴板历史",
+                "文本与图片只存本地；首次开启请确认本机无合规限制",
+                |ui| {
+                    switch(ui, p, &mut clip_on);
+                },
+            );
+            row_separator(ui, p);
+            row_tight(ui, p, RowIcon::Shape, "记录图片", "关闭后只保留文本", |ui| {
+                switch(ui, p, &mut images);
+            });
+            row_separator(ui, p);
+            row_tight(
+                ui,
+                p,
+                RowIcon::Hide,
+                "跳过密码框内容",
+                "焦点位于密码输入控件时不记录；这是尽力而为，不是安全保证",
+                |ui| {
+                    switch(ui, p, &mut skip_pwd);
+                },
+            );
+            iv.clipboard.enabled = clip_on;
+            iv.clipboard.capture_images = images;
+            iv.clipboard.skip_password_fields = skip_pwd;
+            row_separator(ui, p);
+
+            row(
+                ui,
+                p,
+                RowIcon::Size,
+                "历史上限 / 单条上限",
+                "条数 20–2000；单条文本字符数 200–200000，超出截断",
+                |ui| {
+                    ui.add(egui::DragValue::new(&mut iv.clipboard.max_items).range(20..=2000));
+                    ui.add(egui::DragValue::new(&mut iv.clipboard.max_text_chars).range(200..=200_000));
+                },
+            );
+            row_separator(ui, p);
+            row(
+                ui,
+                p,
+                RowIcon::Size,
+                "图片目录预算",
+                "超过后按时间清理最旧图片，单位 MB",
+                |ui| {
+                    ui.add(egui::DragValue::new(&mut iv.clipboard.max_image_mb).range(0..=4096).suffix(" MB"));
+                },
+            );
+            row_separator(ui, p);
+            let mut excludes = iv.clipboard.exclude_patterns.join("\n");
+            ui.add_space(4.0);
+            ui.label(RichText::new("不记录的文本规则（每行一条正则）").size(12.5).color(p.secondary));
+            ui.add_space(4.0);
+            ui.add(
+                egui::TextEdit::multiline(&mut excludes)
+                    .desired_rows(3)
+                    .desired_width(ui.available_width())
+                    .hint_text(r"(?i)\b(password|passwd|pwd)\s*[:=]"),
+            );
+            iv.clipboard.exclude_patterns = excludes
+                .lines()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .collect();
+        });
+
+        ui.add_space(18.0);
+        caption(ui, p, "通知渠道 · 入站");
+        card(ui, p, |ui| {
+            let mut wechat = iv.inbox.wechat;
+            let mut wecom = iv.inbox.wecom;
+            let mut qq = iv.inbox.qq;
+            let mut mail = iv.inbox.mail;
+            row_tight(
+                ui,
+                p,
+                RowIcon::Info,
+                "微信",
+                "SHELLHOOK 任务栏关注信号；不读正文、发送人或准确未读数",
+                |ui| {
+                    switch(ui, p, &mut wechat);
+                },
+            );
+            row_separator(ui, p);
+            row_tight(
+                ui,
+                p,
+                RowIcon::Info,
+                "企业微信",
+                "复用同一 SHELLHOOK 关注信号；是否触发 HSHELL_FLASH 以实机为准",
+                |ui| {
+                    switch(ui, p, &mut wecom);
+                },
+            );
+            row_separator(ui, p);
+            row_tight(
+                ui,
+                p,
+                RowIcon::Info,
+                "QQ",
+                "WinRT UserNotificationListener 按 AUMID 过滤；未打包桌面程序常被系统拒绝授权",
+                |ui| {
+                    switch(ui, p, &mut qq);
+                },
+            );
+            row_separator(ui, p);
+            row_tight(
+                ui,
+                p,
+                RowIcon::Info,
+                "邮箱（IMAP）",
+                "只同步未读邮件头，首次同步不提醒历史邮件；需要授权码",
+                |ui| {
+                    switch(ui, p, &mut mail);
+                },
+            );
+            iv.inbox.wechat = wechat;
+            iv.inbox.wecom = wecom;
+            iv.inbox.qq = qq;
+            iv.inbox.mail = mail;
+            row_separator(ui, p);
+            row(
+                ui,
+                p,
+                RowIcon::Info,
+                "每项保留条数",
+                "消息条目只在本次运行的内存中保存，不落盘聊天内容",
+                |ui| {
+                    ui.add(egui::DragValue::new(&mut iv.inbox.keep).range(5..=200));
+                },
+            );
+            row_separator(ui, p);
+            let mut badge = iv.inbox.badge;
+            row_tight(ui, p, RowIcon::Info, "紧凑态未读角标", "有新提醒时胶囊上显示计数", |ui| {
+                switch(ui, p, &mut badge);
+            });
+            iv.inbox.badge = badge;
+            row_separator(ui, p);
+
+            row_reserve(
+                ui,
+                p,
+                RowIcon::Info,
+                "邮箱账号 / IMAP / SMTP",
+                "授权码在下方凭据区保存，不写进配置文件",
+                330.0,
+                |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut iv.mail.user).desired_width(150.0).hint_text("账号"));
+                    ui.add(egui::TextEdit::singleline(&mut iv.mail.imap_host).desired_width(120.0));
+                    ui.add(egui::DragValue::new(&mut iv.mail.imap_port).range(1..=65535));
+                },
+            );
+            row_separator(ui, p);
+            row_reserve(
+                ui,
+                p,
+                RowIcon::Info,
+                "发件地址 / SMTP",
+                "收件人留空表示发给自己；SMTP 走隐式 TLS（465）",
+                330.0,
+                |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut iv.mail.to).desired_width(140.0).hint_text("收件人（可选）"));
+                    ui.add(egui::TextEdit::singleline(&mut iv.mail.smtp_host).desired_width(120.0));
+                    ui.add(egui::DragValue::new(&mut iv.mail.smtp_port).range(1..=65535));
+                },
+            );
+            row_separator(ui, p);
+            row(
+                ui,
+                p,
+                RowIcon::Info,
+                "邮箱轮询间隔",
+                "分钟；1–240，关闭渠道不会空转轮询",
+                |ui| {
+                    ui.add(egui::DragValue::new(&mut iv.mail.poll_minutes).range(1..=240).suffix(" 分钟"));
+                },
+            );
+            row_separator(ui, p);
+            let mut skip_backlog = iv.mail.skip_backlog;
+            row_tight(ui, p, RowIcon::Info, "首次同步忽略历史邮件", "避免开启时补报一周的旧邮件", |ui| {
+                switch(ui, p, &mut skip_backlog);
+            });
+            iv.mail.skip_backlog = skip_backlog;
+        });
+
+        ui.add_space(18.0);
+        caption(ui, p, "通知渠道 · 出站与凭据");
+        card(ui, p, |ui| {
+            let mut dw = iv.dispatch.wecom;
+            let mut dm = iv.dispatch.mail;
+            row_tight(
+                ui,
+                p,
+                RowIcon::Link,
+                "企业微信群机器人",
+                "官方 webhook，20 条/分钟上限；需要 Webhook Key",
+                |ui| {
+                    switch(ui, p, &mut dw);
+                },
+            );
+            row_separator(ui, p);
+            row_tight(ui, p, RowIcon::Link, "邮件 SMTP", "用上方发件配置推送提醒", |ui| {
+                switch(ui, p, &mut dm);
+            });
+            iv.dispatch.wecom = dw;
+            iv.dispatch.mail = dm;
+            row_separator(ui, p);
+            row(
+                ui,
+                p,
+                RowIcon::Info,
+                "最小发送间隔",
+                "两次推送之间的最短秒数，默认 5 秒，远低于 webhook 限流",
+                |ui| {
+                    ui.add(egui::DragValue::new(&mut iv.dispatch.min_gap_secs).range(0..=60).suffix(" 秒"));
+                },
+            );
+            row_separator(ui, p);
+
+            island_cred_row(
+                ui,
+                p,
+                "IMAP 授权码",
+                "收件用；不是 QQ / 邮箱登录密码",
+                dcx_island_config::credential::KEY_IMAP,
+                &mut self.island_imap_secret,
+                &mut self.island_error,
+            );
+            row_separator(ui, p);
+            island_cred_row(
+                ui,
+                p,
+                "SMTP 授权码",
+                "留空则复用 IMAP 授权码",
+                dcx_island_config::credential::KEY_MAIL,
+                &mut self.island_mail_secret,
+                &mut self.island_error,
+            );
+            row_separator(ui, p);
+            island_cred_row(
+                ui,
+                p,
+                "企业微信 Webhook Key",
+                "群机器人 URL 中 key= 后面的值",
+                dcx_island_config::credential::KEY_WECOM,
+                &mut self.island_wecom_secret,
+                &mut self.island_error,
+            );
+        });
+
+        ui.add_space(18.0);
+        caption(ui, p, "能力边界（避免误解）");
+        card(ui, p, |ui| {
+            row_info(
+                ui,
+                p,
+                RowIcon::Info,
+                "QQ / 微信个人号",
+                "无官方出站发送接口；不做协议逆向、不做 UI 自动化模拟发送，设置页不提供「发消息」开关",
+                |ui| {
+                    ui.allocate_exact_size(egui::vec2(8.0, 8.0), Sense::hover());
+                },
+            );
+            row_separator(ui, p);
+            row_info(
+                ui,
+                p,
+                RowIcon::Info,
+                "企业微信入站",
+                "官方智能机器人「长连接」API 模式无需公网回调即可收消息；当前版本未实现，只做本地关注信号",
+                |ui| {
+                    ui.allocate_exact_size(egui::vec2(8.0, 8.0), Sense::hover());
+                },
+            );
+            row_separator(ui, p);
+            row_info(
+                ui,
+                p,
+                RowIcon::Info,
+                "凭据与日志",
+                "授权码只存 Windows 凭据管理器，不进 island.toml、不写日志；剪贴板与通知内容不上传",
+                |ui| {
+                    ui.allocate_exact_size(egui::vec2(8.0, 8.0), Sense::hover());
+                },
+            );
+        });
+
+        if let Some(e) = crate::hotkey::last_island_error() {
+            ui.add_space(6.0);
+            ui.label(RichText::new(e).size(12.0).color(p.danger));
+        }
+        if let Some(e) = &self.island_error {
+            ui.add_space(4.0);
+            ui.label(RichText::new(e).size(12.0).color(p.danger));
+        }
+        if iv != self.island {
+            self.island = iv;
+            self.island_dirty = Some(Instant::now());
+            ui.ctx().request_repaint_after(Duration::from_millis(120));
+        }
+        ui.add_space(18.0);
+    }
+
     // -- 桌面整理 -----------------------------------------------------------
 
     /// Writes the box document. Same atomic-replace trick as the taskbar file:
@@ -2608,6 +3332,9 @@ impl SettingsApp {
         if self.bx != self.bx_saved {
             self.persist_box();
         }
+        if self.island != self.island_saved {
+            self.persist_island();
+        }
     }
 
     /// The whole window, independent of the hosting event loop: `run_native`
@@ -2682,6 +3409,7 @@ impl SettingsApp {
 
         self.box_tick(ctx);
         self.search_tick(ctx);
+        self.island_tick(ctx);
 
         // Debounced live apply: write at most once per ~220 ms of idle editing.
         if self.s != self.saved {
@@ -2707,10 +3435,10 @@ impl SettingsApp {
             // surface, so there is nothing left for it to divide.
             .show_separator_line(false)
             .frame(egui::Frame::none().inner_margin(Margin {
-                left: 12.0,
-                right: 12.0,
-                top: 18.0,
-                bottom: 14.0,
+                left: 16.0,
+                right: 16.0,
+                top: 22.0,
+                bottom: 16.0,
             }))
             .show(ctx, |ui| {
                 ui.set_width(ui.available_width());
@@ -2762,6 +3490,14 @@ impl SettingsApp {
                                     "文件名与内容检索：快捷键、检索范围与索引策略",
                                 );
                             }
+                            Page::Island => {
+                                self.page_head(
+                                    ui,
+                                    &p,
+                                    "桌面信息岛",
+                                    "顶部悬浮胶囊：时间、性能、任务、剪贴板与消息聚合",
+                                );
+                            }
                             Page::About => {
                                 self.page_head(ui, &p, "关于", "DCX 桌面增强 · 任务栏主题");
                             }
@@ -2772,6 +3508,7 @@ impl SettingsApp {
                 let salt = match self.page {
                     Page::Look => 0u8,
                     Page::Search => 3,
+                    Page::Island => 4,
                     Page::Box => 2,
                     Page::About => 1,
                 };
@@ -2817,6 +3554,7 @@ impl SettingsApp {
                                         }
                                         Page::Box => self.box_page(ui, &p),
                                         Page::Search => self.search_cards(ui, &p),
+                                        Page::Island => self.island_cards(ui, &p),
                                         Page::About => {
                                             caption(ui, &p, "系统信息");
                                             self.about_card(ui, &p);
@@ -3069,7 +3807,7 @@ fn alert(title: &str, text: &str) {
 /// Small section caption above a card, the way Win11 labels card groups: the
 /// caption is the same weight class as a subheading, not a muted footnote.
 fn caption(ui: &mut egui::Ui, p: &Palette, text: &str) {
-    ui.label(RichText::new(text).font(bold(13.0)).color(p.text));
+    ui.label(RichText::new(text).font(bold(14.5)).color(p.text));
     ui.add_space(8.0);
 }
 
@@ -3153,12 +3891,12 @@ fn row_reserve<R>(
                 ui.vertical(|ui| {
                     ui.set_max_width(text_w);
                     ui.add(
-                        egui::Label::new(RichText::new(title).size(13.5).color(p.text)).truncate(),
+                        egui::Label::new(RichText::new(title).size(14.5).color(p.text)).truncate(),
                     );
                     if !subtitle.is_empty() {
                         ui.add_space(2.0);
                         ui.add(
-                            egui::Label::new(RichText::new(subtitle).size(12.0).color(p.secondary))
+                            egui::Label::new(RichText::new(subtitle).size(12.5).color(p.secondary))
                                 .truncate(),
                         );
                     }
@@ -3193,14 +3931,14 @@ fn slider_row<T: egui::emath::Numeric>(
                 row_icon(ui, p, icon);
                 ui.add_space(12.0);
                 ui.vertical(|ui| {
-                    ui.label(RichText::new(title).size(13.5).color(if enabled {
+                    ui.label(RichText::new(title).size(14.5).color(if enabled {
                         p.text
                     } else {
                         p.tertiary
                     }));
                     if !subtitle.is_empty() {
                         ui.add_space(2.0);
-                        ui.label(RichText::new(subtitle).size(12.0).color(p.secondary));
+                        ui.label(RichText::new(subtitle).size(12.5).color(p.secondary));
                     }
                 });
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -3260,7 +3998,7 @@ fn icon_text_button(
 ) -> Response {
     let text_w = ui
         .painter()
-        .layout_no_wrap(text.to_owned(), font(13.0), p.text)
+        .layout_no_wrap(text.to_owned(), font(14.0), p.text)
         .size()
         .x;
     let w = 12.0 + 13.0 + 7.0 + text_w + 14.0;
@@ -3299,7 +4037,7 @@ fn icon_text_button(
             egui::pos2(rect.left() + 32.0, cy),
             Align2::LEFT_CENTER,
             text,
-            font(13.0),
+            font(14.0),
             fg,
         );
     } else {
@@ -3307,14 +4045,14 @@ fn icon_text_button(
             egui::pos2(rect.left() + 13.0, cy),
             Align2::LEFT_CENTER,
             "+",
-            font(13.0),
+            font(14.0),
             fg,
         );
         ui.painter().text(
             egui::pos2(rect.left() + 28.0, cy),
             Align2::LEFT_CENTER,
             text,
-            font(13.0),
+            font(14.0),
             fg,
         );
     }
@@ -3556,7 +4294,7 @@ fn radios<T: PartialEq + Copy>(
     let mut changed = false;
     for (v, label) in options.iter().rev() {
         let selected = *v == *value;
-        let text_font = font(13.0);
+        let text_font = font(14.0);
         let text_w = ui
             .painter()
             .layout_no_wrap(label.to_string(), text_font.clone(), p.text)
@@ -3679,7 +4417,7 @@ fn slider<T: egui::emath::Numeric>(
 /// Win11 "standard" button: #FBFBFB fill, 1 px #D4D4D4 border, 4 px radius.
 fn standard_button(ui: &mut egui::Ui, p: &Palette, text: &str, enabled: bool) -> Response {
     let fg = if enabled { p.text } else { p.tertiary };
-    let btn = egui::Button::new(RichText::new(text).size(13.0).color(fg))
+    let btn = egui::Button::new(RichText::new(text).size(14.0).color(fg))
         .fill(if p.dark {
             Color32::from_rgb(0x2D, 0x2D, 0x2D)
         } else {
@@ -3707,7 +4445,7 @@ fn danger_button(ui: &mut egui::Ui, p: &Palette, text: &str, enabled: bool) -> R
     } else {
         Color32::from_rgb(0xFD, 0xE7, 0xE9)
     };
-    let btn = egui::Button::new(RichText::new(text).size(13.0).color(if enabled {
+    let btn = egui::Button::new(RichText::new(text).size(14.0).color(if enabled {
         p.danger
     } else {
         p.tertiary
@@ -3721,7 +4459,7 @@ fn danger_button(ui: &mut egui::Ui, p: &Palette, text: &str, enabled: bool) -> R
 }
 
 fn small_button(ui: &mut egui::Ui, p: &Palette, text: &str, active: bool) -> Response {
-    let btn = egui::Button::new(RichText::new(text).size(12.5).color(if active {
+    let btn = egui::Button::new(RichText::new(text).size(13.5).color(if active {
         p.accent
     } else {
         p.text
@@ -3736,11 +4474,53 @@ fn small_button(ui: &mut egui::Ui, p: &Palette, text: &str, active: bool) -> Res
     ui.add(btn).on_hover_cursor(CursorIcon::PointingHand)
 }
 
+/// One credential row: masked editor, explicit「保存」/「清除」, and a status
+/// word. Secrets are never part of `island.toml` and never auto-saved — a
+/// debounced write would put a half-typed password on disk.
+fn island_cred_row(
+    ui: &mut egui::Ui,
+    p: &Palette,
+    title: &str,
+    subtitle: &str,
+    key: &str,
+    buf: &mut String,
+    error: &mut Option<String>,
+) {
+    let saved = dcx_island_config::credential::exists(key);
+    row_reserve(ui, p, RowIcon::Doc, title, subtitle, 380.0, |ui| {
+        ui.label(
+            RichText::new(if saved { "已保存" } else { "未保存" })
+                .size(12.0)
+                .color(if saved { p.ok } else { p.tertiary }),
+        );
+        if standard_button(ui, p, "清除", true).clicked() {
+            dcx_island_config::credential::delete(key);
+            buf.clear();
+        }
+        if standard_button(ui, p, "保存", true).clicked() && !buf.is_empty() {
+            match dcx_island_config::credential::save(key, buf) {
+                Ok(()) => {
+                    buf.clear();
+                    *error = None;
+                }
+                Err(e) => *error = Some(e),
+            }
+        }
+        ui.add(
+            egui::TextEdit::singleline(buf)
+                .password(true)
+                .desired_width(150.0)
+                .hint_text("留空不修改"),
+        );
+    });
+}
+
 #[derive(Clone, Copy)]
 enum NavIcon {
     Appearance,
     Box,
     Search,
+    Island,
     About,
 }
 
@@ -3751,34 +4531,59 @@ impl NavIcon {
             NavIcon::Appearance => glyph::MONITOR,
             NavIcon::Box => glyph::FOLDER,
             NavIcon::Search => glyph::SEARCH,
+            NavIcon::Island => glyph::CLOCK,
             NavIcon::About => glyph::INFO,
+        }
+    }
+
+    /// One saturated hue per page, like the coloured category icons in Win11
+    /// Settings. The shell's icon font is monochrome, so the glyph itself is
+    /// drawn in that colour — no tile, badge or outline behind it.
+    fn tint(self) -> Color32 {
+        match self {
+            NavIcon::Appearance => Color32::from_rgb(0x2B, 0x7D, 0xE9), // blue
+            NavIcon::Box => Color32::from_rgb(0xE0, 0xA0, 0x20), // amber
+            NavIcon::Search => Color32::from_rgb(0x92, 0x61, 0xDC), // violet
+            NavIcon::Island => Color32::from_rgb(0xD1, 0x5C, 0x3E), // terracotta
+            NavIcon::About => Color32::from_rgb(0x20, 0xA5, 0x6E), // green
         }
     }
 }
 
-fn nav_icon(ui: &egui::Ui, p: &Palette, icon: NavIcon, center: egui::Pos2, selected: bool) {
-    let color = if selected { p.accent } else { p.secondary };
+/// Lift a saturated colour towards white so it stays legible on the dark
+/// backdrop (0 = unchanged, 1 = white).
+fn lift(c: Color32, k: f32) -> Color32 {
+    let mix = |v: u8| (v as f32 + (255.0 - v as f32) * k).round() as u8;
+    Color32::from_rgb(mix(c.r()), mix(c.g()), mix(c.b()))
+}
+
+fn nav_icon(ui: &egui::Ui, p: &Palette, icon: NavIcon, center: egui::Pos2) {
+    let base = icon.tint();
+    let color = if p.dark { lift(base, 0.28) } else { base };
+    let painter = ui.painter();
+    // A plain coloured glyph on the shared surface. No background shape: the
+    // badge made the sidebar read as a row of app tiles instead of Win11's
+    // quiet category list.
     if icons_available() {
-        ui.painter()
-            .text(center, Align2::CENTER_CENTER, icon.glyph(), icon_font(15.0), color);
+        painter.text(center, Align2::CENTER_CENTER, icon.glyph(), icon_font(19.0), color);
         return;
     }
-    // Fallback for a system without either icon font: the old hand-drawn set.
-    let st = Stroke::new(1.4_f32, color);
-    let painter = ui.painter();
+    // Fallback for a system without either icon font: the old hand-drawn set,
+    // now in the page's own colour instead of neutral grey.
+    let st = Stroke::new(1.6_f32, color);
     match icon {
         NavIcon::Appearance => {
-            let r = Rect::from_center_size(center, egui::vec2(13.0, 9.0));
+            let r = Rect::from_center_size(center, egui::vec2(15.0, 11.0));
             painter.rect_stroke(r, Rounding::same(3.5), st);
             painter.hline(center.x - 3.0..=center.x + 3.0, center.y, st);
         }
         NavIcon::Box => {
-            let r = Rect::from_center_size(center, egui::vec2(14.0, 10.0));
+            let r = Rect::from_center_size(center, egui::vec2(16.0, 12.0));
             painter.rect_stroke(r, Rounding::same(3.0), st);
             painter.hline(center.x - 2.5..=center.x + 2.5, center.y - 1.0, st);
         }
         NavIcon::Search => {
-            painter.circle_stroke(egui::pos2(center.x - 1.5, center.y - 1.5), 4.5, st);
+            painter.circle_stroke(egui::pos2(center.x - 1.5, center.y - 1.5), 5.0, st);
             painter.line_segment(
                 [
                     egui::pos2(center.x + 2.0, center.y + 2.0),
@@ -3787,9 +4592,19 @@ fn nav_icon(ui: &egui::Ui, p: &Palette, icon: NavIcon, center: egui::Pos2, selec
                 st,
             );
         }
+        NavIcon::Island => {
+            // A small capsule with a clock hand: one shape reads as "island"
+            // without needing the icon font.
+            let r = Rect::from_center_size(center, egui::vec2(17.0, 9.0));
+            painter.rect_stroke(r, Rounding::same(4.5), st);
+            painter.line_segment(
+                [egui::pos2(center.x, center.y), egui::pos2(center.x + 3.0, center.y - 2.0)],
+                st,
+            );
+        }
         NavIcon::About => {
-            painter.circle_stroke(center, 7.0, st);
-            painter.circle_filled(egui::pos2(center.x, center.y - 2.5), 1.1, color);
+            painter.circle_stroke(center, 8.0, st);
+            painter.circle_filled(egui::pos2(center.x, center.y - 2.5), 1.2, color);
             painter.vline(center.x, center.y + 0.5..=center.y + 4.5, st);
         }
     }
@@ -3854,7 +4669,7 @@ fn delete_button(ui: &mut egui::Ui, p: &Palette, tip: &str) -> bool {
     let color = if hot { p.danger } else { p.tertiary };
     if icons_available() {
         ui.painter()
-            .text(rect.center(), Align2::CENTER_CENTER, glyph::TRASH, icon_font(13.0), color);
+            .text(rect.center(), Align2::CENTER_CENTER, glyph::TRASH, icon_font(14.0), color);
     } else {
         let c = rect.center();
         let st = Stroke::new(1.3_f32, color);
@@ -4011,35 +4826,41 @@ fn nav_item(
     icon: NavIcon,
     label: &str,
 ) -> Response {
+    // 46 pt row (WinUI's NavigationViewItem is 40 pt, which read as too
+    // cramped next to the 19 pt icon and 15 pt label). The pill keeps a 2 pt
+    // inset on each side, so it follows the row height automatically.
     let (rect, resp) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), 38.0), Sense::click());
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 46.0), Sense::click());
     let resp = resp.on_hover_cursor(CursorIcon::PointingHand);
+    let pill = Rect::from_min_size(
+        egui::pos2(rect.left(), rect.top() + 2.0),
+        egui::vec2(rect.width(), rect.height() - 4.0),
+    );
     if selected {
         ui.painter()
-            .rect_filled(rect, Rounding::same(6.0), p.nav_selected);
-        // Win11's selected marker: a short accent bar hugging the left edge.
+            .rect_filled(pill, Rounding::same(4.0), p.nav_selected);
+        // Win11's indicator: ~3×16 physical px, centred on the pill.
         let bar = Rect::from_min_size(
-            egui::pos2(rect.left() + 1.0, rect.center().y - 8.0),
-            egui::vec2(3.0, 16.0),
+            egui::pos2(pill.left() + 1.5, pill.center().y - 6.5),
+            egui::vec2(3.0, 13.0),
         );
         ui.painter()
-            .rect_filled(bar, Rounding::same(1.5_f32), p.accent);
+            .rect_filled(bar, Rounding::same(1.5), p.nav_indicator);
     } else if resp.hovered() {
         ui.painter()
-            .rect_filled(rect, Rounding::same(6.0), p.nav_hover);
+            .rect_filled(pill, Rounding::same(4.0), p.nav_hover);
     }
     nav_icon(
         ui,
         p,
         icon,
-        egui::pos2(rect.left() + 20.0, rect.center().y),
-        selected,
+        egui::pos2(rect.left() + 27.0, rect.center().y),
     );
     ui.painter().text(
-        egui::pos2(rect.left() + 40.0, rect.center().y),
+        egui::pos2(rect.left() + 52.0, rect.center().y),
         Align2::LEFT_CENTER,
         label,
-        font(13.0),
+        font(15.0),
         if selected { p.text } else { p.secondary },
     );
     resp
@@ -4070,7 +4891,7 @@ fn status_block(ui: &mut egui::Ui, p: &Palette, dirty: bool, error: Option<&str>
     ui.horizontal_wrapped(|ui| {
         let (dot, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), Sense::hover());
         ui.painter().circle_filled(dot.center(), 3.0, color);
-        ui.label(RichText::new(text).size(11.0).color(color));
+        ui.label(RichText::new(text).size(12.0).color(color));
     });
 }
 
@@ -4120,14 +4941,14 @@ fn theme_switch(ui: &mut egui::Ui, p: &Palette, dark: bool) -> Option<bool> {
             sun_c,
             Align2::CENTER_CENTER,
             glyph::SUN,
-            icon_font(13.0),
+            icon_font(14.0),
             sun_color,
         );
         ui.painter().text(
             moon_c,
             Align2::CENTER_CENTER,
             glyph::MOON,
-            icon_font(13.0),
+            icon_font(14.0),
             moon_color,
         );
     } else {

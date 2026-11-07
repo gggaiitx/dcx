@@ -228,7 +228,9 @@ fn default_acrylic_alpha() -> u16 {
     170
 }
 fn default_panel_width() -> u32 {
-    420
+    // Wider default so the category rail + file list have room at 125 % DPI.
+    // Existing organizer.toml files keep their own value via `serde(default)`.
+    480
 }
 fn default_panel_height() -> u32 {
     520

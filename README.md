@@ -6,7 +6,7 @@
 
 <p align="center">
   <b>Windows 11 桌面增强平台</b><br>
-  任务栏主题 · 桌面收纳盒 · 文件检索
+  任务栏主题 · 桌面收纳盒 · 文件检索 · 桌面信息岛
 </p>
 
 <p align="center">
@@ -16,7 +16,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-0E7C7E?style=flat-square" alt="MIT License"></a>
 </p>
 
-DCX 是一套用 Rust 编写的 Windows 11 桌面增强平台。它把三件事做成彼此独立的进程：**任务栏主题**、**桌面收纳盒**、**文件检索**。宿主常驻托盘，负责注入看门狗、应用生命周期、全局热键和统一设置中心；应用崩溃不会带走宿主，宿主退出会统一停止应用。
+DCX 是一套用 Rust 编写的 Windows 11 桌面增强平台。它把四件事做成彼此独立的进程：**任务栏主题**、**桌面收纳盒**、**文件检索**、**桌面信息岛**。宿主常驻托盘，负责注入看门狗、应用生命周期、全局热键和统一设置中心；应用崩溃不会带走宿主，宿主退出会统一停止应用。
 
 > 当前版本 **v0.1.1**，已在 Windows 11 `10.0.26200` x64 实机验证。任务栏引擎针对当前 Win11 视觉树实现，Windows 大版本更新后可能需要重新核对元素路径。
 
@@ -44,6 +44,7 @@ DCX 是一套用 Rust 编写的 Windows 11 桌面增强平台。它把三件事�
 | **任务栏主题** | 胶囊 / 卡片两种 dock 形态；图标缩放 50–125%；间距 −6…+6 px；Dock 悬停放大；任务栏高度 30–44 DIP；设置热重载 |
 | **桌面收纳盒** | 桌面保持 Explorer 原生显示；收纳 = 物理移入独立库目录；分类、拖拽、右键菜单、库路径修改与迁移；`Alt+D` 唤出 |
 | **文件检索** | 文件名 + 内容检索；通配符、空格 AND、`ext:` / `path:` / `regex:` 前缀；名称/路径截断时悬停显示完整内容；默认关闭，`Alt+S` 唤起 |
+| **桌面信息岛** | 屏幕顶部悬浮胶囊：时间、CPU/内存/磁盘/网络、当天任务与到点提醒、图文剪贴板历史、QQ/微信/企业微信/邮箱提醒聚合；默认关闭，`Alt+I` 展开 |
 | **平台** | 托盘、注入看门狗、应用启停、开机自启、Win11 风格设置中心 |
 
 ### 任务栏主题
@@ -77,6 +78,16 @@ DCX 是一套用 Rust 编写的 Windows 11 桌面增强平台。它把三件事�
 - 结果表支持名称、路径、大小、修改时间；截断的名称/路径悬停显示完整文本
 - 关闭窗口即释放进程；默认热键 `Alt+S`
 
+### 桌面信息岛
+
+独立进程 `dcx-island.exe`，默认关闭；在「设置中心 → 桌面信息岛」开启后，屏幕顶部居中显示常驻胶囊。窗口不占任务栏槽位，不依赖 `dcx_engine.dll` 的 `box_slot.txt` 预留协议。
+
+- 紧凑态：时间 / 星期 / 日期、性能指标、当前任务、未读角标；点击或 `Alt+I` 展开
+- 面板四个页签：任务（含自动结转与 Markdown 归档）、剪贴板（搜索 / 收藏 / 备注 / 回写）、消息（统一收件箱与渠道诊断）、性能
+- 通知渠道：微信 / 企业微信走任务栏关注信号（`SHELLHOOK`，不读聊天正文）；QQ 走 WinRT 通知监听并按 AUMID 过滤；邮箱走 IMAP 只同步未读邮件头
+- 出站：企业微信群机器人 webhook 与 SMTP 可把任务提醒推出去；**QQ / 微信个人号没有官方出站接口，不支持发送**
+- 授权码、Webhook Key 只存 Windows 凭据管理器，不写 TOML、不写日志；剪贴板与通知内容全部本地保存
+
 ## 下载与安装
 
 从 [Releases](https://github.com/gggaiitx/dcx/releases/latest) 下载：
@@ -84,7 +95,7 @@ DCX 是一套用 Rust 编写的 Windows 11 桌面增强平台。它把三件事�
 - `DCX-v0.1.1-win64.zip` — 便携包
 - `SHA256SUMS.txt` — 二进制校验和
 
-1. 解压整个 `DCX` 文件夹到任意位置（不要只取出 exe，宿主按同目录查找 `dcx-box.exe`、`dcx-search.exe`、`dcx_engine.dll` 和 `wh_injector.exe`）。
+1. 解压整个 `DCX` 文件夹到任意位置（不要只取出 exe，宿主按同目录查找 `dcx-box.exe`、`dcx-search.exe`、`dcx-island.exe`、`dcx_engine.dll` 和 `wh_injector.exe`）。
 2. 运行 `start-dcx.bat`：只留托盘，不弹设置窗口。
 3. 或运行 `dcx-host.exe`：默认带设置窗口启动。
 4. 首次运行可能被 SmartScreen 提示（构建未签名），选择「更多信息 → 仍要运行」。
@@ -99,8 +110,9 @@ DCX 是一套用 Rust 编写的 Windows 11 桌面增强平台。它把三件事�
 |---|---|
 | `Alt+D` | 打开 / 收起桌面收纳盒 |
 | `Alt+S` | 打开文件检索 |
+| `Alt+I` | 展开 / 收起桌面信息岛（需先在设置中心启用信息岛） |
 
-两个热键都可在设置中心修改或关闭；文件检索的快捷键由宿主常驻监听，不依赖检索进程是否已启动。
+三个热键都可在设置中心修改或关闭，由宿主常驻监听；文件检索不依赖检索进程是否已启动，信息岛则要求主开关处于开启状态。
 
 ### 设置中心
 
@@ -109,6 +121,7 @@ DCX 是一套用 Rust 编写的 Windows 11 桌面增强平台。它把三件事�
 - **任务栏样式**：外观、尺寸与间距、自动隐藏
 - **桌面整理**：收纳盒启停、热键、收纳库目录、分类规则
 - **文件检索**：启停、热键、检索范围、内容检索策略
+- **桌面信息岛**：唯一启停开关、时钟与性能、任务与剪贴板、通知渠道、出站凭据与能力边界
 - **关于**：运行状态、平台行为、退出
 
 设置改动防抖 220 ms 后原子写入，引擎约 1 秒内热重载；没有「保存」按钮。
@@ -127,18 +140,21 @@ flowchart LR
   Engine[dcx_engine.dll<br/>injected into explorer.exe]
   Box[dcx-box.exe<br/>desktop file box]
   Search[dcx-search.exe<br/>file search]
-  Config[(TOML 配置)]
+  Island[dcx-island.exe<br/>desktop info island]
+  Config[(TOML / JSON 配置)]
 
   Host -->|注入 / 看门狗| Engine
   Engine --- Explorer[explorer.exe]
   Host -->|启动 / 监控| Box
   Host -.->|Alt+S 按需拉起| Search
+  Host -->|启动 / 监控| Island
   Engine <--> Config
   Box <--> Config
   Search <--> Config
+  Island <--> Config
 ```
 
-- **进程隔离**：宿主负责注入与看门狗，收纳盒和检索是独立 exe；一个应用崩溃不会影响任务栏主题和设置中心。
+- **进程隔离**：宿主负责注入与看门狗，收纳盒、检索与信息岛都是独立 exe；一个应用崩溃不会影响任务栏主题和设置中心。
 - **文件即 IPC**：宿主、引擎和应用都通过 `%LOCALAPPDATA%\dcx\` 下的 TOML 文件通信，没有私有共享内存或管道。
 - **可扩展应用**：新增独立应用 = 新增 crate + 在 `dcx-host/src/apps.rs` 注册一条 `AppEntry`，不需要改设置窗口的导航结构。
 
@@ -149,6 +165,8 @@ flowchart LR
 | `dcx-host` | 宿主：托盘、注入看门狗、应用生命周期、全局热键、统一设置中心 |
 | `dcx-box` | 桌面收纳盒；独立窗口与任务栏按钮 |
 | `dcx-search` | 文件检索；名称索引 + 内容流式检索 |
+| `dcx-island` | 桌面信息岛；胶囊/面板单窗口、性能采样、剪贴板、任务、通知聚合 |
+| `dcx-island-config` | 信息岛配置模型（`island.toml`）与共享凭据管理；宿主与信息岛共读 |
 | `dcx-engine` | 注入 Explorer 的任务栏 XAML 主题引擎 |
 | `dcx-organizer` | 收纳盒数据层：分类、manifest、桌面扫描与物理移动 |
 | `dcx-settings` | 平台设置模型与 TOML 持久化 |
@@ -163,6 +181,8 @@ dcx/
 │   ├── dcx-host/          # 宿主 + 设置中心
 │   ├── dcx-box/           # 桌面收纳盒
 │   ├── dcx-search/        # 文件检索
+│   ├── dcx-island/        # 桌面信息岛
+│   ├── dcx-island-config/ # 信息岛配置与凭据（共享）
 │   ├── dcx-engine/        # 任务栏引擎 DLL
 │   ├── dcx-organizer/     # 收纳盒数据层
 │   ├── dcx-settings/      # 设置模型
@@ -173,8 +193,10 @@ dcx/
 │   └── ...
 ├── brand/                 # 图标、Logo、预览图
 ├── docs/                  # 工程笔记
-├── tools/                 # 品牌/图标生成与验证脚本
-├── prd.md                 # 产品需求与方案
+├── tools/                 # 品牌/图标生成、验证与分发启停脚本
+├── docs/prd.md            # 文件检索产品需求与开发方案
+├── docs/island-app-plan.md # 桌面信息岛移植方案
+├── docs/review.md         # 代码审查报告
 └── README.md
 ```
 
@@ -187,15 +209,17 @@ dcx/
 | `settings.toml` | 宿主 / 引擎 | 任务栏形状、图标缩放、间距、高度、悬停效果 |
 | `organizer.toml` | 宿主 / 收纳盒 | 分类、手动分类、收纳库路径、视图偏好 |
 | `search.toml` | 宿主 / 检索 | 快捷键、检索范围、排除规则、索引策略 |
+| `island.toml` | 宿主 / 信息岛 | 唯一启停开关、时钟/性能、任务、剪贴板、渠道与出站配置 |
+| `island_tasks.json` / `island_clipboard.json` | 信息岛 | 任务与剪贴板历史（本地数据，不上传） |
 | `apps.toml` | 宿主 | 各独立应用的启停状态 |
 
 这些文件不在仓库里；仓库只包含源码、品牌资源和生成脚本。
 
 ### 写入协议
 
-四个文件都是多进程读写，因此写入遵循同一套规则（实现见 `dcx-win32/src/config_file.rs`）：
+五个 TOML 与两个 JSON 都是多进程读写，因此写入遵循同一套规则（实现见 `dcx-win32/src/config_file.rs`）：
 
-- **跨进程互斥**：按文件全路径派生的命名互斥体保护整个「读—改—写」，`dcx-host.exe`、`dcx-host.exe --settings`、`dcx-box.exe`、`dcx-search.exe` 不会互相覆盖。
+- **跨进程互斥**：按文件全路径派生的命名互斥体保护整个「读—改—写」，`dcx-host.exe`、`dcx-host.exe --settings`、`dcx-box.exe`、`dcx-search.exe`、`dcx-island.exe` 不会互相覆盖。
 - **原子替换**：先写带 PID 与序号的临时文件并 `flush`，再用 `ReplaceFileW` / `MoveFileExW` 换入；**没有**「rename 失败就直接覆盖」的回退分支，换入失败时旧文件保持原样。
 - **损坏即只读**：文件存在但解析失败时，进程只使用内存默认值，并拒绝再把默认值写回磁盘；修好或删除该文件后自动恢复可写。设置窗口会显示保存失败的原因。
 
@@ -219,11 +243,12 @@ cargo build --release
 - `dcx-host.exe`
 - `dcx-box.exe`
 - `dcx-search.exe`
+- `dcx-island.exe`
 - `dcx_engine.dll`
 
 `wh_injector.exe` 是随发布包提供的外部注入器，不由本工作区编译。源码运行时需要把它放到 `dcx-host.exe` 同目录，或通过 `DCX_INJECTOR` 指向它；引擎 DLL 也可通过 `DCX_ENGINE_DLL` 指定。
 
-宿主按自身所在目录查找 `dcx-box.exe` / `dcx-search.exe`，因此从源码运行时要保证这些 exe 与宿主在同一个目录。开发用启动脚本见 `tools/run.ps1`。
+宿主按自身所在目录查找 `dcx-box.exe` / `dcx-search.exe` / `dcx-island.exe`，因此从源码运行时要保证这些 exe 与宿主在同一个目录。开发用启动脚本见 `tools/run.ps1`。
 
 ### 测试与验证
 
@@ -249,8 +274,9 @@ cargo clippy --workspace --all-targets
 ## 文档与许可
 
 - 工程实现、调试记录与历史方案：[docs/engineering-notes.md](docs/engineering-notes.md)
-- 产品需求：[prd.md](prd.md)
-- 品牌资源生成：`tools/gen_brand.py`、`tools/gen_search_icon.py`
+- 产品需求：[文件检索 PRD](docs/prd.md)、[桌面信息岛移植方案](docs/island-app-plan.md)
+- 代码审查报告：[docs/review.md](docs/review.md)
+- 品牌资源生成：`tools/gen_brand.py`、`tools/gen_search_icon.py`、`tools/gen_island_icon.py`
 - 手动替换文件前可用：`tools/stop-dcx-all.bat`（源码）/ 发布包内的 `stop-dcx-all.bat`
 
 本项目以 **MIT License** 发布，详见 [LICENSE](LICENSE)。欢迎 Issue 和 PR。

@@ -1,16 +1,16 @@
-//! Global hotkeys for the desk-box and file-search apps.
+//! Global hotkeys for the desk-box, file-search and info-island apps.
 //!
 //! The hotkeys must be owned by the **resident platform**, not by the apps:
 //! `apps.toml [apps.search].enabled` defaults to false, and even the box can be
 //! started on demand. A dedicated thread here creates a `HWND_MESSAGE` window,
-//! registers both hotkeys against that window and runs its own message loop.
+//! registers all three hotkeys against that window and runs its own message loop.
 //!
 //! `RegisterHotKey(NULL, ...)` would post `WM_HOTKEY` to the *thread queue*,
 //! which the host's `Platform::run()` pump is not guaranteed to dispatch into
 //! our code. Binding to a real window makes delivery deterministic.
 //!
 //! On `WM_HOTKEY` we (1) `launch_on_demand(app)` and (2) touch the app's show
-//! marker (`%LOCALAPPDATA%\dcx\box_show` / `search_show`). The apps poll those
+//! marker (`%LOCALAPPDATA%\dcx\box_show` / `search_show` / `island_show`). The apps poll those
 //! markers and raise/toggle their window — the platform's existing "file is
 //! IPC" convention, with no winit window-procedure subclassing.
 //!
@@ -28,6 +28,7 @@ const WM_TIMER: u32 = 0x0113;
 const TIMER_ID: usize = 1;
 const BOX_HOTKEY_ID: i32 = 1;
 const SEARCH_HOTKEY_ID: i32 = 2;
+const ISLAND_HOTKEY_ID: i32 = 3;
 const HWND_MESSAGE: isize = -3;
 const MOD_ALT: u32 = 0x0001;
 const MOD_CONTROL: u32 = 0x0002;
@@ -37,9 +38,11 @@ const MOD_NOREPEAT: u32 = 0x4000;
 
 const BOX_ERROR_FILE: &str = "box_hotkey_error.txt";
 const SEARCH_ERROR_FILE: &str = "search_hotkey_error.txt";
+const ISLAND_ERROR_FILE: &str = "island_hotkey_error.txt";
 
 static BOUND_BOX: Mutex<Option<(String, bool)>> = Mutex::new(None);
 static BOUND_SEARCH: Mutex<Option<(String, bool)>> = Mutex::new(None);
+static BOUND_ISLAND: Mutex<Option<(String, bool)>> = Mutex::new(None);
 /// Last message written per error file, so the retry loop does not rewrite an
 /// unchanged error every second.
 static LAST_ERROR: Mutex<Option<(String, String)>> = Mutex::new(None);
@@ -132,6 +135,10 @@ pub fn last_box_error() -> Option<String> {
     read_error(BOX_ERROR_FILE)
 }
 
+pub fn last_island_error() -> Option<String> {
+    read_error(ISLAND_ERROR_FILE)
+}
+
 fn note_error(file: &str, text: &str) {
     // The 1 s retry loop calls this every tick while a key is taken. Writing
     // the file (and the log line) only on a change keeps the disk quiet and
@@ -159,7 +166,7 @@ fn clear_error(file: &str) {
     let _ = std::fs::remove_file(error_path(file));
 }
 
-/// Only the two keys the host cares about; the rest of each TOML is left
+/// Only the activation keys the host cares about; the rest of each TOML is left
 /// untouched (the host edits a `toml::Value`, not a partial struct).
 fn hotkey_setting(file: &str, table: Option<&str>, default_key: &str) -> (String, bool) {
     let text = std::fs::read_to_string(local_dir().join(file)).unwrap_or_default();
@@ -188,6 +195,23 @@ fn search_hotkey_setting() -> (String, bool) {
 
 fn box_hotkey_setting() -> (String, bool) {
     hotkey_setting("organizer.toml", None, "Alt+d")
+}
+
+fn island_hotkey_setting() -> (String, bool) {
+    hotkey_setting("island.toml", None, "Alt+i")
+}
+
+/// The island's master switch also lives in `island.toml` (the settings centre
+/// writes it together with `apps.toml`). A hotkey must not resurrect a
+/// permanently topmost window the user explicitly turned off.
+fn island_enabled() -> bool {
+    let text = std::fs::read_to_string(local_dir().join("island.toml")).unwrap_or_default();
+    let doc: toml::Value = text
+        .parse()
+        .unwrap_or_else(|_| toml::Value::Table(Default::default()));
+    doc.get("enabled")
+        .and_then(toml::Value::as_bool)
+        .unwrap_or(false)
 }
 
 /// `"Alt+s"` / `"Ctrl+Shift+F"` → (modifiers, virtual key).
@@ -340,6 +364,15 @@ fn rebind(hwnd: isize) {
         box_on,
         BOX_ERROR_FILE,
     );
+    let (island_key, island_on) = island_hotkey_setting();
+    bind(
+        hwnd,
+        ISLAND_HOTKEY_ID,
+        &BOUND_ISLAND,
+        island_key,
+        island_on,
+        ISLAND_ERROR_FILE,
+    );
 }
 
 fn fire(id: i32) {
@@ -367,6 +400,19 @@ fn fire(id: i32) {
                 touch_show_marker("search_show");
             }
         }
+        ISLAND_HOTKEY_ID => {
+            let (_, hk_on) = island_hotkey_setting();
+            // Two independent switches must agree: the island's own master
+            // switch and the host's registry flag. Unlike file search, this app
+            // is an always-visible topmost window — an "off" state must really
+            // mean no window, even if a stale apps.toml says otherwise.
+            if hk_on && island_enabled() && crate::apps::is_enabled("island") {
+                if let Err(e) = crate::apps::launch_on_demand("island") {
+                    note_error(ISLAND_ERROR_FILE, &e);
+                }
+                touch_show_marker("island_show");
+            }
+        }
         _ => {}
     }
 }
@@ -382,7 +428,7 @@ unsafe extern "system" fn wnd_proc(hwnd: isize, msg: u32, wparam: usize, lparam:
             0
         }
         WM_TIMER if wparam == TIMER_ID => {
-            // 1 s poll of both documents so editing a hotkey in the settings
+            // 1 s poll of all documents so editing a hotkey in the settings
             // centre takes effect without restarting the platform.
             rebind(hwnd);
             0

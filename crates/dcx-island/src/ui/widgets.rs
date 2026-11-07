@@ -1,0 +1,313 @@
+//! Small painting helpers.
+//!
+//! Everything the island draws is a rounded rectangle, a bar, a ring or a
+//! line glyph. egui's stock widgets bring a theme, padding and a minimum size
+//! that do not fit a 34 pt capsule, so the shapes are painted directly and the
+//! interaction is handled by the caller with explicit rectangles.
+
+use egui::{Color32, FontId, Pos2, Rect, Response, Sense, Shape, Stroke, Ui, Vec2};
+
+use super::theme::Palette;
+
+pub fn round_rect(
+    ui: &Ui,
+    rect: Rect,
+    radius: f32,
+    fill: Color32,
+    stroke: Stroke,
+) {
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return;
+    }
+    ui.painter()
+        .add(Shape::rect_filled(rect, radius, fill));
+    if stroke.width > 0.0 && stroke.color.a() > 0 {
+    ui.painter().add(Shape::rect_stroke(rect, radius, stroke));
+    }
+}
+
+/// A soft drop shadow under a rounded rectangle: four expanding outlines with
+/// decreasing alpha. Cheaper and steadier than a blur texture, and it respects
+/// the window's per-pixel alpha.
+pub fn shadow(ui: &Ui, rect: Rect, radius: f32, color: Color32) {
+    let base = color.a() as f32;
+    for i in (1..=4).rev() {
+        let grow = i as f32 * 2.2;
+        let a = (base / (i as f32 * 2.6)) as u8;
+        let c = Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), a);
+        let r = rect.expand(grow);
+        ui.painter()
+            .add(Shape::rect_stroke(r, radius + grow, Stroke::new(2.0_f32, c)));
+    }
+}
+
+pub fn bar(ui: &Ui, rect: Rect, frac: f32, color: Color32, track: Color32) {
+    let radius = rect.height() * 0.5;
+    round_rect(ui, rect, radius, track, Stroke::NONE);
+    let w = (rect.width() * frac.clamp(0.0, 1.0)).max(0.0);
+    if w > 1.0 {
+        let filled = Rect::from_min_size(rect.min, Vec2::new(w, rect.height()));
+        round_rect(ui, filled, radius, color, Stroke::NONE);
+    }
+}
+
+pub fn ring(
+    ui: &Ui,
+    center: Pos2,
+    radius: f32,
+    width: f32,
+    frac: f32,
+    color: Color32,
+    track: Color32,
+) {
+    ui.painter()
+        .circle_stroke(center, radius, Stroke::new(width, track));
+    let frac = frac.clamp(0.0, 1.0);
+    if frac <= 0.004 {
+        return;
+    }
+    // Start at 12 o'clock and run clockwise.
+    let steps = ((frac * 64.0).ceil() as usize).max(2);
+    let mut pts = Vec::with_capacity(steps + 1);
+    for i in 0..=steps {
+        let t = frac * (i as f32 / steps as f32);
+        let angle = -std::f32::consts::FRAC_PI_2 + t * std::f32::consts::TAU;
+        pts.push(center + Vec2::new(angle.cos(), angle.sin()) * radius);
+    }
+    ui.painter()
+        .add(Shape::line(pts, Stroke::new(width, color)));
+}
+
+/// Text with a stable baseline. Returns the painted rectangle so callers can
+/// chain a second label without measuring again.
+pub fn text(
+    ui: &Ui,
+    pos: Pos2,
+    align: egui::Align2,
+    text: &str,
+    size: f32,
+    color: Color32,
+) -> Rect {
+    ui.painter().text(
+        pos,
+        align,
+        text,
+        FontId::proportional(size),
+        color,
+    )
+}
+
+/// Tabular digits: same size, monospace family, so a ticking clock does not
+/// shift by a pixel every second.
+pub fn mono_text(
+    ui: &Ui,
+    pos: Pos2,
+    align: egui::Align2,
+    text: &str,
+    size: f32,
+    color: Color32,
+) -> Rect {
+    ui.painter().text(
+        pos,
+        align,
+        text,
+        FontId::monospace(size),
+        color,
+    )
+}
+
+/// A hit area with a hover highlight, painted by `draw`.
+pub fn hit(
+    ui: &mut Ui,
+    rect: Rect,
+    draw: impl FnOnce(&Ui, bool),
+) -> Response {
+    let resp = ui.allocate_rect(rect, Sense::click());
+    draw(ui, resp.hovered());
+    resp
+}
+
+// ---------------------------------------------------------------------------
+// Line glyphs — 16 px grid, same weight as the settings centre icons
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy)]
+pub enum Glyph {
+    Close,
+    Pin,
+    Plus,
+    Trash,
+    Check,
+    Gear,
+    Clock,
+    Clipboard,
+    Inbox,
+    Gauge,
+    Bell,
+    Copy,
+    /// Document / export-to-file outline.
+    Doc,
+}
+
+pub fn glyph(ui: &Ui, center: Pos2, size: f32, which: Glyph, color: Color32) {
+    let p = ui.painter();
+    let s = size * 0.5;
+    let stroke = Stroke::new(1.5_f32, color);
+    let line = |a: Pos2, b: Pos2| {
+        p.add(Shape::line_segment([a, b], stroke));
+    };
+    let c = center;
+    match which {
+        Glyph::Close => {
+            line(c + Vec2::new(-s, -s), c + Vec2::new(s, s));
+            line(c + Vec2::new(s, -s), c + Vec2::new(-s, s));
+        }
+        Glyph::Plus => {
+            line(c + Vec2::new(-s, 0.0), c + Vec2::new(s, 0.0));
+            line(c + Vec2::new(0.0, -s), c + Vec2::new(0.0, s));
+        }
+        Glyph::Check => {
+            line(c + Vec2::new(-s, 0.0), c + Vec2::new(-s * 0.2, s * 0.75));
+            line(c + Vec2::new(-s * 0.2, s * 0.75), c + Vec2::new(s, -s * 0.7));
+        }
+        Glyph::Pin => {
+            line(c + Vec2::new(0.0, -s), c + Vec2::new(0.0, s * 0.9));
+            p.add(Shape::circle_stroke(
+                c + Vec2::new(0.0, -s * 0.25),
+                s * 0.55,
+                stroke,
+            ));
+            line(
+                c + Vec2::new(-s * 0.55, -s * 0.25),
+                c + Vec2::new(s * 0.55, -s * 0.25),
+            );
+        }
+        Glyph::Trash => {
+            line(c + Vec2::new(-s, -s * 0.55), c + Vec2::new(s, -s * 0.55));
+            line(c + Vec2::new(-s * 0.45, -s * 0.9), c + Vec2::new(s * 0.45, -s * 0.9));
+            p.add(Shape::rect_stroke(
+                Rect::from_center_size(c + Vec2::new(0.0, s * 0.2), Vec2::new(s * 1.3, s * 1.4)),
+                2.0,
+                stroke,
+            ));
+        }
+        Glyph::Gear => {
+            p.add(Shape::circle_stroke(c, s * 0.52, stroke));
+            for i in 0..6 {
+                let a = i as f32 * std::f32::consts::TAU / 6.0;
+                let d = Vec2::new(a.cos(), a.sin());
+                line(c + d * (s * 0.72), c + d * s);
+            }
+        }
+        Glyph::Clock => {
+            p.add(Shape::circle_stroke(c, s * 0.9, stroke));
+            line(c, c + Vec2::new(0.0, -s * 0.55));
+            line(c, c + Vec2::new(s * 0.45, s * 0.15));
+        }
+        Glyph::Clipboard => {
+            p.add(Shape::rect_stroke(
+                Rect::from_center_size(c + Vec2::new(0.0, s * 0.1), Vec2::new(s * 1.3, s * 1.6)),
+                2.5,
+                stroke,
+            ));
+            line(c + Vec2::new(-s * 0.3, -s * 0.72), c + Vec2::new(s * 0.3, -s * 0.72));
+        }
+        Glyph::Inbox => {
+            line(c + Vec2::new(-s, -s * 0.2), c + Vec2::new(-s, s * 0.7));
+            line(c + Vec2::new(s, -s * 0.2), c + Vec2::new(s, s * 0.7));
+            line(c + Vec2::new(-s, s * 0.7), c + Vec2::new(s, s * 0.7));
+            line(c + Vec2::new(-s, -s * 0.2), c + Vec2::new(-s * 0.35, s * 0.1));
+            line(c + Vec2::new(s, -s * 0.2), c + Vec2::new(s * 0.35, s * 0.1));
+        }
+        Glyph::Gauge => {
+            let steps = 12;
+            let mut pts = Vec::with_capacity(steps + 1);
+            for i in 0..=steps {
+                let t = i as f32 / steps as f32;
+                let a = std::f32::consts::PI + t * std::f32::consts::PI;
+                pts.push(c + Vec2::new(a.cos(), a.sin()) * s);
+            }
+            p.add(Shape::line(pts, stroke));
+            line(c, c + Vec2::new(s * 0.55, -s * 0.45));
+        }
+        Glyph::Bell => {
+            line(c + Vec2::new(-s * 0.75, s * 0.45), c + Vec2::new(s * 0.75, s * 0.45));
+            line(c + Vec2::new(-s * 0.6, s * 0.45), c + Vec2::new(-s * 0.6, -s * 0.1));
+            line(c + Vec2::new(s * 0.6, s * 0.45), c + Vec2::new(s * 0.6, -s * 0.1));
+            p.add(Shape::circle_stroke(c + Vec2::new(0.0, -s * 0.15), s * 0.6, stroke));
+            line(c + Vec2::new(-s * 0.2, s * 0.7), c + Vec2::new(s * 0.2, s * 0.7));
+        }
+        Glyph::Doc => {
+            // A sheet with a folded corner and three text lines.
+            line(c + Vec2::new(-s * 0.75, -s), c + Vec2::new(s * 0.35, -s));
+            line(c + Vec2::new(s * 0.35, -s), c + Vec2::new(s * 0.75, -s * 0.6));
+            line(c + Vec2::new(s * 0.75, -s * 0.6), c + Vec2::new(s * 0.75, s));
+            line(c + Vec2::new(s * 0.75, s), c + Vec2::new(-s * 0.75, s));
+            line(c + Vec2::new(-s * 0.75, s), c + Vec2::new(-s * 0.75, -s));
+            line(c + Vec2::new(s * 0.35, -s), c + Vec2::new(s * 0.35, -s * 0.6));
+            line(c + Vec2::new(s * 0.35, -s * 0.6), c + Vec2::new(s * 0.75, -s * 0.6));
+            line(c + Vec2::new(-s * 0.4, s * 0.1), c + Vec2::new(s * 0.4, s * 0.1));
+            line(c + Vec2::new(-s * 0.4, s * 0.5), c + Vec2::new(s * 0.4, s * 0.5));
+        }
+        Glyph::Copy => {
+            p.add(Shape::rect_stroke(
+                Rect::from_center_size(c + Vec2::new(s * 0.2, s * 0.2), Vec2::new(s * 1.1, s * 1.1)),
+                2.0,
+                stroke,
+            ));
+            p.add(Shape::rect_stroke(
+                Rect::from_center_size(c + Vec2::new(-s * 0.25, -s * 0.25), Vec2::new(s * 1.1, s * 1.1)),
+                2.0,
+                stroke,
+            ));
+        }
+    }
+}
+
+/// Tiny round icon button with a hover plate.
+pub fn icon_button(
+    ui: &mut Ui,
+    rect: Rect,
+    which: Glyph,
+    p: &Palette,
+    danger: bool,
+) -> Response {
+    let resp = ui.allocate_rect(rect, Sense::click());
+    if resp.hovered() {
+        let fill = if danger {
+            Color32::from_rgba_unmultiplied(p.danger.r(), p.danger.g(), p.danger.b(), 0x22)
+        } else {
+            p.accent_soft
+        };
+        round_rect(ui, rect, rect.height() * 0.5, fill, Stroke::NONE);
+    }
+    let color = if danger && resp.hovered() {
+        p.danger
+    } else if resp.hovered() {
+        p.accent
+    } else {
+        p.text_dim
+    };
+    glyph(ui, rect.center(), 13.0, which, color);
+    resp
+}
+
+/// One-line text field sized for the panel, with the island's own colours.
+pub fn field(ui: &mut Ui, rect: Rect, text: &mut String, hint: &str, p: &Palette) -> Response {
+    let id = ui.id().with(("island-field", rect.left() as i32, rect.top() as i32));
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    let out = child.add(
+        egui::TextEdit::singleline(text)
+            .id(id)
+            .hint_text(hint)
+            .desired_width(rect.width())
+            .margin(egui::Margin::symmetric(8.0, 5.0))
+            .frame(false)
+            .text_color(p.text),
+    );
+    out
+}

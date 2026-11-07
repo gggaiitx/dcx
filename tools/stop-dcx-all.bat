@@ -21,6 +21,7 @@ set "PING=%SYS%\ping.exe"
 set "HOST=dcx-host.exe"
 set "BOX=dcx-box.exe"
 set "SEARCH=dcx-search.exe"
+set "ISLAND=dcx-island.exe"
 set "INJECTOR=wh_injector.exe"
 set "ENGINE=dcx_engine.dll"
 
@@ -35,12 +36,13 @@ echo [1/4] stopping host (tray + settings + watchdog) ...
 echo [2/4] stopping standalone apps ...
 "%TASKKILL%" /f /im "%BOX%" >nul 2>&1
 "%TASKKILL%" /f /im "%SEARCH%" >nul 2>&1
+"%TASKKILL%" /f /im "%ISLAND%" >nul 2>&1
 "%TASKKILL%" /f /im "%INJECTOR%" >nul 2>&1
 
 set /a tries=0
 :wait_gone
 set "left="
-for %%I in ("%HOST%" "%BOX%" "%SEARCH%") do (
+for %%I in ("%HOST%" "%BOX%" "%SEARCH%" "%ISLAND%") do (
   "%TASKLIST%" /fi "imagename eq %%~I" 2>nul | "%FINDSTR%" /i /c:"%%~I" >nul && set "left=1"
 )
 if not defined left goto processes_gone
@@ -49,6 +51,7 @@ if !tries! leq 3 (
   "%TASKKILL%" /f /im "%HOST%" >nul 2>&1
   "%TASKKILL%" /f /im "%BOX%" >nul 2>&1
   "%TASKKILL%" /f /im "%SEARCH%" >nul 2>&1
+  "%TASKKILL%" /f /im "%ISLAND%" >nul 2>&1
   "%PING%" -n 3 127.0.0.1 >nul
   goto wait_gone
 )

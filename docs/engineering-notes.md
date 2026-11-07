@@ -11,6 +11,8 @@
 | `dcx-host` | **平台宿主**：任务栏注入与看门狗、系统托盘、统一设置中心、启动/停止独立应用 | 否 |
 | `dcx-box` | **独立应用**：桌面收纳盒，独立进程、独立图标与界面（任务栏按钮 + 弹层） | 否 |
 | `dcx-search` | **独立应用**：文件检索（`ignore` 并行遍历 + 内存名称索引 + `grep-searcher` 内容流式检索）；默认关闭，由 host 全局热键唤起 | 否 |
+| `dcx-island` | **独立应用**：桌面信息岛（时间、性能采样、任务提醒、图文剪贴板、通知聚合）；默认关闭，屏幕顶部悬浮，**不占任务栏槽位、不改引擎线协议** | 否 |
+| `dcx-island-config` | 共享配置模型（`island.toml`）+ Windows 凭据管理器封装；宿主设置窗口与信息岛进程共读 | — |
 | `dcx-engine` | 可选任务栏模块：注入 Explorer，修改任务栏 XAML；读取设置并热重载 | 是（仅 Explorer） |
 | `dcx-settings` | 任务栏设置模型 + TOML 持久化（设置中心写、引擎读，文件即 IPC） | — |
 | `dcx-organizer` | 收纳盒数据层：分类规则、manifest、桌面扫描（无 UI） | — |
@@ -21,9 +23,11 @@
 
 新增一个独立应用 = 加一个 crate + 在 `dcx-host/src/apps.rs` 的注册表里加一行
 `AppEntry` + 一组设置卡片，不需要改设置窗口的导航或状态字段。
-`AppEntry.default_on` 决定缺省启停：收纳盒为 `true`，文件检索为 `false`
-（不自启、不常驻、不预建索引），它的全局热键由常驻的 host 在 `hotkey.rs` 里监听。
-完整需求与方案见 [`prd.md`](../prd.md)。
+`AppEntry.default_on` 决定缺省启停：收纳盒为 `true`，文件检索与桌面信息岛为 `false`
+（不自启、不常驻、不预建索引 / 不创建 topmost 窗口），它们的全局热键由常驻的 host
+在 `hotkey.rs` 里监听。信息岛的主开关同时写 `island.toml` 与 `apps.toml`，与收纳盒、
+文件检索保持「一应用一开关」的约定。
+完整需求与方案见 [`prd.md`](prd.md) 与 [`island-app-plan.md`](island-app-plan.md)。
 
 ## 2. 架构
 
@@ -41,9 +45,11 @@ dcx/
 │   ├── dcx-organizer/      收纳盒数据层（规则、manifest、桌面扫描）
 │   ├── dcx-host/           平台：注入、托盘、统一设置中心、应用注册表、全局热键
 │   ├── dcx-box/            独立应用：桌面收纳盒（独立 exe / 图标 / 界面）
-│   └── dcx-search/         独立应用：文件检索（名称索引 + 内容流式检索）
-├── tools/                  构建、注入、截图脚本（含 gen_search_icon.py）
-└── prd.md                  文件检索产品需求与开发方案
+│   ├── dcx-search/         独立应用：文件检索（名称索引 + 内容流式检索）
+│   ├── dcx-island/         独立应用：桌面信息岛（胶囊 + 面板同一窗口）
+│   └── dcx-island-config/  island.toml 模型 + 凭据管理（host 与 island 共享）
+├── tools/                  构建、注入、截图脚本（含 gen_search_icon.py / gen_island_icon.py）
+└── docs/                   prd.md / island-app-plan.md / review.md
 ```
 
 进程与文件边界（全部在 `%LOCALAPPDATA%\dcx`）：
@@ -62,13 +68,22 @@ explorer.exe ──写 box_slot.txt──┘                 dcx-engine::slot
 三份文档各自独立；`box_slot.txt` / `box_host_alive` / `no_reserve` 是引擎与收纳盒
 之间的**线协议，文件名保持不变**，所以拆分不需要替换已被 Explorer 映射的引擎 DLL。
 
-`search.toml` 是文件检索与 host 共读的文档（写入一律 tmp + rename），均**不属于**引擎
-线协议。两个独立应用各有一个全局热键，都由 `dcx-host/src/hotkey.rs` 的 `HWND_MESSAGE`
-隐藏窗口承载 `WM_HOTKEY`：收纳盒读 `organizer.toml` 的 `hotkey`（默认 `Alt+d`，
-按下写 `box_show`），文件检索读 `search.toml` 的 `activation.hotkey`（默认 `Alt+s`，
-按下写 `search_show`）。应用轮询各自的标记文件来唤出/收起窗口；热键被占用时写
-`box_hotkey_error.txt` / `search_hotkey_error.txt`，设置中心对应页面会提示。
-默认 `[apps.search] enabled=false`，因此文件检索不常驻、不预建索引。
+`search.toml` 是文件检索与 host 共读的文档；`island.toml` 是桌面信息岛与 host 共读的
+文档（两者写入一律走 `config_file::FileLock` + `write_atomic`），均**不属于**引擎线协议。
+三个独立应用各有一个全局热键，都由 `dcx-host/src/hotkey.rs` 的 `HWND_MESSAGE` 隐藏窗口
+承载 `WM_HOTKEY`：收纳盒读 `organizer.toml` 的 `hotkey`（默认 `Alt+d`，按下写
+`box_show`），文件检索读 `search.toml` 的 `activation.hotkey`（默认 `Alt+s`，按下写
+`search_show`），信息岛读 `island.toml` 顶层 `hotkey`（默认 `Alt+i`，按下写
+`island_show`）。应用轮询各自的标记文件来唤出/收起窗口；热键被占用时写
+`box_hotkey_error.txt` / `search_hotkey_error.txt` / `island_hotkey_error.txt`，设置中心
+对应页面会提示。默认 `[apps.search] enabled=false`、`[apps.island] enabled=false`，因此
+文件检索不常驻、不预建索引，信息岛不创建常驻 topmost 窗口。**信息岛热键额外要求
+`island.toml enabled=true` 且 `apps.toml` 也为 true**，避免一个已关闭的应用被键盘复活。
+
+`island_tasks.json` / `island_clipboard.json` 是信息岛独占的数据文件；IMAP 授权码、
+SMTP 授权码与 Webhook Key 存 Windows 凭据管理器（目标名 `DCX/island/<key>`，由
+`dcx-island-config::credential` 统一读写），**不落 TOML、不落日志**。信息岛的诊断输出写
+`island.log`（256 KB 截断轮转），panic 写 `island_panic.log`。
 
 数据流：
 
@@ -186,7 +201,7 @@ pub trait Effect {
 | `dcx-box::view` | 全部绘制：亮/暗皮肤、标题栏、搜索、标签、工具栏、列表/网格、菜单、对话框、拖动幽灵 |
 | `dcx-box::app` | 唯一的事件循环：几何、悬停/点击、键盘、拖放、命令执行 |
 | `dcx-box::desk_place` / `file_icon` / `shell_io` / `ui` | 桌面图标定位 / 真实文件图标 / 打开·属性·回收站·重命名 / 字体与应用图标 |
-| `dcx-host::settings_app` | 设置中心：「任务栏样式 / 桌面整理 / 文件检索 / 关于」四页；各应用的启停、状态与选项都在自己的页内 |
+| `dcx-host::settings_app` | 设置中心：「任务栏样式 / 桌面整理 / 文件检索 / 桌面信息岛 / 关于」五页；各应用的启停、状态与选项都在自己的页内 |
 | `dcx-engine::slot` | 量测任务栏 XAML 并预留一格（**线协议未改，引擎无需重新注入**） |
 
 旧实现整份保留在 `crates/dcx-box/src/box_ui.rs.bak`，便于对照。
@@ -303,7 +318,8 @@ TileMode::Fixed  （锁定） left = tile_fixed_x / dpi + tile_offset 绝对物�
 排查入口：直接运行 `dcx-box.exe` 只起按钮窗口（不注入、不托盘、不碰资源管理器），
 `python tools/box_shot.py --at 1200,1078` 把光标压到任务栏再截图。
 平台侧的启停开关在设置 →「桌面整理」页顶部，`%LOCALAPPDATA%\dcx\apps.toml` 是它的持久化；
-文件检索的启停与选项在独立的「文件检索」页。
+文件检索的启停与选项在独立的「文件检索」页；桌面信息岛在「桌面信息岛」页，
+页面里只有顶部一个「启用桌面信息岛」开关，其余都是模块选项与渠道诊断。
 
 3. **一个进程只能有一个 winit 事件循环（拆分的结构性原因）。** 历史上设置窗口
    与收纳盒面板同处 `dcx-host`：谁先 `run_native` 谁赢，第二个必定失败
@@ -419,19 +435,21 @@ pwsh -File tools/shot.ps1 -Out out/taskbar.png
 
 ### 5.2 分发包清单（`D:\dcx-dist`）
 
-拆分后分发目录必须放齐三个 exe：少一个，设置 →「桌面整理」里对应应用会一直显示
-「已停止」；缺 `dcx-search.exe` 时按全局热键也没有窗口可唤起。
+拆分后分发目录必须放齐四个 exe：少一个，设置中心里对应应用会一直显示
+「已停止」；缺 `dcx-search.exe` / `dcx-island.exe` 时按全局热键也没有窗口可唤起。
 
 | 文件 | 说明 |
 |---|---|
 | `dcx-host.exe` | 平台：注入、托盘、设置中心、应用生命周期、全局热键 |
 | `dcx-box.exe` | 独立应用：桌面收纳盒，**必须与 host 同目录**（`apps.rs` 按 `current_exe()` 的父目录找） |
 | `dcx-search.exe` | 独立应用：文件检索，同样必须与 host 同目录；默认关闭，热键按需拉起 |
+| `dcx-island.exe` | 独立应用：桌面信息岛，必须与 host 同目录；默认关闭，由设置中心显式开启 |
 | `dcx_engine.dll` | 注入 Explorer；**线协议未变，新增应用不需要替换它** |
 | `wh_injector.exe` | 注入器 |
-| `start-dcx.bat` / `stop-dcx.bat` | 启停脚本；`stop` 必须逐个 `taskkill` 两个独立应用，因为强杀宿主不会走 `apps::stop_all()` |
+| `start-dcx.bat` / `stop-dcx.bat` | 启停脚本；`stop` 必须逐个 `taskkill` 三个独立应用，因为强杀宿主不会走 `apps::stop_all()`。两个脚本 2026-11-07 才纳入 `tools/`，与分发目录同源；此前 `stop-dcx.bat` 只存在于 `D:\dcx-dist` 且漏掉 `dcx-island.exe`，强杀宿主后信息岛会留成孤儿进程 |
 | `stop-dcx-all.bat` | 手动替换文件前一键退出全部 DCX 进程并检查占用；`dcx_engine.dll` 仍被 Explorer 加载时按提示重启 Explorer（`/y` 免询问） |
-| `SHA256SUMS.txt` | 每次替换二进制后重算；新增 `dcx-search.exe` 时也要补一行 |
+| `说明.txt` | 便携包用户说明（构建信息 / 目录内容 / 功能清单 / 排障）。每次替换二进制都要同步；2026-11-07 补齐信息岛、把收纳盒改为物理移动模型、设置中心改五页、设置窗口改独立进程 |
+| `SHA256SUMS.txt` | 每次替换二进制后重算；新增 `dcx-search.exe` / `dcx-island.exe` 时也要补一行。**用 LF 行尾**：写成 CRLF 会让 `sha256sum -c` 把 `\r` 当成文件名的一部分而全部报 `FAILED open or read` |
 
 升级注意（本机实测）：
 
@@ -503,8 +521,8 @@ taskbar_height = 56           # 整条任务栏高度（DIP），36..72，默认
   - 只作用于主任务栏，自动隐藏模式未适配；引擎卸载或 Explorer 重启后工作区会被 Explorer 复位，重新注入时会重新采样基线。
   - `自动隐藏任务栏`（「行为」卡片）走的是 shell 自己的状态：`SHAppBarMessage(ABM_SETSTATE)`，只翻 `ABS_AUTOHIDE` 位，其余位（`ABS_ALWAYSONTOP` 等）原样写回，点下去即时生效。**它不是 `settings.toml` 键**——Windows 本身就保存这个值，写一份镜像只会在用户从系统设置里改过之后对不上；窗口每次重绘回读一次，所以系统那边改了这里也不会停在旧状态。实测 10.0.26200：`Shell_TrayWnd` 矩形在 `(0,1020)-(1920,1080)` 与 `(0,1078)-(1920,1138)` 之间来回移动，不需要重启 Explorer。
   - `开机自启`（同一张卡片）写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 的 `DCX` 值，值为 `"<exe 绝对路径>" --no-settings`：登录后只进托盘、不弹设置窗口。用注册表而不是 `shell:startup` 的 .lnk，是为了不依赖 COM/`IShellLink`，也不往用户启动文件夹里塞一个需要解释的文件。关掉即删值；便携目录被搬走时，宿主启动会顺手把指向旧路径的值改成当前路径（`autostart::refresh_path`），免得开关显示"已开启"却从来没自启过。
-  - UI 采用 Windows 11 设置的双栏版式：左侧 196 px 导航（**任务栏样式 / 桌面整理 / 文件检索 / 关于**，无品牌行，选中项带 3 px 强调条），右侧固定页标题 + 卡片。「任务栏样式」含「外观」「尺寸与间距」「行为」；「桌面整理」只放收纳盒（「常规」「任务栏按钮」「收纳库与桌面」「分类规则」，收纳库目录可点「更改…」换位置并迁移文件）；「文件检索」只放检索（「常规」「检索范围」「内容检索」）；「关于」放系统信息、平台行为与退出。行式控件为 4 px 圆角、品牌深青 `#0E7C7E` 强调色、Win11 开关/滑块/单选。没有预览区；引擎状态与「已写入」状态放在左栏底部。
-  - 每个独立应用在自己的页面顶部显示运行状态与唯一的启停开关：「桌面整理」页的「启用收纳盒」同时写 `organizer.toml` 与 `apps.toml`；「文件检索」页的「启用文件检索（常驻）」同时写 `search.toml` 与 `apps.toml`。应用之间不共享设置卡片，平台级的「统一启动与看门狗」说明放在「关于」页。
+  - UI 采用 Windows 11 设置的双栏版式：左侧导航（**任务栏样式 / 桌面整理 / 文件检索 / 桌面信息岛 / 关于**，无品牌行，选中项带 3 px 强调条），右侧固定页标题 + 卡片。「任务栏样式」含「外观」「尺寸与间距」「行为」；「桌面整理」只放收纳盒（「常规」「任务栏按钮」「收纳库与桌面」「分类规则」，收纳库目录可点「更改…」换位置并迁移文件）；「文件检索」只放检索（「常规」「检索范围」「内容检索」）；「桌面信息岛」放「常规 / 系统性能 / 任务与剪贴板 / 通知渠道·入站 / 出站与凭据 / 能力边界」；「关于」放系统信息、平台行为与退出。行式控件为 4 px 圆角、品牌深青 `#0E7C7E` 强调色、Win11 开关/滑块/单选。没有预览区；引擎状态与「已写入」状态放在左栏底部。
+  - 每个独立应用在自己的页面顶部显示运行状态与唯一的启停开关：「桌面整理」页的「启用收纳盒」同时写 `organizer.toml` 与 `apps.toml`；「文件检索」页的「启用文件检索（常驻）」同时写 `search.toml` 与 `apps.toml`；「桌面信息岛」页的「启用桌面信息岛」同时写 `island.toml` 与 `apps.toml`。应用之间不共享设置卡片，平台级的「统一启动与看门狗」说明放在「关于」页。信息岛保存时会把 `island.toml` 的 `ui` 表（上次页签、面板尺寸）从磁盘重新读回再写，避免覆盖应用自己写入的几何值；三条凭据走显式「保存 / 清除」按钮，不参与 220 ms 防抖。
 - **自动注入**：宿主启动时起一个看门狗线程，把 `dcx_engine.dll` 注入所有 `explorer.exe`；每 5s 轮询，Explorer 重启后自动重新注入（注入前用 toolhelp 快照确认该进程尚未加载 DLL，避免重复注入）。另有一个 3s 轮询的状态采样线程，只供设置窗口显示「引擎已注入 / 未注入」。
 - **退出与恢复**（`shutdown.rs`）：两件事要分开看。
   - *关闭设置窗口*（右上 ×）只关窗口：宿主、托盘、看门狗与已注入的引擎都还在，任务栏保持当前外观。

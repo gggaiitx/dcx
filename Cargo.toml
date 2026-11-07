@@ -13,6 +13,8 @@ members = [
     "crates/dcx-host",
     "crates/dcx-box",
     "crates/dcx-search",
+    "crates/dcx-island-config",
+    "crates/dcx-island",
 ]
 
 [workspace.package]

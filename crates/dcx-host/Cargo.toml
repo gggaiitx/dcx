@@ -14,6 +14,9 @@ dcx-core = { path = "../dcx-core" }
 dcx-effect-corners = { path = "../dcx-effect-corners" }
 dcx-settings = { path = "../dcx-settings" }
 dcx-organizer = { path = "../dcx-organizer" }
+# Shared island.toml schema + credential-manager helpers for the settings page.
+# Only the config crate, never the GUI crate: host must not link eframe twice.
+dcx-island-config = { path = "../dcx-island-config" }
 
 # Application registry (`apps.toml`): which standalone apps the host launches.
 serde = { version = "1", features = ["derive"] }
