@@ -32,10 +32,9 @@ use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use egui::{Pos2, Rect, Vec2};
+use egui::{Pos2, Rect};
 
 pub const WS_EX_TOOLWINDOW: isize = 0x0000_0080;
-pub const WS_EX_TOPMOST: isize = 0x0000_0008;
 pub const WS_EX_NOACTIVATE: isize = 0x0800_0000;
 
 const GWLP_WNDPROC: i32 = -4;
@@ -50,9 +49,6 @@ const HWND_TOPMOST: isize = -1;
 const MONITOR_DEFAULTTOPRIMARY: u32 = 1;
 const SM_CXSCREEN: i32 = 0;
 const SM_CYSCREEN: i32 = 1;
-const SM_XVIRTUALSCREEN: i32 = 76;
-const SM_YVIRTUALSCREEN: i32 = 77;
-const SM_CYVIRTUALSCREEN: i32 = 79;
 
 #[link(name = "user32")]
 extern "system" {
@@ -76,13 +72,20 @@ extern "system" {
     fn MonitorFromWindow(hwnd: isize, flags: u32) -> isize;
     fn GetMonitorInfoW(monitor: isize, info: *mut dcx_win32::MONITORINFO) -> i32;
     fn GetDpiForWindow(hwnd: isize) -> u32;
-    fn GetCursorPos(pt: *mut dcx_win32::POINT) -> i32;
     fn IsWindow(hwnd: isize) -> i32;
-    fn ShowWindow(hwnd: isize, cmd: i32) -> i32;
     fn GetDpiForSystem() -> u32;
+    fn WindowFromPoint(point: dcx_win32::POINT) -> isize;
 }
 
-const SW_SHOWNOACTIVATE: i32 = 4;
+#[link(name = "shell32")]
+extern "system" {
+    fn SHQueryUserNotificationState(state: *mut i32) -> i32;
+}
+
+/// How often the z-order hit test runs. Four times a second is well under the
+/// cost of a repaint and fast enough that a slide-out taskbar is corrected
+/// before the eye notices.
+const RAISE_POLL: Duration = Duration::from_millis(250);
 
 /// Previous window procedure, installed once on the eframe window.
 static OLD_PROC: AtomicIsize = AtomicIsize::new(0);
@@ -119,23 +122,6 @@ fn stamp() -> String {
         "{:02}:{:02}:{:02}.{:03}",
         st.hour, st.minute, st.second, st.milliseconds
     )
-}
-
-pub fn mark_process_start() {
-    PROCESS_START.store(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0) as isize,
-        Ordering::SeqCst,
-    );
-}
-
-static PROCESS_START: AtomicIsize = AtomicIsize::new(0);
-
-pub fn process_started() -> SystemTime {
-    let secs = PROCESS_START.load(Ordering::SeqCst).max(0) as u64;
-    UNIX_EPOCH + Duration::from_secs(secs)
 }
 
 /// `%LOCALAPPDATA%\dcx\island_show` — written by the host's hotkey thread.
@@ -205,35 +191,6 @@ pub fn monitor(hwnd: isize) -> Monitor {
     }
 }
 
-/// True when another monitor is placed above this one, which rules out the
-/// "grow the window upwards off-screen" trick. The island does not use that
-/// trick — it resizes instead — but the check is kept so the placement code can
-/// explain itself in the log when a layout looks unexpected.
-pub fn has_monitor_above(mon: &Monitor) -> bool {
-    let top = unsafe { GetSystemMetrics(SM_YVIRTUALSCREEN) };
-    mon.rect[1] > top
-}
-
-pub fn virtual_rect() -> [i32; 4] {
-    unsafe {
-        [
-            GetSystemMetrics(SM_XVIRTUALSCREEN),
-            GetSystemMetrics(SM_YVIRTUALSCREEN),
-            GetSystemMetrics(SM_XVIRTUALSCREEN) + GetSystemMetrics(SM_CXSCREEN),
-            GetSystemMetrics(SM_YVIRTUALSCREEN) + GetSystemMetrics(SM_CYVIRTUALSCREEN),
-        ]
-    }
-}
-
-pub fn cursor_px() -> Option<Pos2> {
-    let mut pt = dcx_win32::POINT::default();
-    if unsafe { GetCursorPos(&mut pt) } != 0 {
-        Some(Pos2::new(pt.x as f32, pt.y as f32))
-    } else {
-        None
-    }
-}
-
 pub fn window_rect(hwnd: isize) -> Option<[i32; 4]> {
     if hwnd == 0 {
         return None;
@@ -280,10 +237,18 @@ fn is_shell_class(class: &str) -> bool {
 /// Is a full-screen window (video, game, slideshow, RDP session) in front?
 ///
 /// The capsule is topmost, so without this test it would sit on top of a
-/// full-screen video with no way to dismiss it. `rect` matching the whole
-/// monitor is the same heuristic the shell uses; shell-owned classes are
-/// excluded because the desktop always matches.
+/// full-screen video with no way to dismiss it.
+///
+/// The primary signal is the shell's own answer (`SHQueryUserNotificationState`,
+/// the same call that decides whether a toast may appear). The rectangle
+/// heuristic below is only a fallback: a **maximized** window has exactly the
+/// monitor's rectangle when the taskbar auto-hides, so the heuristic alone
+/// parked the island — invisible, topmost, nowhere — on a perfectly normal
+/// desktop with one maximized window.
 pub fn foreground_is_fullscreen(mon: &Monitor, own: isize) -> bool {
+    if let Some(park) = shell_says_no_popups() {
+        return park;
+    }
     let fg = unsafe { GetForegroundWindow() };
     if fg == 0 || fg == own {
         return false;
@@ -305,11 +270,26 @@ pub fn foreground_is_fullscreen(mon: &Monitor, own: isize) -> bool {
     ww >= mw - 2 && wh >= mh - 2 && rc[0] <= mon.rect[0] + 2 && rc[1] <= mon.rect[1] + 2
 }
 
+/// `SHQueryUserNotificationState` → is a full-screen app in the way?
+///
+/// `QUNS_BUSY` (2), `QUNS_RUNNING_D3D_FULL_SCREEN` (3),
+/// `QUNS_PRESENTATION_MODE` (4) and `QUNS_APP` (7) all mean "do not put
+/// anything on top". `None` means the query itself failed.
+fn shell_says_no_popups() -> Option<bool> {
+    let mut state: i32 = 0;
+    let hr = unsafe { SHQueryUserNotificationState(&mut state) };
+    if hr < 0 {
+        return None;
+    }
+    Some(matches!(state, 2 | 3 | 4 | 7))
+}
+
 /// The island's only OS window handle, discovered once.
 pub struct Window {
     pub hwnd: isize,
     applied: Option<[i32; 4]>,
     frame_fix_at: Option<std::time::Instant>,
+    raise_at: Option<std::time::Instant>,
 }
 
 impl Window {
@@ -318,6 +298,7 @@ impl Window {
             hwnd: 0,
             applied: None,
             frame_fix_at: None,
+            raise_at: None,
         }
     }
 
@@ -384,13 +365,33 @@ impl Window {
         }
     }
 
-    /// Put the window back on top after the shell raised something over it.
-    /// `SetWindowPos` with `HWND_TOPMOST` is cheap and idempotent; the check
-    /// prevents a z-order fight with the taskbar's own raise.
+    /// Put the window back on top after something raised itself over it.
+    ///
+    /// Being topmost is not enough: the auto-hidden taskbar re-raises itself on
+    /// every slide-out, and the same thing was true for `dcx-box`. Re-asserting
+    /// topmost unconditionally every frame would be a permanent z-order fight,
+    /// so this first asks the OS what is actually at the capsule's centre.
+    /// `WindowFromPoint` skips hidden windows, which is exactly right: the bar
+    /// that just slid away must not keep us re-raising.
     pub fn ensure_raised(&mut self) {
         if self.hwnd == 0 {
             return;
         }
+        let Some(rc) = window_rect(self.hwnd) else {
+            return;
+        };
+        let point = dcx_win32::POINT {
+            x: (rc[0] + rc[2]) / 2,
+            y: (rc[1] + rc[3]) / 2,
+        };
+        let above = unsafe { WindowFromPoint(point) };
+        if above == 0 || above == self.hwnd {
+            return;
+        }
+        trace(&format!(
+            "z-order: covered by {} (hwnd={above}); re-raising",
+            class_name(above)
+        ));
         unsafe {
             SetWindowPos(
                 self.hwnd,
@@ -409,6 +410,17 @@ impl Window {
     /// 1 px black border comes back.
     pub fn housekeeping(&mut self) {
         let now = std::time::Instant::now();
+        // Cheap hit test, four times a second: `place()` early-returns once the
+        // rectangle is stable, so without this the window never re-asserts
+        // topmost after the taskbar slides over it.
+        if self
+            .raise_at
+            .map(|t| now.duration_since(t) >= RAISE_POLL)
+            .unwrap_or(true)
+        {
+            self.raise_at = Some(now);
+            self.ensure_raised();
+        }
         let due = self
             .frame_fix_at
             .map(|t| now.duration_since(t) >= Duration::from_secs(2))
@@ -433,14 +445,6 @@ impl Window {
 
     pub fn monitor(&self) -> Monitor {
         monitor(self.hwnd)
-    }
-
-    pub fn show_no_activate(&self) {
-        if self.hwnd != 0 {
-            unsafe {
-                ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
-            }
-        }
     }
 }
 
@@ -501,29 +505,4 @@ pub fn px_rect(rect: [i32; 4], scale: f32) -> Rect {
 pub fn snap(rect: Rect, scale: f32) -> Rect {
     let px = to_px(rect, scale);
     px_rect(px, scale)
-}
-
-pub fn pos_px(p: Pos2, scale: f32) -> (i32, i32) {
-    (
-        (p.x * scale).round() as i32,
-        (p.y * scale).round() as i32,
-    )
-}
-
-/// Clamp a rectangle fully inside `bounds` (point space).
-pub fn clamp_rect(rect: Rect, bounds: Rect) -> Rect {
-    let mut r = rect;
-    if r.right() > bounds.right() {
-        r = r.translate(Vec2::new(bounds.right() - r.right(), 0.0));
-    }
-    if r.left() < bounds.left() {
-        r = r.translate(Vec2::new(bounds.left() - r.left(), 0.0));
-    }
-    if r.bottom() > bounds.bottom() {
-        r = r.translate(Vec2::new(0.0, bounds.bottom() - r.bottom()));
-    }
-    if r.top() < bounds.top() {
-        r = r.translate(Vec2::new(0.0, bounds.top() - r.top()));
-    }
-    r
 }

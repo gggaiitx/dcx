@@ -135,59 +135,70 @@ pub fn draw(
         right = badge.left() - 8.0;
     }
 
-    // Metrics: a 22 pt bar plus a percentage. Two decimals of hardware would be
+    // Metrics: a 18 pt bar plus a percentage. Two decimals of hardware would be
     // noise; one number per metric is the point of a capsule.
-    let mut metrics: Vec<(&str, f32, Color32)> = Vec::new();
+    //
+    // Fitting is decided per metric against the space the clock has already
+    // taken, not against a fixed width: a 232 pt capsule used to show **no**
+    // metrics at all because of a `>= 250.0` gate, and a capsule the user
+    // narrows must lose the bars rather than overlap the time.
+    let mut metrics: Vec<(f32, Color32)> = Vec::new();
     if let Some(cpu) = st.cpu {
-        metrics.push(("CPU", cpu, p.level(crate::metrics::level(cpu))));
+        metrics.push((cpu, p.level(crate::metrics::level(cpu))));
     }
     if let Some(mem) = st.mem {
-        metrics.push(("MEM", mem, p.level(crate::metrics::level(mem))));
+        metrics.push((mem, p.level(crate::metrics::level(mem))));
     }
-    if rect.width() >= 250.0 {
-        for (label, value, color) in metrics.iter().rev() {
-            let text = format!("{value:.0}%");
-            let galley = ui.painter().layout_no_wrap(
-                text.clone(),
-                FontId::monospace(10.0),
-                p.text_dim,
-            );
-            let text_w = galley.size().x;
-            let x = right - text_w;
-            ui.painter()
-                .galley(Pos2::new(x, mid_y - galley.size().y * 0.5), galley, p.text_dim);
-            let bar_w = 18.0;
-            let bar = Rect::from_min_size(
-                Pos2::new(x - bar_w - 5.0, mid_y - 1.5),
-                Vec2::new(bar_w, 3.0),
-            );
-            widgets::bar(ui, bar, *value / 100.0, *color, p.track);
-            right = bar.left() - 8.0;
-            let _ = label;
+    for (value, color) in metrics.iter().rev() {
+        let text = format!("{value:.0}%");
+        let galley = ui.painter().layout_no_wrap(
+            text,
+            FontId::monospace(10.0),
+            p.text_dim,
+        );
+        let text_w = galley.size().x;
+        let bar_w = 18.0;
+        // text + gap + bar + the 8 pt gap that separates two clusters.
+        let need = text_w + 5.0 + bar_w + 8.0;
+        // The task title keeps its space even when a second metric would fit:
+        // dropping it to show a percentage is the wrong trade.
+        let reserve = if st.task.is_some() { 70.0 } else { 24.0 };
+        if right - need < left + reserve {
+            continue;
         }
+        let x = right - text_w;
+        ui.painter()
+            .galley(Pos2::new(x, mid_y - galley.size().y * 0.5), galley, p.text_dim);
+        let bar = Rect::from_min_size(
+            Pos2::new(x - bar_w - 5.0, mid_y - 1.5),
+            Vec2::new(bar_w, 3.0),
+        );
+        widgets::bar(ui, bar, *value / 100.0, *color, p.track);
+        right = bar.left() - 8.0;
     }
 
     // Network rates live in the capsule only when there is room left over; the
-    // panel's performance tab is the detailed view.
+    // panel's performance tab is the detailed view. What "left over" means is
+    // decided by the task title: it is the reason to look at the capsule, so it
+    // keeps its space and the network readout is the first thing to drop.
     if let Some((down, up)) = st.net {
-        if rect.width() >= 300.0 {
-            let text = format!(
-                "↓{} ↑{}",
-                crate::metrics::human_rate(down),
-                crate::metrics::human_rate(up)
+        let text = format!(
+            "↓{} ↑{}",
+            crate::metrics::human_rate(down),
+            crate::metrics::human_rate(up)
+        );
+        let galley =
+            ui.painter()
+                .layout_no_wrap(text, FontId::monospace(9.0), p.text_faint);
+        let w = galley.size().x;
+        let reserve = if st.task.is_some() { 70.0 } else { 20.0 };
+        if right - w > left + reserve {
+            ui.painter().galley(
+                Pos2::new(right - w, mid_y - galley.size().y * 0.5),
+                galley,
+                p.text_faint,
             );
-            let galley =
-                ui.painter()
-                    .layout_no_wrap(text, FontId::monospace(9.0), p.text_faint);
-            let w = galley.size().x;
-            if right - w > left + 20.0 {
-                ui.painter().galley(
-                    Pos2::new(right - w, mid_y - galley.size().y * 0.5),
-                    galley,
-                    p.text_faint,
-                );
-                right -= w + 8.0;
-            }
+            right -= w + 8.0;
         }
     }
 

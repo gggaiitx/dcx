@@ -340,3 +340,42 @@ InboxItem { id, source(QQ/WeChat/WeCom/Mail/System), title, body,
 - 编译期修掉的坑：`egui 0.29` 无 `StrokeKind`（`rect_stroke` 只收 3 个参数）、`Context::interact` 不存在（改用 `Ui::interact` 并提前取 `Response`）、`SYSTEMTIME` 字段名、`windows` feature 门控、`combase.lib` 链接（改用 `windows-link` raw-dylib）、`Stroke::new` 浮点字面量的 future-incompat 告警。
 - **未经实机验证**，按本项目既有约定「编译通过 ≠ 能用」，上线前仍需：① 125% DPI 下点击与绘制对齐；② 自动隐藏任务栏滑出时胶囊是否被遮挡（F3 待确认项）；③ 紧凑态窗口外 `WM_NCHITTEST = -1`；④ 四角无黑边；⑤ 只 kill `dcx-island.exe` 后 host 看门狗 5 s 内拉起；⑥ 企业微信是否真的触发 `HSHELL_FLASH`；⑦ 凭据保存后 IMAP / webhook 实发一次。
 - 企业微信智能机器人长连接（F1 揭示的可行通道）**仍属未实现能力**，若后续要做，需独立评估 BotID/Secret 的存放、单连接互斥、30 s 心跳与断线重连，不能简单复用现有 SHELLHOOK 通道。
+
+### 9.5 第二轮修复与实机验证（2026-11-07 17:20）
+
+上一轮只做到「编译通过」，本轮按代码审查结论逐条修，并在本机（125% DPI、双屏上下排列、任务栏自动隐藏、主屏为下方屏）用隔离的 `LOCALAPPDATA` 跑起真进程截图验证。**没有动生产配置**（`%LOCALAPPDATA%\dcx\island.toml` 至今不存在，测试写的是 `D:\tmp\island-smoke`）。
+
+#### 修掉的问题
+
+| # | 症状 | 根因 | 修法 |
+|---|---|---|---|
+| 1 | 面板尺寸与上次页签重启必回默认 | `app.rs::set_open` 里 `if self.cfg.ui.last_tab != self.tab.key()` 恒假（`Action::Tab` 已把内存值改成同一个），全仓只有这一处 `dcx_island_config::save` | 新增 `dcx-island-config::patch_ui`（**锁内**读-改-写，只改 `[ui]`）；`app.rs::persist_ui` 在切页签 / 拖动结束 / 收起时调用，写前与 `ui_saved` 比对。顺带解决「关面板整份回写、回滚宿主 900 ms 内刚改的设置」 |
+| 2 | 默认胶囊看不到 CPU / 内存 | `ui/compact.rs` 按 `rect.width() >= 250` 硬门槛画指标，而 `capsule_width` 默认 232 | 门槛改成「时钟已占空间 + 给任务标题预留 70 pt」逐个裁决；默认宽度 232 → **300**（网速读数改为最后降级项，需 ≥350 才出现） |
+| 3 | 剪贴板 / 收件箱列表看不到第 8 条以后 | 两处都是 `y + row_h > bottom` 就 `break`，全文件无滚动 | `panel.rs::scroll()`（`raw_scroll_delta`）+ `scroll_bar()`；`ui.set_clip_rect(list)` 同时约束交互矩形（egui 0.29 `ui.rs:1046` 按 clip 截断 `interact_rect`），半行不会抢搜索框的点击 |
+| 4 | 任务栏滑出后可永久压住胶囊 | `win.rs::ensure_raised` 从未被调用，`place()` rect 未变时提前返回 | 每 250 ms `WindowFromPoint(窗口中心)`，被遮挡才 `HWND_TOPMOST`（无遮挡时零 z 序写入） |
+| 5 | 展开首帧被裁 | `update` 里 `draw` 早于 `place` | `place` 前移，按新尺寸建面再画 |
+| 6 | `Alt+I` 最慢近 1 s 才响应 | 折叠态 `request_repaint_after(到下一整秒)`，而标记只在该帧读 | 折叠态间隔上限压到 `MARKER_POLL`(220 ms) |
+| 7 | 提醒抢焦点 | `on_tick` 直接 `set_open(true)` → `ViewportCommand::Focus` | `set_open_with(activate=false)` + `passive` 标志：不夺焦、失焦不自动关、12 s 未交互自动收起 |
+| 8 | 宿主停止 = 硬杀，丢最后 900 ms 改动 | `apps.rs::stop` 先 `child.kill()` | 先 `WM_CLOSE` → 等 1.2 s → 再 kill；`stop_all` 先对所有应用统一请求关闭，再一次性等待（避免 N × 1.2 s） |
+| 9 | `island.toml` 关、`apps.toml` 开 → 每 5 s 无限拉起 | `launch()` 返回 `Ok` 即 `retry.remove()`，进程秒退也当成功，`MAX_FAILURES` 永不生效 | 记录 `spawned_at`，下个 tick 仍不在跑即计一次失败并退避（10/20/40/80/160 s → 600 s） |
+| 10 | **最大化窗口会让胶囊消失** | `foreground_is_fullscreen` 的矩形启发式：任务栏自动隐藏时，最大化窗口矩形正好等于显示器矩形 | 主判据换成 `SHQueryUserNotificationState`（`QUNS_BUSY`/`D3D_FULL_SCREEN`/`PRESENTATION`/`APP` 才泊走），矩形判定降为兜底 |
+
+顺带修的：`window_px` 被当窗口宽高用（副屏在左时为负）、`win::snap` 接入 `compute_geo`（像素对齐）、`metrics.style` 条/环真的生效（新增 `bar_card`）、`metrics.disk` / `clock.show` 接线、采样失败恢复后清 `error`、剪贴板自写去重标记改 `take()`（否则用户下一次复制可能被当成自写丢弃）。编译告警 36 → 16，剩余全部是未接线的诊断素材（`readiness`、`net_interface_names`、`clipboard_owner`、未用 `Glyph`/控件、`Dispatcher`），不是垃圾但确实还没接。
+
+#### 实机证据（隔离 `LOCALAPPDATA`，日志 `island.log`）
+
+- 窗口：`window ready hwnd=592058`、`scale 1.25`；`GetWindowRect` 收起态 = `(773,10)-(1148,53)`，宽 375 = 300 × 1.25，位于主屏顶部居中。
+- 紧凑态：胶囊显示 `17:17 周六 ▁29% ▁26%`，指标随采样变化（29→40→43%）。
+- 展开：面板在同一窗口内向下展开，页签 **任务 / 剪贴板 / 消息 / 性能**、空态文案、页脚、右下角拖拽把手齐全，四角无黑边（DWM 1 px 边框修复沿用上一轮）。
+- 滚动：造 14 条剪贴板数据，未滚动显示 `01–07` 且右缘出现细滚动条；滚轮 3 档后显示 `04–10`、滑块下移、悬停行出现删除按钮。
+- 配置落盘：点「性能」页签后 `island.toml` 出现 `last_tab = "perf"`，`panel_width = 388.0` / `panel_height = 436.0` 一并写入，`enabled = true` 等其它表原样保留（`patch_ui` 的读-改-写生效），日志无 `ui save failed`。
+- 全屏判定：当前前台为最大化窗口时 `SHQueryUserNotificationState` 返回 **5（ACCEPTS_NOTIFICATIONS）**，胶囊正常显示；旧矩形判定在同一几何下会判成全屏。
+
+#### 本轮仍未验证
+
+- 宿主两处改动（优雅停止、看门狗退避）**要重启 `dcx-host.exe` 才生效**，本轮只替换了文件，未重启进程（沙箱内起宿主会被作业回收并连带任务栏）。
+- 提醒到点（`passive` 打开 + 12 s 自动收起）需一条到点任务实测。
+- 任务栏自动隐藏滑出时的 z 序纠正未撞上遮挡（日志无 `z-order: covered`，说明本轮没触发，也就没验证到纠正动作）。
+- `ui.monitor`（多屏固定）与 `clipboard.skip_password_fields`（密码框不记录）仍未接线，前者属功能缺口、后者涉及隐私承诺（设置页已注明「尽力而为，不是安全保证」），下一批优先处理 `skip_password_fields`。
+- 企业微信 `HSHELL_FLASH`、IMAP / webhook 实发沿用上一轮结论：未验证。
+- 部署：`D:\dcx-dist\dcx-host.exe`（`a5f2612d…`，旧文件备份为 `.bak-20261107-1720`）、`dcx-island.exe`（`0c695274…`）已换入，`SHA256SUMS.txt` 已重算。

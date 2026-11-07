@@ -75,7 +75,6 @@ fn install_panic_hook() {
 fn main() {
     enable_dpi_awareness();
     install_panic_hook();
-    win::mark_process_start();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     if matches!(args.first().map(String::as_str), Some("--help") | Some("-h")) {

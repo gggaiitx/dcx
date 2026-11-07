@@ -250,7 +250,7 @@ impl Default for BehaviorCfg {
         BehaviorCfg {
             auto_collapse_secs: 0,
             hide_fullscreen: true,
-            capsule_width: 232.0,
+            capsule_width: 300.0,
             capsule_height: 34.0,
             opacity: 0.94,
         }
@@ -407,6 +407,35 @@ pub fn save(cfg: &Config) -> Result<(), String> {
     save_to(&cfg, &config_path())
 }
 
+/// Read-modify-write **only** the `ui` table, under the config lock.
+///
+/// Two processes own this document: the island owns `ui` (last tab, panel
+/// size), the settings centre owns everything else. Writing the island's whole
+/// in-memory copy back — what the island used to do when the panel closed —
+/// rolled back any switch the user had just changed in the settings centre,
+/// because the island only re-reads the file every `CONFIG_POLL`. Re-reading
+/// inside the lock keeps the two writers from stepping on each other.
+pub fn patch_ui(f: impl FnOnce(&mut UiCfg)) -> Result<(), String> {
+    patch_ui_at(&config_path(), f)
+}
+
+pub fn patch_ui_at(path: &Path, f: impl FnOnce(&mut UiCfg)) -> Result<(), String> {
+    let _guard = dcx_win32::config_file::FileLock::acquire(
+        path,
+        dcx_win32::config_file::LOCK_TIMEOUT,
+    )
+    .map_err(|e| format!("配置文件被占用：{e}"))?;
+    if dcx_win32::config_file::is_poisoned(path) {
+        return Err(dcx_win32::config_file::poisoned_error(path).to_string());
+    }
+    let mut cfg = load_from(path);
+    f(&mut cfg.ui);
+    cfg.repair();
+    let text = toml::to_string_pretty(&cfg).map_err(|e| format!("序列化失败：{e}"))?;
+    dcx_win32::config_file::write_atomic(path, text.as_bytes())
+        .map_err(|e| format!("写入失败：{e}"))
+}
+
 pub fn save_to(cfg: &Config, path: &Path) -> Result<(), String> {
     let _guard = dcx_win32::config_file::FileLock::acquire(
         path,
@@ -463,6 +492,33 @@ mod tests {
         assert_eq!(c.behavior.opacity, 1.0);
         assert_eq!(c.ui.last_tab, "tasks");
         assert_eq!(c.clipboard.max_items, 20);
+    }
+
+    #[test]
+    fn patch_ui_keeps_the_tables_the_island_does_not_own() {
+        let dir = std::env::temp_dir().join(format!("dcx-island-cfg4-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("island.toml");
+        let mut a = Config::default();
+        a.behavior.capsule_width = 360.0;
+        a.tasks.carry_over = false;
+        save_to(&a, &path).unwrap();
+
+        // Simulates the settings centre saving, then the island patching `ui`.
+        patch_ui_at(&path, |ui| {
+            ui.last_tab = "clip".to_string();
+            ui.panel_height = 500.0;
+        })
+        .unwrap();
+
+        let b = load_from(&path);
+        assert_eq!(b.ui.last_tab, "clip");
+        assert_eq!(b.ui.panel_height, 500.0);
+        // Untouched tables must survive: this is what the full save rolled back.
+        assert_eq!(b.behavior.capsule_width, 360.0);
+        assert!(!b.tasks.carry_over);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
     }
 
     #[test]

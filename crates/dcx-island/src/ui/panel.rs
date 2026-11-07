@@ -59,6 +59,9 @@ pub struct PanelState<'a> {
     pub task_time: &'a mut String,
     pub task_repeat: &'a mut crate::tasks::Repeat,
     pub clip_query: &'a mut String,
+    /// Wheel offset of the two scrollable lists, in points (see [`scroll`]).
+    pub clip_scroll: &'a mut f32,
+    pub inbox_scroll: &'a mut f32,
     pub textures: &'a mut TextureCache,
     pub toast: Option<&'a str>,
     pub dispatch_note: Option<&'a str>,
@@ -574,13 +577,32 @@ fn clip_tab(
     }
 
     let ctx = ui.ctx().clone();
-    let mut y = list.top();
+    let content_h: f32 = items
+        .iter()
+        .map(|i| if i.kind == Kind::Image { 46.0 } else { 40.0 })
+        .sum();
+    let offset = scroll(ui, list, content_h, st.clip_scroll);
+    let mut y = list.top() - offset;
+    // Rows are painted from an explicit rectangle, so the painter has to be
+    // clipped to the list or a scrolled row would draw over the search field.
+    // The previous clip is restored at the end: the resize grip is drawn after
+    // this tab and would otherwise be clipped away too.
+    let prev_clip = ui.clip_rect();
+    ui.set_clip_rect(list);
     for item in &items {
         let row_h = if item.kind == Kind::Image { 46.0 } else { 40.0 };
-        if y + row_h > list.bottom() + 1.0 {
+        if y + row_h < list.top() {
+            y += row_h;
+            continue;
+        }
+        if y > list.bottom() {
             break;
         }
         let row = Rect::from_min_size(Pos2::new(list.left(), y), Vec2::new(list.width(), row_h));
+        // A partially scrolled row is painted (the list should not blink empty
+        // bands) and stays clickable on its visible part: `set_clip_rect` above
+        // also clips every interaction rectangle to the list, so it cannot steal
+        // a click from the search box.
         let hovered = ui.rect_contains_pointer(row);
         if hovered {
             widgets::round_rect(ui, row.shrink2(Vec2::new(0.0, 1.0)), 8.0, with_alpha(p.surface_alt, 0.7), Stroke::NONE);
@@ -667,6 +689,8 @@ fn clip_tab(
         }
         y += row_h;
     }
+    scroll_bar(ui, list, p, content_h, offset);
+    ui.set_clip_rect(prev_clip);
 }
 
 // ---------------------------------------------------------------------------
@@ -779,11 +803,25 @@ fn inbox_tab(
         return;
     }
     let row_h = 40.0;
+    // Only the message list scrolls; the per-channel health cards above it stay
+    // pinned, which is what makes a long list usable.
+    let list = Rect::from_min_max(Pos2::new(rect.left(), y), rect.max);
+    let content_h = row_h * items.len() as f32;
+    let offset = scroll(ui, list, content_h, st.inbox_scroll);
+    let prev_clip = ui.clip_rect();
+    ui.set_clip_rect(list);
+    y = list.top() - offset;
     for (id, source, title, detail, at, read) in items {
-        if y + row_h > rect.bottom() + 1.0 {
+        if y + row_h < list.top() {
+            y += row_h;
+            continue;
+        }
+        if y > list.bottom() {
             break;
         }
         let row = Rect::from_min_size(Pos2::new(rect.left(), y), Vec2::new(rect.width(), row_h));
+        // See `clip_tab`: the clip rect also bounds every interaction, so a
+        // half-visible row cannot take clicks from the cards above the list.
         let hovered = ui.rect_contains_pointer(row);
         if hovered {
             widgets::round_rect(ui, row.shrink2(Vec2::new(0.0, 1.0)), 8.0, with_alpha(p.surface_alt, 0.7), Stroke::NONE);
@@ -846,6 +884,8 @@ fn inbox_tab(
         }
         y += row_h;
     }
+    scroll_bar(ui, list, p, content_h, offset);
+    ui.set_clip_rect(prev_clip);
 }
 
 // ---------------------------------------------------------------------------
@@ -859,26 +899,27 @@ fn perf_tab(ui: &mut egui::Ui, rect: Rect, p: &Palette, st: &PanelState<'_>) {
     let top = Rect::from_min_size(rect.min, Vec2::new(rect.width(), ring_d));
     let card_w = (top.width() - gap) * 0.5;
 
-    ring_card(
-        ui,
-        Rect::from_min_size(top.min, Vec2::new(card_w, ring_d)),
-        p,
-        "CPU",
-        snap.cpu,
-    );
-    ring_card(
-        ui,
-        Rect::from_min_size(
-            Pos2::new(top.left() + card_w + gap, top.top()),
+    // `metrics.style` is a real switch in the settings centre ("条形 / 环形");
+    // the panel used to draw rings whatever it said. The capsule keeps bars —
+    // there is no room for a ring in 34 pt.
+    let rings = st.cfg.metrics.style == "ring";
+    for (i, (label, value)) in [("CPU", snap.cpu), ("内存", snap.mem_percent)]
+        .into_iter()
+        .enumerate()
+    {
+        let card = Rect::from_min_size(
+            Pos2::new(top.left() + (card_w + gap) * i as f32, top.top()),
             Vec2::new(card_w, ring_d),
-        ),
-        p,
-        "内存",
-        snap.mem_percent,
-    );
+        );
+        if rings {
+            ring_card(ui, card, p, label, value);
+        } else {
+            bar_card(ui, card, p, label, value);
+        }
+    }
 
     let mut y = top.bottom() + 12.0;
-    let rows: Vec<(String, String, Option<f32>)> = vec![
+    let mut rows: Vec<(String, String, Option<f32>)> = vec![
         (
             "内存".to_string(),
             format!(
@@ -916,7 +957,12 @@ fn perf_tab(ui: &mut egui::Ui, rect: Rect, p: &Palette, st: &PanelState<'_>) {
             None,
         ),
     ];
-    for (label, value, _) in rows {
+    // `metrics.disk` is a switch in the settings centre; the row was always
+    // shown regardless of it.
+    if !st.cfg.metrics.disk {
+        rows.retain(|(label, _, _)| label != "系统盘");
+    }
+    for (label, value, _) in rows.drain(..) {
         if y + 24.0 > rect.bottom() {
             break;
         }
@@ -949,6 +995,38 @@ fn perf_tab(ui: &mut egui::Ui, rect: Rect, p: &Palette, st: &PanelState<'_>) {
             p.danger,
         );
     }
+}
+
+/// The `bar` alternative to [`ring_card`], selected by `metrics.style`.
+fn bar_card(ui: &mut egui::Ui, rect: Rect, p: &Palette, label: &str, percent: f32) {
+    widgets::round_rect(ui, rect, 10.0, p.surface_alt, Stroke::new(1.0_f32, p.divider));
+    widgets::text(
+        ui,
+        Pos2::new(rect.left() + 10.0, rect.top() + 9.0),
+        Align2::LEFT_TOP,
+        label,
+        9.5,
+        p.text_faint,
+    );
+    widgets::mono_text(
+        ui,
+        Pos2::new(rect.left() + 10.0, rect.center().y - 2.0),
+        Align2::LEFT_CENTER,
+        &format!("{percent:.0}%"),
+        20.0,
+        p.text,
+    );
+    let bar = Rect::from_min_max(
+        Pos2::new(rect.left() + 10.0, rect.bottom() - 16.0),
+        Pos2::new(rect.right() - 10.0, rect.bottom() - 10.0),
+    );
+    widgets::bar(
+        ui,
+        bar,
+        percent / 100.0,
+        p.level(crate::metrics::level(percent)),
+        p.track,
+    );
 }
 
 fn ring_card(ui: &mut egui::Ui, rect: Rect, p: &Palette, label: &str, percent: f32) {
@@ -985,6 +1063,55 @@ fn ring_card(ui: &mut egui::Ui, rect: Rect, p: &Palette, label: &str, percent: f
 // ---------------------------------------------------------------------------
 // Shared bits
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Scrolling for the hand-placed lists
+// ---------------------------------------------------------------------------
+
+/// Advance the wheel offset of a hand-placed list and return it.
+///
+/// `ScrollArea` cannot be used here: every row is painted and hit-tested from
+/// explicit rectangles (see the module comment), and the lists used to simply
+/// stop at `list.bottom()`, which hid all but the first ~7 of the 200 clipboard
+/// entries. This keeps the model and only adds an offset.
+///
+/// `raw_scroll_delta` rather than `smooth_scroll_delta`: egui spreads a smooth
+/// delta over its own frames, and this panel repaints at 120 ms while open, so
+/// the leftover arrived in bursts (the same reason `dcx-box` switched).
+fn scroll(ui: &egui::Ui, view: Rect, content_h: f32, offset: &mut f32) -> f32 {
+    let max = (content_h - view.height()).max(0.0);
+    *offset = offset.clamp(0.0, max);
+    if max > 0.0 && ui.rect_contains_pointer(view) {
+        let delta = ui.input(|i| i.raw_scroll_delta.y);
+        if delta.abs() > 0.01 {
+            *offset = (*offset - delta).clamp(0.0, max);
+            ui.ctx().request_repaint();
+        }
+    }
+    *offset
+}
+
+/// Thin scrollbar on the right edge of `view`, drawn only when it overflows.
+fn scroll_bar(ui: &egui::Ui, view: Rect, p: &Palette, content_h: f32, offset: f32) {
+    if content_h <= view.height() + 0.5 {
+        return;
+    }
+    let track = Rect::from_min_max(
+        Pos2::new(view.right() - 3.0, view.top()),
+        Pos2::new(view.right(), view.bottom()),
+    );
+    let frac = (view.height() / content_h).clamp(0.08, 1.0);
+    let h = (track.height() * frac).max(18.0);
+    let t = offset / (content_h - view.height()).max(1.0);
+    let y = track.top() + (track.height() - h) * t;
+    widgets::round_rect(
+        ui,
+        Rect::from_min_size(Pos2::new(track.left(), y), Vec2::new(track.width(), h)),
+        1.5,
+        with_alpha(p.text_faint, 0.55),
+        Stroke::NONE,
+    );
+}
 
 fn empty_state(ui: &mut egui::Ui, rect: Rect, p: &Palette, title: &str, sub: &str) {
     if rect.height() < 40.0 {

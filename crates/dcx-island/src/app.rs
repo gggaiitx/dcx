@@ -130,6 +130,9 @@ struct Island {
     pal_at: Option<Instant>,
 
     open: bool,
+    /// The panel was opened without taking focus (a reminder). It must not be
+    /// closed by the focus-loss rule and does not steal the keyboard.
+    passive: bool,
     anim: f32,
     hovered: bool,
     parked: bool,
@@ -138,6 +141,9 @@ struct Island {
     last_fs: Instant,
     last_marker: Instant,
     last_stamp: u128,
+    /// What was last written to the `ui` table, so a close does not rewrite the
+    /// document with identical values.
+    ui_saved: (String, f32, f32),
 
     sampler: metrics::Sampler,
     dispatcher: dispatch::Dispatcher,
@@ -157,6 +163,10 @@ struct Island {
     task_time: String,
     task_repeat: tasks::Repeat,
     clip_query: String,
+    /// Wheel offset of the two scrollable lists, in points. Kept per tab so
+    /// switching tabs does not lose the position.
+    clip_scroll: f32,
+    inbox_scroll: f32,
 
     today: String,
     last_secs: u32,
@@ -197,6 +207,7 @@ impl Island {
             pal: theme::Palette::system(),
             pal_at: None,
             open: false,
+            passive: false,
             anim: 0.0,
             hovered: false,
             parked: false,
@@ -205,6 +216,11 @@ impl Island {
             last_fs: Instant::now(),
             last_marker: Instant::now(),
             last_stamp: 0,
+            ui_saved: (
+                cfg.ui.last_tab.clone(),
+                cfg.ui.panel_width,
+                cfg.ui.panel_height,
+            ),
             sampler: metrics::Sampler::start(cfg.metrics.interval_secs),
             dispatcher: dispatch::Dispatcher::default(),
             send_at: None,
@@ -221,6 +237,8 @@ impl Island {
             task_time: String::new(),
             task_repeat: tasks::Repeat::Once,
             clip_query: String::new(),
+            clip_scroll: 0.0,
+            inbox_scroll: 0.0,
             today,
             last_secs: 0,
             last_tick: Instant::now(),
@@ -306,12 +324,19 @@ impl Island {
                 self.queue_dispatch(text);
             }
             if !self.open {
-                self.set_open(true, ctx);
+                // Raised, not focused: the user may be typing in another
+                // window, and a reminder has no right to the keyboard.
+                self.set_open_with(true, ctx, false);
             }
             self.dirty_at = Some(Instant::now());
         }
         if self.reminder.as_ref().map(|(_, t)| t.elapsed().as_secs() > 12).unwrap_or(false) {
             self.reminder = None;
+            // The panel was raised by the reminder and never touched; take it
+            // back down instead of leaving a topmost window on screen.
+            if self.open && self.passive {
+                self.set_open(false, ctx);
+            }
         }
         if self.toast.as_ref().map(|(_, t)| t.elapsed().as_secs() > 4).unwrap_or(false) {
             self.toast = None;
@@ -330,7 +355,7 @@ impl Island {
         }
         self.cfg_stamp = stamp;
         let old = self.cfg.clone();
-        let mut next = dcx_island_config::load();
+        let next = dcx_island_config::load();
         // The settings centre writes `enabled` into both documents; if it is
         // off here, the user turned the island off while we were running.
         if !next.enabled {
@@ -401,10 +426,12 @@ impl Island {
         };
         let mut added = 0;
         while let Ok(raw) = listener.rx.try_recv() {
-            if let Some(seq) = self.clip.self_write {
+            // `take`, not a plain read: the marker must never outlive the event
+            // it was set for, or the next genuine copy would be mistaken for
+            // our own write-back and silently dropped.
+            if let Some(seq) = self.clip.self_write.take() {
                 if seq == sys::clipboard_sequence() {
                     // Our own write-back; do not record it again.
-                    self.clip.self_write = None;
                     continue;
                 }
             }
@@ -486,28 +513,70 @@ impl Island {
     }
 
     fn set_open(&mut self, open: bool, ctx: &egui::Context) {
+        self.set_open_with(open, ctx, true);
+    }
+
+    /// `activate = false` shows the panel without taking the keyboard: a
+    /// reminder must not pull focus out of whatever the user is typing in.
+    fn set_open_with(&mut self, open: bool, ctx: &egui::Context, activate: bool) {
         if self.open == open {
+            if open && activate {
+                self.passive = false;
+            }
             return;
         }
         self.open = open;
         self.last_input = Instant::now();
         if open {
             self.focus_lost = None;
+            self.passive = !activate;
             // Focus is required for the task input; the window is created
             // without WS_EX_NOACTIVATE for exactly this reason.
-            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-        } else {
-            self.save_all();
-            if let Some(tab) = Some(self.tab.key()) {
-                if self.cfg.ui.last_tab != tab {
-                    self.cfg.ui.last_tab = tab.to_string();
-                    let cfg = self.cfg.clone();
-                    let _ = dcx_island_config::save(&cfg);
-                }
+            if activate {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             }
+        } else {
+            self.passive = false;
+            self.save_all();
+            self.persist_ui();
         }
         self.dirty_at = Some(Instant::now());
         ctx.request_repaint();
+    }
+
+    /// Write the island-owned half of `island.toml` (last tab, panel size).
+    ///
+    /// Only the `ui` table, and only when it actually changed: the settings
+    /// centre owns every other table, and a full save here used to roll back a
+    /// switch the user had changed less than `CONFIG_POLL` ago.
+    fn persist_ui(&mut self) {
+        let tab = self.tab.key().to_string();
+        let (w, h) = (self.cfg.ui.panel_width, self.cfg.ui.panel_height);
+        let clean = self.ui_saved.0 == tab
+            && (self.ui_saved.1 - w).abs() < 0.5
+            && (self.ui_saved.2 - h).abs() < 0.5;
+        if clean {
+            return;
+        }
+        match dcx_island_config::patch_ui(|ui| {
+            ui.last_tab = tab.clone();
+            ui.panel_width = w;
+            ui.panel_height = h;
+        }) {
+            Ok(()) => {
+                self.ui_saved = (tab, w, h);
+                self.cfg.ui.last_tab = self.ui_saved.0.clone();
+                // Our own write must not look like a change made elsewhere,
+                // otherwise the next poll reloads the document for nothing.
+                self.cfg_stamp = file_stamp(&dcx_island_config::config_path());
+            }
+            Err(e) => {
+                win::trace(&format!("ui save failed: {e}"));
+                // Force the next call to try again instead of believing the
+                // values are on disk.
+                self.ui_saved.0.clear();
+            }
+        }
     }
 
     // -- geometry ----------------------------------------------------------
@@ -532,14 +601,22 @@ impl Island {
         let y = mon.work[1] + (EDGE_INSET * scale).round() as i32;
 
         let w_pt = win_w / scale;
-        let capsule = Rect::from_min_size(
-            Pos2::new((w_pt - capsule_w / scale) * 0.5, 0.0),
-            Vec2::new(capsule_w / scale, capsule_h / scale),
+        // Snapped to whole physical pixels: an off-by-half window edge blurs
+        // every glyph along it, and the capsule sits directly on the top edge.
+        let capsule = win::snap(
+            Rect::from_min_size(
+                Pos2::new((w_pt - capsule_w / scale) * 0.5, 0.0),
+                Vec2::new(capsule_w / scale, capsule_h / scale),
+            ),
+            scale,
         );
         let panel = if open {
-            Some(Rect::from_min_size(
-                Pos2::new((w_pt - panel_w / scale) * 0.5, capsule_h / scale + GAP),
-                Vec2::new(panel_w / scale, panel_h / scale),
+            Some(win::snap(
+                Rect::from_min_size(
+                    Pos2::new((w_pt - panel_w / scale) * 0.5, capsule_h / scale + GAP),
+                    Vec2::new(panel_w / scale, panel_h / scale),
+                ),
+                scale,
             ))
         } else {
             None
@@ -581,11 +658,14 @@ impl Island {
                     .inner_margin(egui::Margin::same(0.0)),
             )
             .show(ctx, |ui| {
+                // Size of the window in points. `window_px` is a rectangle
+                // [left, top, right, bottom], not a size: on a monitor placed
+                // to the left of the primary one `right` is even negative.
                 let full = Rect::from_min_size(
                     Pos2::ZERO,
                     Vec2::new(
-                        geo.window_px[2] as f32 / geo.scale,
-                        geo.window_px[3] as f32 / geo.scale,
+                        (geo.window_px[2] - geo.window_px[0]) as f32 / geo.scale,
+                        (geo.window_px[3] - geo.window_px[1]) as f32 / geo.scale,
                     ),
                 );
                 ui.set_min_size(full.size());
@@ -619,6 +699,8 @@ impl Island {
                                 task_time: &mut self.task_time,
                                 task_repeat: &mut self.task_repeat,
                                 clip_query: &mut self.clip_query,
+                                clip_scroll: &mut self.clip_scroll,
+                                inbox_scroll: &mut self.inbox_scroll,
                                 textures: &mut self.textures,
                                 toast: self.toast.as_ref().map(|(t, _)| t.as_str()),
                                 dispatch_note: self.send_note.as_ref().map(|(t, _)| t.as_str()),
@@ -682,8 +764,16 @@ impl Island {
         let snap = self.sampler.read();
         let metrics_on = self.cfg.metrics.show;
         crate::ui::compact::CapsuleState {
-            time: c.time_text(self.cfg.clock.hour24, self.cfg.clock.show_seconds),
-            weekday: {
+            // `clock.show = false` hides the whole clock module, weekday
+            // included: the setting is called "显示时钟", not "显示时分".
+            time: if self.cfg.clock.show {
+                c.time_text(self.cfg.clock.hour24, self.cfg.clock.show_seconds)
+            } else {
+                String::new()
+            },
+            weekday: if !self.cfg.clock.show {
+                String::new()
+            } else {
                 let mut w = if self.cfg.clock.show_weekday {
                     c.weekday_cn().to_string()
                 } else {
@@ -738,17 +828,22 @@ impl Island {
         }
         if resp.drag_stopped() {
             self.save_all();
+            self.persist_ui();
         }
     }
 
     fn apply(&mut self, action: Action, ctx: &egui::Context) {
         self.last_input = Instant::now();
+        // Any click in the panel means the user took it over: the reminder's
+        // 12 s auto-close no longer applies.
+        self.passive = false;
         match action {
             Action::Close => self.set_open(false, ctx),
             Action::Tab(tab) => {
                 self.tab = tab;
                 self.cfg.ui.last_tab = tab.key().to_string();
                 self.dirty_at = Some(Instant::now());
+                self.persist_ui();
             }
             Action::AddTask => {
                 let title = self.task_input.trim().to_string();
@@ -832,6 +927,10 @@ impl Island {
             if self.cfg.metrics.show {
                 wait = wait.min(Duration::from_millis(1000));
             }
+            // The hotkey marker is only read from `housekeeping`, i.e. once per
+            // frame. Waiting for the next whole second made `Alt+I` take up to
+            // a second to react; MARKER_POLL caps that at the poll interval.
+            wait = wait.min(MARKER_POLL);
             ctx.request_repaint_after(wait);
         }
     }
@@ -852,14 +951,19 @@ impl eframe::App for Island {
         }
 
         let geo = self.compute_geo();
-        self.draw(ctx, &geo);
+        // Resize *before* painting. egui clips to the current window rectangle,
+        // so a window that is still collapsed would drop the first expanded
+        // frame — the frame in which every panel button first appears.
         self.win.place(geo.window_px);
+        self.draw(ctx, &geo);
         self.win.housekeeping();
 
         // Focus loss closes the panel. The grace period covers the frame where
-        // the window is still becoming active right after a click.
+        // the window is still becoming active right after a click. A panel the
+        // island raised itself (reminder) never had focus to begin with, so it
+        // must not be closed by this rule.
         let focused = ctx.input(|i| i.viewport().focused.unwrap_or(true));
-        if self.open && !focused {
+        if self.open && !focused && !self.passive {
             let since = *self.focus_lost.get_or_insert_with(Instant::now);
             if since.elapsed() >= FOCUS_GRACE {
                 self.set_open(false, ctx);

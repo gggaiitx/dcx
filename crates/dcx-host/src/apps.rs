@@ -254,23 +254,62 @@ pub fn launch_on_demand(id: &str) -> Result<(), String> {
 }
 
 pub fn stop(id: &str) {
+    // Take the child out of the table first, so the watchdog cannot observe
+    // "still running" while we wait for it to exit.
+    let mut ours: Option<ChildEntry> = None;
     if let Ok(mut children) = CHILDREN.lock() {
         let mut i = 0;
         while i < children.len() {
             if children[i].id == id {
-                let mut c = children.remove(i);
-                let _ = c.child.kill();
-                let _ = c.child.wait();
+                ours = Some(children.remove(i));
             } else {
                 i += 1;
             }
         }
     }
-    // 用户自己双击启动的实例不在 Child 表里，用 WM_CLOSE 请它退出。
-    if let Some(entry) = find(id) {
-        close_window(entry.window_title);
+    let Some(mut entry) = ours else {
+        // 用户自己双击启动的实例不在 Child 表里，用 WM_CLOSE 请它退出。
+        if let Some(e) = find(id) {
+            close_window(e.window_title);
+        }
+        return;
+    };
+
+    // 先请它自己退出：`WM_CLOSE` → eframe 关闭窗口 → `on_exit` 落盘任务与
+    // 剪贴板。直接 `kill()` 会跳过这一步，最多丢掉 900 ms 内的改动。
+    if let Some(e) = find(id) {
+        close_window(e.window_title);
+    }
+    if !wait_exit(&mut entry.child, GRACEFUL_STOP) {
+        println!(
+            "[dcx-apps] {} did not exit in {} ms; terminating",
+            id,
+            GRACEFUL_STOP.as_millis()
+        );
+        let _ = entry.child.kill();
+        let _ = entry.child.wait();
     }
 }
+
+/// 等待子进程退出，超时返回 `false`。
+fn wait_exit(child: &mut Child, limit: Duration) -> bool {
+    let deadline = Instant::now() + limit;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return true,
+            // A child we cannot query is treated as gone: killing it is a no-op.
+            Err(_) => return true,
+            Ok(None) => {}
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(40));
+    }
+}
+
+/// 关闭前给应用多长时间自己退出（落盘 + 释放单实例互斥体）。
+const GRACEFUL_STOP: Duration = Duration::from_millis(1200);
 
 /// Set by [`stop_all`]. The watchdog checks it every 100 ms, so shutdown never
 /// has to wait a full tick and cannot start one more app after the stop.
@@ -278,9 +317,30 @@ static WATCHDOG_STOP: AtomicBool = AtomicBool::new(false);
 static WATCHDOG: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
 
 const WATCHDOG_TICK: Duration = Duration::from_secs(5);
-/// After this many consecutive launch failures the app is retried slowly
-/// instead of being respawned every 5 s for the rest of the session.
+/// After this many consecutive failures the app is retried slowly instead of
+/// being respawned every 5 s for the rest of the session.
 const MAX_FAILURES: u32 = 6;
+/// A process that lives longer than this counts as healthy. The watchdog only
+/// sees a spawn's outcome on the next tick, so this must exceed `WATCHDOG_TICK`.
+const STABLE_RUN: Duration = Duration::from_secs(20);
+
+fn backoff(failures: u32) -> Duration {
+    if failures >= MAX_FAILURES {
+        Duration::from_secs(600)
+    } else {
+        Duration::from_secs(5u64 << failures.min(5))
+    }
+}
+
+/// Per-app watchdog state.
+struct Watch {
+    /// Earliest time of the next launch attempt.
+    due: Instant,
+    /// Consecutive launch errors *and* short-lived starts.
+    failures: u32,
+    /// When we last spawned it, until the next tick tells us whether it lived.
+    spawned: Option<Instant>,
+}
 
 /// 平台启动时调用：拉起所有启用的应用，并开一条看门狗。
 pub fn spawn_enabled() {
@@ -293,10 +353,9 @@ pub fn spawn_enabled() {
         }
     }
     let handle = std::thread::spawn(|| {
-        // Per app: when the next attempt is due, and how many runs in a row
-        // failed. A crash loop used to restart every 5 s forever, forever
-        // appending to `host.log` and fighting the user's task manager.
-        let mut retry: BTreeMap<&'static str, (Instant, u32)> = BTreeMap::new();
+        // A crash loop used to restart every 5 s forever, appending to
+        // `island.log`/`host.log` and fighting the user's task manager.
+        let mut watch: BTreeMap<&'static str, Watch> = BTreeMap::new();
         loop {
             for _ in 0..(WATCHDOG_TICK.as_millis() / 100) as u32 {
                 if WATCHDOG_STOP.load(Ordering::SeqCst) {
@@ -309,38 +368,65 @@ pub fn spawn_enabled() {
             }
             for entry in REGISTRY {
                 if !is_enabled(entry.id) {
-                    retry.remove(entry.id);
+                    watch.remove(entry.id);
                     continue;
                 }
                 if is_running(entry.id) {
-                    retry.remove(entry.id);
+                    // Alive at a tick means it survived the spawn; forget the
+                    // backoff so a later crash starts counting from zero.
+                    watch.remove(entry.id);
                     continue;
                 }
                 let now = Instant::now();
-                let (due, failures) = match retry.get(entry.id) {
-                    Some(v) => *v,
-                    None => (now, 0),
-                };
-                if now < due {
+                let w = watch.entry(entry.id).or_insert(Watch {
+                    due: now,
+                    failures: 0,
+                    spawned: None,
+                });
+                // Our last spawn is gone. `launch` returned `Ok`, so this is
+                // not a launch error — it is an app that started, read its
+                // config and exited (e.g. `island.toml` disabled while
+                // `apps.toml` still says enabled). Without counting it, the
+                // watchdog respawned it every 5 s forever and `MAX_FAILURES`
+                // never applied.
+                if let Some(at) = w.spawned.take() {
+                    let lived = now.duration_since(at);
+                    if lived < STABLE_RUN {
+                        w.failures = w.failures.saturating_add(1);
+                        let delay = backoff(w.failures);
+                        w.due = now + delay;
+                        println!(
+                            "[dcx-apps] {} exited after {} ms (failure {}); retry in {} s",
+                            entry.name,
+                            lived.as_millis(),
+                            w.failures,
+                            delay.as_secs()
+                        );
+                    } else {
+                        w.failures = 0;
+                        w.due = now;
+                    }
+                }
+                if now < w.due {
                     continue;
                 }
                 match launch(entry.id) {
                     Ok(()) => {
-                        retry.remove(entry.id);
+                        // Keep `failures`: a successful spawn says nothing
+                        // about the process staying alive.
+                        w.spawned = Some(Instant::now());
+                        w.due = Instant::now() + WATCHDOG_TICK;
                     }
                     Err(e) => {
-                        let failures = failures.saturating_add(1);
-                        let delay = if failures >= MAX_FAILURES {
-                            Duration::from_secs(600)
-                        } else {
-                            Duration::from_secs(5u64 << failures.min(5))
-                        };
+                        w.failures = w.failures.saturating_add(1);
+                        let delay = backoff(w.failures);
                         println!(
-                            "[dcx-apps] cannot start {} (failure {failures}): {e}; retry in {} s",
+                            "[dcx-apps] cannot start {} (failure {}): {e}; retry in {} s",
                             entry.name,
+                            w.failures,
                             delay.as_secs()
                         );
-                        retry.insert(entry.id, (now + delay, failures));
+                        w.due = now + delay;
                     }
                 }
             }
@@ -361,7 +447,25 @@ pub fn stop_all() {
             let _ = handle.join();
         }
     }
+    // Ask every app to close first, then wait **once**. Waiting per app would
+    // make the host take N × GRACEFUL_STOP to exit.
     for entry in REGISTRY {
-        stop(entry.id);
+        close_window(entry.window_title);
+    }
+    let mut pending: Vec<ChildEntry> = match CHILDREN.lock() {
+        Ok(mut children) => core::mem::take(&mut *children),
+        Err(_) => Vec::new(),
+    };
+    let deadline = Instant::now() + GRACEFUL_STOP;
+    while !pending.is_empty() && Instant::now() < deadline {
+        pending.retain_mut(|c| !matches!(c.child.try_wait(), Ok(Some(_))));
+        if pending.is_empty() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(40));
+    }
+    for mut c in pending {
+        let _ = c.child.kill();
+        let _ = c.child.wait();
     }
 }

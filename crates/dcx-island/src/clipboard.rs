@@ -394,7 +394,7 @@ const HWND_MESSAGE: isize = -3;
 /// nothing else is guessed from the foreground window.
 fn opt_out_format() -> u32 {
     let name = dcx_win32::wide("CanIncludeInClipboardHistory");
-    unsafe { sys::register_clipboard_format(&name) }
+    sys::register_clipboard_format(&name)
 }
 
 static LISTENER_HWND: Mutex<isize> = Mutex::new(0);

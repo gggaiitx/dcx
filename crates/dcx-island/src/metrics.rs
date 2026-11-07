@@ -88,6 +88,12 @@ impl Sampler {
                             s.mem_total = total;
                             s.mem_used = total.saturating_sub(avail);
                             s.mem_percent = load as f32;
+                            // A one-off failure must not pin the panel's error
+                            // line for the rest of the session.
+                            let mut slot = err2.lock().unwrap_or_else(|e| e.into_inner());
+                            if slot.is_some() {
+                                *slot = None;
+                            }
                         }
                         None => *err2.lock().unwrap_or_else(|e| e.into_inner()) =
                             Some("无法读取内存状态".to_string()),
