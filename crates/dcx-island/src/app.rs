@@ -192,6 +192,9 @@ struct Island {
 
     toast: Option<(String, Instant)>,
     reminder: Option<(String, Instant)>,
+    /// Last fullscreen-DND answer, so the transition is traced once instead
+    /// of every second.
+    dnd: bool,
 }
 
 impl Island {
@@ -265,6 +268,7 @@ impl Island {
             dirty_at: None,
             toast: None,
             reminder: None,
+            dnd: false,
             cfg,
         };
         boxed.notifier.seed_states(&mut boxed.inbox, &boxed.cfg);
@@ -338,7 +342,27 @@ impl Island {
         }
         // Reminders: the store marks them fired, so this is safe to call every
         // second and survives a restart without a second alert.
-        let due = self.tasks.take_due(&self.today, c.secs_of_day());
+        //
+        // Fullscreen DND skips the *call*, not the alert: `take_due` marks
+        // `fired_on` before returning, so taking a reminder and then muting it
+        // would lose it permanently. Deferred reminders stay due; on exit the
+        // store's own `STALE_AFTER` rule decides replay vs drop. This is
+        // deliberately independent of `hide_fullscreen` (visibility) and of
+        // `self.parked`, which that switch gates.
+        let dnd = self.cfg.behavior.quiet_fullscreen && win::shell_busy();
+        if dnd != self.dnd {
+            self.dnd = dnd;
+            win::trace(if dnd {
+                "fullscreen DND on: reminders deferred"
+            } else {
+                "fullscreen DND off: reminders resume"
+            });
+        }
+        let due = if dnd {
+            Vec::new()
+        } else {
+            self.tasks.take_due(&self.today, c.secs_of_day())
+        };
         if let Some(first) = due.first() {
             let text = dispatch::reminder_text(&first.title, first.at);
             self.reminder = Some((first.title.clone(), Instant::now()));

@@ -310,6 +310,14 @@ fn shell_says_no_popups() -> Option<bool> {
     Some(matches!(state, 2 | 3 | 4 | 7))
 }
 
+/// The shell's "do not disturb" answer, for the reminder path. A failed query
+/// reads as "not busy": reminders must not stop working because one HRESULT
+/// came back negative. Independent of `hide_fullscreen` — that switch owns
+/// visibility, this owns whether a due reminder fires at all.
+pub fn shell_busy() -> bool {
+    shell_says_no_popups() == Some(true)
+}
+
 /// The island's only OS window handle, discovered once.
 pub struct Window {
     pub hwnd: isize,

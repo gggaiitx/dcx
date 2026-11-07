@@ -107,6 +107,12 @@ pub struct BehaviorCfg {
     /// Hide the whole island while a full-screen window is foreground (video,
     /// games, slideshows). Without this the capsule sits on top of them.
     pub hide_fullscreen: bool,
+    /// Defer due reminders while the shell reports a full-screen app
+    /// (QUNS_BUSY/D3D/presentation). Independent of `hide_fullscreen`: this
+    /// one is about sound and flash, not visibility. The store marks a
+    /// reminder fired only when it is actually taken, so deferring here
+    /// loses nothing — `STALE_AFTER` decides replay vs drop on exit.
+    pub quiet_fullscreen: bool,
     /// Capsule width in points; the panel is wider and anchored to its centre.
     pub capsule_width: f32,
     pub capsule_height: f32,
@@ -257,6 +263,7 @@ impl Default for BehaviorCfg {
         BehaviorCfg {
             auto_collapse_secs: 0,
             hide_fullscreen: true,
+            quiet_fullscreen: true,
             capsule_width: 300.0,
             capsule_height: 34.0,
             opacity: 0.94,

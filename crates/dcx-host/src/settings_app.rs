@@ -2331,6 +2331,19 @@ impl SettingsApp {
                 },
             );
             iv.behavior.hide_fullscreen = hide_fs;
+            row_separator(ui, p);
+            let mut quiet_fs = iv.behavior.quiet_fullscreen;
+            row_tight(
+                ui,
+                p,
+                RowIcon::Desktop,
+                "全屏时暂缓提醒",
+                "游戏、视频、演示期间到点任务不响不闪；退出全屏后按既有过期规则补发或丢弃",
+                |ui| {
+                    switch(ui, p, &mut quiet_fs);
+                },
+            );
+            iv.behavior.quiet_fullscreen = quiet_fs;
         });
 
         ui.add_space(18.0);
