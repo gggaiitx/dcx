@@ -36,7 +36,7 @@ use dcx_island_config::Config;
 
 use crate::ui::panel::{Action, PanelState, TextureCache};
 use crate::ui::{theme, Tab};
-use crate::{api, clipboard, clock, dispatch, inbox, library, media, metrics, notify, sys, tasks, win};
+use crate::{api, clipboard, clock, dispatch, inbox, launcher, library, media, metrics, notify, search, sys, tasks, win};
 
 /// Must equal `AppEntry.window_title` in `dcx-host/src/apps.rs` byte for byte:
 /// the host uses `FindWindowW` to stop a manually started instance and to
@@ -53,6 +53,8 @@ const FS_POLL: Duration = Duration::from_millis(700);
 const SAVE_DEBOUNCE: Duration = Duration::from_millis(900);
 const FOCUS_GRACE: Duration = Duration::from_millis(260);
 const MARKER_POLL: Duration = Duration::from_millis(220);
+/// Quiet time after the last keystroke before the search child runs.
+const SEARCH_DEBOUNCE: Duration = Duration::from_millis(300);
 
 static STARTED: AtomicBool = AtomicBool::new(false);
 
@@ -193,6 +195,18 @@ struct Island {
     drop_hover: bool,
     /// Result of the last absorb worker; `None` when nothing is running.
     absorb_rx: Option<Receiver<Absorbed>>,
+    apps: launcher::Launcher,
+    search_query: String,
+    search_scroll: f32,
+    /// Last keystroke; the query is launched once this is 300 ms old.
+    search_at: Option<Instant>,
+    /// Query in flight, and the receiver its answer will arrive on.
+    search_pending: Option<String>,
+    search_rx: Option<Receiver<search::Outcome>>,
+    /// Query the current `search_hits`/`search_error` answer.
+    search_done_for: String,
+    search_hits: Vec<search::FileHit>,
+    search_error: Option<String>,
 
     textures: TextureCache,
     tab: Tab,
@@ -287,6 +301,15 @@ impl Island {
             library_snap: None,
             drop_hover: false,
             absorb_rx: None,
+            apps: launcher::start(),
+            search_query: String::new(),
+            search_scroll: 0.0,
+            search_at: None,
+            search_pending: None,
+            search_rx: None,
+            search_done_for: String::new(),
+            search_hits: Vec::new(),
+            search_error: None,
             textures: TextureCache::new(),
             tab: Tab::from_key(&cfg.ui.last_tab),
             task_input: String::new(),
@@ -338,6 +361,10 @@ impl Island {
             self.drain_media(ctx);
             self.drain_library(ctx);
             self.drain_absorb(ctx);
+            if self.apps.poll() {
+                ctx.request_repaint();
+            }
+            self.poll_search(ctx);
             if self.notifier.poll(&mut self.inbox) {
                 ctx.request_repaint();
             }
@@ -702,6 +729,42 @@ impl Island {
         });
     }
 
+    /// Debounce and delivery for the search tab. Results are accepted only for
+    /// the query that asked for them, so a slow answer from two keystrokes ago
+    /// cannot replace what is on screen now.
+    fn poll_search(&mut self, ctx: &egui::Context) {
+        let mut done = None;
+        if let Some(rx) = &self.search_rx {
+            if let Ok(outcome) = rx.try_recv() {
+                done = Some(outcome);
+            }
+        }
+        if let Some(outcome) = done {
+            self.search_rx = None;
+            if self.search_pending.as_deref() == Some(outcome.query.as_str()) {
+                self.search_pending = None;
+                self.search_done_for = outcome.query;
+                self.search_hits = outcome.hits;
+                self.search_error = outcome.error;
+                ctx.request_repaint();
+            }
+        }
+        if self.search_pending.is_some() {
+            return;
+        }
+        let Some(at) = self.search_at else { return };
+        if at.elapsed() < SEARCH_DEBOUNCE {
+            return;
+        }
+        self.search_at = None;
+        let query = self.search_query.trim().to_string();
+        if query.chars().count() < 2 || self.search_done_for == query {
+            return;
+        }
+        self.search_pending = Some(query.clone());
+        self.search_rx = Some(search::start(query, 12));
+    }
+
     fn poll_send(&mut self) {
         let Some(rx) = &self.send_rx else { return };
         match rx.try_recv() {
@@ -1037,6 +1100,10 @@ impl Island {
                                     .layout(egui::Layout::top_down(egui::Align::Min)),
                             );
                             child.set_opacity(anim);
+                            let search_ready = {
+                                let q = self.search_query.trim();
+                                q.chars().count() >= 2 && self.search_done_for == q
+                            };
                             let mut st = PanelState {
                                 tab: self.tab,
                                 tasks: &mut self.tasks,
@@ -1060,6 +1127,16 @@ impl Island {
                                 media_pos: self.now_playing.position(),
                                 media_cover: self.now_playing.cover(),
                                 library: self.library_snap,
+                                apps: self.apps.all(),
+                                search_query: &mut self.search_query,
+                                search_scroll: &mut self.search_scroll,
+                                search_hits: &self.search_hits,
+                                search_ready,
+                                search_error: if search_ready {
+                                    self.search_error.as_deref()
+                                } else {
+                                    None
+                                },
                                 textures: &mut self.textures,
                                 toast: self.toast.as_ref().map(|(t, _)| t.as_str()),
                                 dispatch_note: self.send_note.as_ref().map(|(t, _)| t.as_str()),
@@ -1455,6 +1532,30 @@ impl Island {
                 let dir = dcx_organizer::Config::load().library_dir();
                 if let Err(e) = std::process::Command::new("explorer.exe").arg(&dir).spawn() {
                     self.toast = Some((format!("打开收纳库失败：{e}"), Instant::now()));
+                }
+            }
+            Action::SearchEdited => {
+                self.search_at = Some(Instant::now());
+                if self.search_query.trim().chars().count() < 2 {
+                    self.search_hits.clear();
+                    self.search_error = None;
+                    self.search_done_for.clear();
+                    self.search_pending = None;
+                    self.search_rx = None;
+                }
+            }
+            Action::OpenPath(path) => {
+                if let Err(e) = launcher::open(std::path::Path::new(&path)) {
+                    self.toast = Some((e, Instant::now()));
+                } else {
+                    // The launched app has the foreground now; leaving the
+                    // topmost island open over it serves no one.
+                    self.set_open(false, ctx);
+                }
+            }
+            Action::RevealPath(path) => {
+                if let Err(e) = launcher::reveal(std::path::Path::new(&path)) {
+                    self.toast = Some((e, Instant::now()));
                 }
             }
         }

@@ -244,6 +244,8 @@ pub enum Glyph {
     Next,
     /// Arrow into a tray — "收进盒子".
     Collect,
+    /// Magnifier — the search tab.
+    Search,
 }
 
 pub fn glyph(ui: &Ui, center: Pos2, size: f32, which: Glyph, color: Color32) {
@@ -529,6 +531,17 @@ fn draw_glyph(
             line(c + Vec2::new(-s * 0.8, s * 0.55), c + Vec2::new(-s * 0.8, s * 0.85));
             line(c + Vec2::new(s * 0.8, s * 0.55), c + Vec2::new(s * 0.8, s * 0.85));
             line(c + Vec2::new(-s * 0.8, s * 0.85), c + Vec2::new(s * 0.8, s * 0.85));
+        }
+        Glyph::Search => {
+            p.add(Shape::circle_stroke(
+                c + Vec2::new(-s * 0.15, -s * 0.15),
+                s * 0.6,
+                stroke,
+            ));
+            line(
+                c + Vec2::new(s * 0.3, s * 0.3),
+                c + Vec2::new(s * 0.85, s * 0.85),
+            );
         }
     }
 }

@@ -16,11 +16,20 @@ pub enum Tab {
     Perf,
     /// Cards from the local push API.
     Live,
+    /// Start-menu launcher + headless file search.
+    Search,
 }
 
 impl Tab {
-    pub fn all() -> [Tab; 5] {
-        [Tab::Tasks, Tab::Clip, Tab::Inbox, Tab::Perf, Tab::Live]
+    pub fn all() -> [Tab; 6] {
+        [
+            Tab::Tasks,
+            Tab::Clip,
+            Tab::Inbox,
+            Tab::Perf,
+            Tab::Live,
+            Tab::Search,
+        ]
     }
 
     pub fn label(self) -> &'static str {
@@ -30,6 +39,7 @@ impl Tab {
             Tab::Inbox => "消息",
             Tab::Perf => "性能",
             Tab::Live => "动态",
+            Tab::Search => "搜索",
         }
     }
 
@@ -40,6 +50,7 @@ impl Tab {
             Tab::Inbox => "inbox",
             Tab::Perf => "perf",
             Tab::Live => "live",
+            Tab::Search => "search",
         }
     }
 
@@ -49,6 +60,7 @@ impl Tab {
             "inbox" => Tab::Inbox,
             "perf" => Tab::Perf,
             "live" => Tab::Live,
+            "search" => Tab::Search,
             _ => Tab::Tasks,
         }
     }
@@ -60,6 +72,7 @@ impl Tab {
             Tab::Inbox => Glyph::Inbox,
             Tab::Perf => Glyph::Gauge,
             Tab::Live => Glyph::Pulse,
+            Tab::Search => Glyph::Search,
         }
     }
 }

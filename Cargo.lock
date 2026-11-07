@@ -1005,6 +1005,7 @@ dependencies = [
  "notify",
  "regex",
  "serde",
+ "serde_json",
  "toml",
  "winit",
 ]

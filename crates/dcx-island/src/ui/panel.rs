@@ -75,6 +75,14 @@ pub struct PanelState<'a> {
     pub media_cover: Option<&'a egui::TextureHandle>,
     /// Desktop/library counts from the organizer; absent until the first scan.
     pub library: Option<crate::library::Snapshot>,
+    /// Start-menu apps, unfiltered; the tab filters by its own query.
+    pub apps: &'a [crate::launcher::AppEntry],
+    pub search_query: &'a mut String,
+    pub search_scroll: &'a mut f32,
+    /// File results; meaningful only when `search_ready`.
+    pub search_hits: &'a [crate::search::FileHit],
+    pub search_ready: bool,
+    pub search_error: Option<&'a str>,
     pub textures: &'a mut TextureCache,
     pub toast: Option<&'a str>,
     pub dispatch_note: Option<&'a str>,
@@ -108,6 +116,12 @@ pub enum Action {
     ClipToBox(u64),
     /// Open the organizer's library root in Explorer.
     OpenLibrary,
+    /// Open a file or shortcut from the search tab.
+    OpenPath(String),
+    /// Show a search result in Explorer.
+    RevealPath(String),
+    /// The search field changed; the app debounces the query.
+    SearchEdited,
 }
 
 /// `merged` means the caller already painted one card over the whole window
@@ -182,6 +196,7 @@ pub fn draw(
         Tab::Inbox => inbox_tab(ui, content, p, st, actions),
         Tab::Perf => perf_tab(ui, content, p, st, actions),
         Tab::Live => live_tab(ui, content, p, st, actions),
+        Tab::Search => search_tab(ui, content, p, st, actions),
     }
 
     // Resize grip, bottom-right, outside the content rectangle.
@@ -436,6 +451,7 @@ fn draw_footer(ui: &mut egui::Ui, rect: Rect, p: &Palette, st: &PanelState<'_>) 
         Tab::Inbox => "只显示提醒，不读取聊天内容",
         Tab::Perf => "1 秒采样 · 平滑显示",
         Tab::Live => "脚本推送的临时卡片 · 到期自动消失",
+        Tab::Search => "Enter 打开首项 · Ctrl+Enter 定位",
     };
     if let Some(toast) = st.toast {
         widgets::text(
@@ -1441,6 +1457,218 @@ fn live_tab(
         y += h + GAP;
     }
     scroll_bar(ui, rect, p, content_h, offset);
+    ui.set_clip_rect(prev_clip);
+}
+
+// ---------------------------------------------------------------------------
+// Search / launcher
+// ---------------------------------------------------------------------------
+
+fn search_tab(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    p: &Palette,
+    st: &mut PanelState<'_>,
+    actions: &mut Vec<Action>,
+) {
+    let search_h = 30.0;
+    let search = Rect::from_min_size(rect.min, Vec2::new(rect.width(), search_h));
+    widgets::round_rect(ui, search, 8.0, p.surface_alt, Stroke::new(1.0_f32, p.divider));
+    let field = search.shrink2(Vec2::new(8.0, 3.0));
+    let resp = ui.put(
+        field,
+        egui::TextEdit::singleline(st.search_query)
+            .hint_text("搜索应用与文件")
+            .frame(false)
+            .text_color(p.text)
+            .margin(egui::Margin::symmetric(2.0, 3.0)),
+    );
+    if resp.changed() {
+        actions.push(Action::SearchEdited);
+    }
+
+    let query = st.search_query.trim().to_string();
+    let list = Rect::from_min_max(Pos2::new(rect.left(), search.bottom() + 8.0), rect.max);
+    if query.chars().count() < 2 {
+        empty_state(
+            ui,
+            list,
+            p,
+            "输入至少 2 个字符",
+            "同时搜索开始菜单应用与本地文件",
+        );
+        return;
+    }
+
+    let apps: Vec<&crate::launcher::AppEntry> = crate::launcher::matches(st.apps, &query, 5);
+    let files: Vec<&crate::search::FileHit> = if st.search_ready {
+        st.search_hits.iter().take(8).collect()
+    } else {
+        Vec::new()
+    };
+
+    // Enter opens the first row; Ctrl+Enter reveals it. Handled while the
+    // field still owns the focus, then focus is handed straight back so the
+    // user can keep narrowing the query.
+    if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+        let reveal = ui.input(|i| i.modifiers.command);
+        let first = apps
+            .first()
+            .map(|a| a.path.to_string_lossy().to_string())
+            .or_else(|| files.first().map(|f| f.path.clone()));
+        if let Some(path) = first {
+            actions.push(if reveal {
+                Action::RevealPath(path)
+            } else {
+                Action::OpenPath(path)
+            });
+        }
+        resp.request_focus();
+    }
+
+    enum Row<'a> {
+        Caption(&'static str),
+        App(&'a crate::launcher::AppEntry),
+        File(&'a crate::search::FileHit),
+        Note(&'a str),
+    }
+    let mut rows: Vec<Row> = Vec::new();
+    if !apps.is_empty() {
+        rows.push(Row::Caption("应用"));
+        rows.extend(apps.iter().map(|a| Row::App(a)));
+    }
+    match (st.search_ready, st.search_error) {
+        (false, _) => rows.push(Row::Note("搜索文件…")),
+        (true, Some(err)) => rows.push(Row::Note(err)),
+        (true, None) if files.is_empty() && apps.is_empty() => {
+            rows.push(Row::Note("没有匹配的应用或文件"))
+        }
+        (true, None) if files.is_empty() => {}
+        (true, None) => {
+            rows.push(Row::Caption("文件"));
+            rows.extend(files.iter().map(|f| Row::File(f)));
+        }
+    }
+
+    let height_of = |row: &Row| -> f32 {
+        match row {
+            Row::Caption(_) => 16.0,
+            Row::App(_) => 26.0,
+            Row::File(_) => 34.0,
+            Row::Note(_) => 20.0,
+        }
+    };
+    let content_h: f32 = rows.iter().map(height_of).sum();
+    let offset = scroll(ui, list, content_h, st.search_scroll);
+    let prev_clip = ui.clip_rect();
+    ui.set_clip_rect(list);
+    let mut y = list.top() - offset;
+    for row in &rows {
+        let h = height_of(row);
+        if y + h < list.top() {
+            y += h;
+            continue;
+        }
+        if y > list.bottom() {
+            break;
+        }
+        let r = Rect::from_min_size(Pos2::new(list.left(), y), Vec2::new(list.width(), h));
+        let mid = r.center().y;
+        match row {
+            Row::Caption(text) => {
+                widgets::text(
+                    ui,
+                    Pos2::new(r.left() + 1.0, mid),
+                    Align2::LEFT_CENTER,
+                    text,
+                    9.0,
+                    p.text_faint,
+                );
+            }
+            Row::Note(text) => {
+                widgets::text(
+                    ui,
+                    Pos2::new(r.left() + 1.0, mid),
+                    Align2::LEFT_CENTER,
+                    text,
+                    10.5,
+                    p.text_faint,
+                );
+            }            Row::App(app) => {
+                let hovered = ui.rect_contains_pointer(r);
+                if hovered {
+                    widgets::round_rect(
+                        ui,
+                        r.shrink2(Vec2::new(0.0, 1.0)),
+                        7.0,
+                        with_alpha(p.surface_alt, 0.7),
+                        Stroke::NONE,
+                    );
+                }
+                widgets::text(
+                    ui,
+                    Pos2::new(r.left() + 1.0, mid),
+                    Align2::LEFT_CENTER,
+                    &fit_one_line(ui, &app.name, 12.0, r.width() - 6.0),
+                    12.0,
+                    p.text,
+                );
+                let resp = ui.interact(
+                    r,
+                    ui.id().with(("search-app", &app.path)),
+                    egui::Sense::click(),
+                );
+                if resp.clicked() {
+                    actions.push(Action::OpenPath(app.path.to_string_lossy().to_string()));
+                }
+                if resp.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                resp.on_hover_text(app.path.display().to_string());
+            }            Row::File(file) => {
+                let hovered = ui.rect_contains_pointer(r);
+                if hovered {
+                    widgets::round_rect(
+                        ui,
+                        r.shrink2(Vec2::new(0.0, 1.0)),
+                        7.0,
+                        with_alpha(p.surface_alt, 0.7),
+                        Stroke::NONE,
+                    );
+                }
+                widgets::text(
+                    ui,
+                    Pos2::new(r.left() + 1.0, r.top() + 4.0),
+                    Align2::LEFT_TOP,
+                    &fit_one_line(ui, &file.name, 12.0, r.width() - 6.0),
+                    12.0,
+                    p.text,
+                );
+                widgets::text(
+                    ui,
+                    Pos2::new(r.left() + 1.0, r.top() + 19.0),
+                    Align2::LEFT_TOP,
+                    &fit_one_line(ui, &file.dir, 9.0, r.width() - 6.0),
+                    9.0,
+                    p.text_faint,
+                );
+                let resp = ui.interact(
+                    r,
+                    ui.id().with(("search-file", &file.path)),
+                    egui::Sense::click(),
+                );
+                if resp.clicked() {
+                    actions.push(Action::OpenPath(file.path.clone()));
+                }
+                if resp.hovered() {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                resp.on_hover_text(file.path.clone());
+            }
+        }
+        y += h;
+    }
+    scroll_bar(ui, list, p, content_h, offset);
     ui.set_clip_rect(prev_clip);
 }
 

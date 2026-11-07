@@ -234,7 +234,7 @@ impl Default for MediaCfg {
 pub struct UiCfg {
     pub panel_width: f32,
     pub panel_height: f32,
-    /// Last expanded tab: "tasks" | "clip" | "inbox" | "perf" | "live".
+    /// Last expanded tab: "tasks" | "clip" | "inbox" | "perf" | "live" | "search".
     pub last_tab: String,
     /// Pin the island to a monitor: empty = primary, otherwise a device name
     /// such as `\\.\DISPLAY2`.
@@ -428,7 +428,7 @@ impl Config {
         }
         if !matches!(
             self.ui.last_tab.as_str(),
-            "tasks" | "clip" | "inbox" | "perf" | "live"
+            "tasks" | "clip" | "inbox" | "perf" | "live" | "search"
         ) {
             self.ui.last_tab = "tasks".to_string();
         }

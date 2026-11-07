@@ -22,6 +22,7 @@
 mod app;
 mod config;
 mod file_icon;
+mod headless;
 mod index;
 mod model;
 mod query;
@@ -81,8 +82,15 @@ fn main() {
     if matches!(args.first().map(String::as_str), Some("--help") | Some("-h")) {
         println!("dcx-search [--help]");
         println!("  (no option) : search window (normally started by dcx-host)");
+        println!("  --query <词> [--limit N] --json : one-shot search against the index snapshot");
         println!("  settings are edited in dcx-host.exe --settings (桌面整理)");
         return;
+    }
+
+    // Before the singleton check: the island calls this while the search
+    // window may already be running, and it wants an answer, not a raise.
+    if args.first().map(String::as_str) == Some("--query") {
+        std::process::exit(headless::run(&args));
     }
 
     if already_running() {
