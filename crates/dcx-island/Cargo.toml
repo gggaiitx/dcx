@@ -22,8 +22,9 @@ regex = "1"
 # by hand would need a 200 KB table.
 encoding_rs = "0.8"
 # PNG only: clipboard thumbnails. BMP would be smaller code but egui cannot
-# decode it and the extra dependency weight is a few hundred KB.
-image = { version = "0.25", default-features = false, features = ["png"] }
+# decode it and the extra dependency weight is a few hundred KB. JPEG is for
+# cover art from the media session, which players publish as JPEG.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 # IMAP/SMTP over SChannel on Windows: no OpenSSL, no vendored build.
 native-tls = "0.2"
 # WinRT notification listener (QQ). Hand-writing the WinRT ABI for
@@ -39,6 +40,9 @@ windows = { version = "0.62", features = [
     # `RoInitialize` from windows-link (raw-dylib) needs no SDK import library,
     # so the workspace still builds without vcvars / Windows SDK LIB paths.
     "Win32_System_WinRT",
+    # GSMTC now-playing row; thumbnail bytes come through Storage streams.
+    "Media_Control",
+    "Storage_Streams",
 ] }
 
 egui = "0.29"

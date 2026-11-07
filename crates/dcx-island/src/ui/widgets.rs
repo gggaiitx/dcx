@@ -237,6 +237,11 @@ pub enum Glyph {
     Mail,
     /// Heartbeat / activity trace — the "live" push-card tab.
     Pulse,
+    /// Transport keys for the now-playing row.
+    Prev,
+    Play,
+    Pause,
+    Next,
 }
 
 pub fn glyph(ui: &Ui, center: Pos2, size: f32, which: Glyph, color: Color32) {
@@ -464,6 +469,53 @@ fn draw_glyph(
                 c + Vec2::new(s, 0.0),
             ];
             p.add(Shape::line(pts.to_vec(), stroke));
+        }
+        // Transport keys: filled triangles, because an outlined triangle at
+        // 12 pt is a sliver of ink that reads as noise next to the stroked
+        // icons elsewhere in the panel.
+        Glyph::Prev => {
+            line(c + Vec2::new(-s * 0.62, -s * 0.62), c + Vec2::new(-s * 0.62, s * 0.62));
+            p.add(Shape::convex_polygon(
+                vec![
+                    c + Vec2::new(s * 0.72, -s * 0.62),
+                    c + Vec2::new(-s * 0.42, 0.0),
+                    c + Vec2::new(s * 0.72, s * 0.62),
+                ],
+                color,
+                Stroke::NONE,
+            ));
+        }
+        Glyph::Next => {
+            line(c + Vec2::new(s * 0.62, -s * 0.62), c + Vec2::new(s * 0.62, s * 0.62));
+            p.add(Shape::convex_polygon(
+                vec![
+                    c + Vec2::new(-s * 0.72, -s * 0.62),
+                    c + Vec2::new(s * 0.42, 0.0),
+                    c + Vec2::new(-s * 0.72, s * 0.62),
+                ],
+                color,
+                Stroke::NONE,
+            ));
+        }
+        Glyph::Play => {
+            p.add(Shape::convex_polygon(
+                vec![
+                    c + Vec2::new(-s * 0.5, -s * 0.75),
+                    c + Vec2::new(s * 0.78, 0.0),
+                    c + Vec2::new(-s * 0.5, s * 0.75),
+                ],
+                color,
+                Stroke::NONE,
+            ));
+        }
+        Glyph::Pause => {
+            for x in [-s * 0.33, s * 0.33] {
+                p.add(Shape::rect_filled(
+                    Rect::from_center_size(c + Vec2::new(x, 0.0), Vec2::new(s * 0.34, s * 1.5)),
+                    1.0,
+                    color,
+                ));
+            }
         }
     }
 }

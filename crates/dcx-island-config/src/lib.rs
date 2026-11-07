@@ -72,6 +72,7 @@ pub struct Config {
     pub mail: MailCfg,
     pub dispatch: DispatchCfg,
     pub api: ApiCfg,
+    pub media: MediaCfg,
     pub ui: UiCfg,
 }
 
@@ -208,6 +209,28 @@ pub struct ApiCfg {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
+pub struct MediaCfg {
+    /// Read the system media session (GSMTC) for the now-playing row.
+    pub enabled: bool,
+    /// Show the track title in the capsule while playing, when no reminder
+    /// and no live card is asking for that space.
+    pub capsule: bool,
+}
+
+impl Default for MediaCfg {
+    fn default() -> Self {
+        // Both on: the row only appears while something is playing, and the
+        // capsule title loses to reminders and cards, so the default costs a
+        // quiet desktop nothing.
+        MediaCfg {
+            enabled: true,
+            capsule: true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct UiCfg {
     pub panel_width: f32,
     pub panel_height: f32,
@@ -240,6 +263,7 @@ impl Default for Config {
             mail: MailCfg::default(),
             dispatch: DispatchCfg::default(),
             api: ApiCfg::default(),
+            media: MediaCfg::default(),
             ui: UiCfg::default(),
         }
     }

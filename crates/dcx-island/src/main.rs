@@ -24,6 +24,7 @@ mod clipboard;
 mod clock;
 mod dispatch;
 mod inbox;
+mod media;
 mod metrics;
 mod notify;
 mod sys;

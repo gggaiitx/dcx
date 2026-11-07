@@ -68,6 +68,11 @@ pub struct PanelState<'a> {
     pub live_scroll: &'a mut f32,
     /// Cards from the local push API; read-only here, the UI thread owns them.
     pub cards: &'a crate::api::PushCards,
+    /// Now-playing snapshot, its locally interpolated position, and the cover
+    /// texture built by the UI thread. All three appear and vanish together.
+    pub media: Option<&'a crate::media::Snapshot>,
+    pub media_pos: f64,
+    pub media_cover: Option<&'a egui::TextureHandle>,
     pub textures: &'a mut TextureCache,
     pub toast: Option<&'a str>,
     pub dispatch_note: Option<&'a str>,
@@ -95,6 +100,8 @@ pub enum Action {
     RunCard(String),
     /// Dismiss a push card before its TTL expires.
     DismissCard(String),
+    /// Transport key for the now-playing row.
+    MediaCmd(crate::media::Cmd),
 }
 
 /// `merged` means the caller already painted one card over the whole window
@@ -146,10 +153,20 @@ pub fn draw(
     draw_footer(ui, footer, p, st);
 
     // -- content -----------------------------------------------------------
-    let content = Rect::from_min_max(
+    let mut content = Rect::from_min_max(
         Pos2::new(rect.left() + pad, tabbar.bottom() + 6.0),
         Pos2::new(rect.right() - pad, footer.top() - 4.0),
     );
+    // The now-playing row sits above everything the tabs draw, on every tab:
+    // it belongs to the desktop, not to a list. Only while a session exists.
+    if let Some(snap) = st.media {
+        let row = Rect::from_min_size(content.min, Vec2::new(content.width(), MEDIA_ROW_H));
+        draw_media_row(ui, row, p, snap, st.media_pos, st.media_cover, actions);
+        content = Rect::from_min_max(
+            Pos2::new(content.left(), row.bottom() + 8.0),
+            content.max,
+        );
+    }
     if content.height() <= 8.0 {
         return;
     }
@@ -170,6 +187,156 @@ pub fn draw(
         ),
         p,
     );
+}
+
+// ---------------------------------------------------------------------------
+// Now playing
+// ---------------------------------------------------------------------------
+
+/// 34 pt cover + 2 × 6 pt pad.
+const MEDIA_ROW_H: f32 = 46.0;
+
+fn draw_media_row(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    p: &Palette,
+    snap: &crate::media::Snapshot,
+    pos: f64,
+    cover: Option<&egui::TextureHandle>,
+    actions: &mut Vec<Action>,
+) {
+    widgets::round_rect(ui, rect, 9.0, with_alpha(p.surface_alt, 0.55), Stroke::NONE);
+    let pad = 6.0;
+    let inner = rect.shrink2(Vec2::new(pad, pad));
+
+    let cov = Rect::from_min_size(inner.min, Vec2::splat(inner.height()));
+    match cover {
+        Some(tex) => {
+            ui.put(
+                cov,
+                egui::Image::new(tex)
+                    .fit_to_exact_size(cov.size())
+                    .rounding(6.0),
+            );
+        }
+        None => {
+            widgets::round_rect(ui, cov, 6.0, with_alpha(p.surface, 0.9), Stroke::NONE);
+            widgets::glyph(ui, cov.center(), 14.0, Glyph::Pulse, p.text_faint);
+        }
+    }
+
+    // Transport keys, right-aligned. Disabled keys still occupy their slot:
+    // a row that reshuffles per player would move the buttons under the
+    // pointer.
+    let btn = 24.0;
+    let gap = 2.0;
+    let mut bx = inner.right() - btn * 3.0 - gap * 2.0;
+    let mut button = |ui: &mut egui::Ui, glyph: Glyph, enabled: bool| -> bool {
+        let r = Rect::from_center_size(Pos2::new(bx + btn * 0.5, rect.center().y), Vec2::splat(btn));
+        bx += btn + gap;
+        if enabled {
+            widgets::icon_button(ui, r, glyph, p, false).clicked()
+        } else {
+            widgets::glyph(ui, r.center(), 12.0, glyph, with_alpha(p.text_faint, 0.45));
+            false
+        }
+    };
+    if button(ui, Glyph::Prev, snap.can_prev) {
+        actions.push(Action::MediaCmd(crate::media::Cmd::Prev));
+    }
+    let toggle = if snap.playing { Glyph::Pause } else { Glyph::Play };
+    if button(ui, toggle, snap.can_toggle) {
+        actions.push(Action::MediaCmd(crate::media::Cmd::Toggle));
+    }
+    if button(ui, Glyph::Next, snap.can_next) {
+        actions.push(Action::MediaCmd(crate::media::Cmd::Next));
+    }
+
+    let lh_title = ui.fonts(|f| f.row_height(&FontId::proportional(12.0))).max(15.0);
+    let lh_meta = ui.fonts(|f| f.row_height(&FontId::proportional(9.5))).max(12.0);
+    let text_left = cov.right() + 8.0;
+    let text_right = inner.right() - btn * 3.0 - gap * 2.0 - 8.0;
+    let title_w = (text_right - text_left).max(20.0);
+    let text_top = rect.center().y - (lh_title + lh_meta) * 0.5 + 0.5;
+
+    let title = if snap.title.is_empty() {
+        "未知曲目"
+    } else {
+        snap.title.as_str()
+    };
+    widgets::text(
+        ui,
+        Pos2::new(text_left, text_top),
+        Align2::LEFT_TOP,
+        &fit_one_line(ui, title, 12.0, title_w),
+        12.0,
+        p.text,
+    );
+
+    let mut meta = snap.artist.clone();
+    if !snap.album.is_empty() && snap.album != snap.title {
+        if !meta.is_empty() {
+            meta.push_str(" · ");
+        }
+        meta.push_str(&snap.album);
+    }
+    let time = if snap.duration > 0.0 {
+        format!("{} / {}", fmt_time(pos), fmt_time(snap.duration))
+    } else {
+        String::new()
+    };
+    let time_w = if time.is_empty() {
+        0.0
+    } else {
+        ui.fonts(|f| {
+            f.layout_no_wrap(time.clone(), FontId::proportional(9.5), Color32::WHITE)
+                .size()
+                .x
+        })
+    };
+    widgets::text(
+        ui,
+        Pos2::new(text_left, text_top + lh_title),
+        Align2::LEFT_TOP,
+        &fit_one_line(ui, &meta, 9.5, (title_w - time_w - 8.0).max(10.0)),
+        9.5,
+        p.text_faint,
+    );
+    if !time.is_empty() {
+        widgets::text(
+            ui,
+            Pos2::new(text_right, text_top + lh_title + lh_meta * 0.5),
+            Align2::RIGHT_CENTER,
+            &time,
+            9.5,
+            p.text_faint,
+        );
+    }
+
+    // Progress hairline along the plate's bottom edge — the one place the
+    // interpolated position shows without competing with the title.
+    if snap.duration > 0.0 {
+        let track = Rect::from_min_max(
+            Pos2::new(inner.left(), rect.bottom() - 3.5),
+            Pos2::new(inner.right(), rect.bottom() - 1.5),
+        );
+        widgets::round_rect(ui, track, 1.0, with_alpha(p.text_faint, 0.3), Stroke::NONE);
+        let frac = (pos / snap.duration).clamp(0.0, 1.0) as f32;
+        if frac > 0.001 {
+            widgets::round_rect(
+                ui,
+                Rect::from_min_size(track.min, Vec2::new(track.width() * frac, track.height())),
+                1.0,
+                p.accent,
+                Stroke::NONE,
+            );
+        }
+    }
+}
+
+fn fmt_time(secs: f64) -> String {
+    let s = secs.max(0.0) as u64;
+    format!("{}:{:02}", s / 60, s % 60)
 }
 
 fn draw_tabs(

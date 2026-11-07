@@ -35,7 +35,7 @@ use dcx_island_config::Config;
 
 use crate::ui::panel::{Action, PanelState, TextureCache};
 use crate::ui::{theme, Tab};
-use crate::{api, clipboard, clock, dispatch, inbox, metrics, notify, sys, tasks, win};
+use crate::{api, clipboard, clock, dispatch, inbox, media, metrics, notify, sys, tasks, win};
 
 /// Must equal `AppEntry.window_title` in `dcx-host/src/apps.rs` byte for byte:
 /// the host uses `FindWindowW` to stop a manually started instance and to
@@ -175,6 +175,9 @@ struct Island {
     /// When the newest card first arrived; drives the capsule pulse. Progress
     /// updates reuse the id and deliberately do not reset it.
     card_flash: Option<Instant>,
+    media: Option<media::Media>,
+    /// Latest now-playing snapshot with its local interpolation clock.
+    now_playing: media::NowPlaying,
 
     textures: TextureCache,
     tab: Tab,
@@ -263,6 +266,8 @@ impl Island {
             cards: api::PushCards::new(),
             api: api::start(cfg.api.enabled, cfg.api.port),
             card_flash: None,
+            media: media::start(cfg.media.enabled),
+            now_playing: media::NowPlaying::new(),
             textures: TextureCache::new(),
             tab: Tab::from_key(&cfg.ui.last_tab),
             task_input: String::new(),
@@ -311,6 +316,7 @@ impl Island {
             self.poll_marker(ctx);
             self.drain_clipboard(ctx);
             self.drain_api(ctx);
+            self.drain_media(ctx);
             if self.notifier.poll(&mut self.inbox) {
                 ctx.request_repaint();
             }
@@ -462,6 +468,12 @@ impl Island {
             // against the old socket's teardown.
             self.api = api::start(next.api.enabled, next.api.port);
         }
+        if next.media.enabled != old.media.enabled {
+            self.media = media::start(next.media.enabled);
+            if !next.media.enabled {
+                self.now_playing = media::NowPlaying::new();
+            }
+        }
         if next.ui.last_tab != old.ui.last_tab {
             self.tab = Tab::from_key(&next.ui.last_tab);
         }
@@ -561,6 +573,36 @@ impl Island {
         {
             self.card_flash = None;
             changed = true;
+        }
+        if changed {
+            ctx.request_repaint();
+        }
+    }
+
+    /// Now-playing snapshots. The snapshot is tiny; the cover buffer only
+    /// moves when the track changes, and the texture is rebuilt here on the UI
+    /// thread only when its content hash changes.
+    fn drain_media(&mut self, ctx: &egui::Context) {
+        let Some(media) = &self.media else { return };
+        let mut latest = None;
+        let mut changed = false;
+        while let Ok(msg) = media.rx.try_recv() {
+            match msg {
+                media::Msg::Now(snap) => {
+                    latest = Some(snap);
+                    changed = true;
+                }
+                media::Msg::Error(e) => {
+                    // No session is a normal state (nothing playing, or a
+                    // player that publishes none); the log is where this
+                    // belongs, not a row on screen.
+                    win::trace(&format!("media: {e}"));
+                    changed = true;
+                }
+            }
+        }
+        if let Some(snap) = latest {
+            self.now_playing.set(ctx, snap);
         }
         if changed {
             ctx.request_repaint();
@@ -921,6 +963,9 @@ impl Island {
                                 perf_scroll: &mut self.perf_scroll,
                                 live_scroll: &mut self.live_scroll,
                                 cards: &self.cards,
+                                media: self.now_playing.snap(),
+                                media_pos: self.now_playing.position(),
+                                media_cover: self.now_playing.cover(),
                                 textures: &mut self.textures,
                                 toast: self.toast.as_ref().map(|(t, _)| t.as_str()),
                                 dispatch_note: self.send_note.as_ref().map(|(t, _)| t.as_str()),
@@ -1025,10 +1070,20 @@ impl Island {
                 (Some(title.clone()), flash_envelope(t), t)
             }
             None => {
-                // A live push card is the capsule's secondary headline: the
-                // newest unexpired card shows in the pill and pulses once when
-                // it first arrives. Reminders keep priority over cards.
-                let task = self.cards.latest().map(api::capsule_text);
+                // A live push card is the capsule's secondary headline, and a
+                // playing track is the third: the newest unexpired card wins
+                // over the title. Each new card or track pulses once.
+                let task = self
+                    .cards
+                    .latest()
+                    .map(api::capsule_text)
+                    .or_else(|| {
+                        if self.cfg.media.capsule {
+                            self.now_playing.capsule_title()
+                        } else {
+                            None
+                        }
+                    });
                 match self.card_flash {
                     Some(at) => {
                         let t = at.elapsed().as_secs_f32();
@@ -1274,6 +1329,11 @@ impl Island {
                             }
                         }
                     }
+                }
+            }
+            Action::MediaCmd(cmd) => {
+                if let Some(media) = &self.media {
+                    media.send(cmd);
                 }
             }
         }
