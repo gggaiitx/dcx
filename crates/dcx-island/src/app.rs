@@ -44,6 +44,9 @@ pub const WIN_TITLE: &str = "桌面信息岛";
 
 const GAP: f32 = 8.0;
 const EDGE_INSET: f32 = 8.0;
+/// How long a reminder pulses the pill. Long enough to notice while working in
+/// another window, short enough that a topmost overlay stops drawing attention.
+const REMINDER_SECS: f32 = 12.0;
 const CONFIG_POLL: Duration = Duration::from_millis(900);
 const FS_POLL: Duration = Duration::from_millis(700);
 const SAVE_DEBOUNCE: Duration = Duration::from_millis(900);
@@ -340,16 +343,21 @@ impl Island {
             if self.cfg.tasks.dispatch_due {
                 self.queue_dispatch(text);
             }
-            if !self.open {
-                // Raised, not focused: the user may be typing in another
-                // window, and a reminder has no right to the keyboard.
-                self.set_open_with(true, ctx, false);
-            }
+            // The island flashes; it does not open. Raising a topmost panel on
+            // every reminder stole the desktop for twelve seconds and made the
+            // reminder compete with whatever the user was doing. The pill shows
+            // the task name, pulses its border and beeps — the panel is one
+            // click away if the details are wanted.
             self.dirty_at = Some(Instant::now());
         }
-        if self.reminder.as_ref().map(|(_, t)| t.elapsed().as_secs() > 12).unwrap_or(false) {
+        if self
+            .reminder
+            .as_ref()
+            .map(|(_, t)| t.elapsed().as_secs_f32() > REMINDER_SECS)
+            .unwrap_or(false)
+        {
             self.reminder = None;
-            // The panel was raised by the reminder and never touched; take it
+            // The panel was raised by a reminder and never touched; take it
             // back down instead of leaving a topmost window on screen.
             if self.open && self.passive {
                 self.set_open(false, ctx);
@@ -744,7 +752,10 @@ impl Island {
                 let radius = 14.0 + (cap_rect.height() * 0.5 - 14.0) * (1.0 - anim);
                 if anim > 0.005 {
                     let card = Rect::from_min_max(Pos2::ZERO, full.max);
-                    crate::ui::widgets::shadow(ui, card, radius, pal.shadow);
+                    // No `shadow()` call: the card is the whole window, so every
+                    // ring of it fell outside the window and was clipped. The
+                    // only place a shadow ever showed was the collapsed pill,
+                    // where it was cut off mid-gradient — the "transparent box".
                     crate::ui::widgets::round_rect(
                         ui,
                         card,
@@ -796,21 +807,21 @@ impl Island {
                 }
 
                 // The island's own content becomes the panel's title row: the
-                // row's left and right edges travel from the pill's padding to
+                // row's left and right edges travel from the pill's edges to
                 // the card's padding, so the clock slides left and the metrics
                 // slide right as it opens instead of the whole row jumping to a
                 // new width. That travel is what "向面板铺开" is.
+                //
+                // Collapsed, the row **is** the window: the pill used to be
+                // inset by its own padding, which left a 14 px strip of empty
+                // window on each side where the clipped shadow showed as a
+                // rectangular band. The inset is now padding instead of
+                // geometry — same content position, no visible frame.
                 let cap_pad = (cap_rect.height() * 0.34).clamp(9.0, 14.0);
                 let lerp = |a: f32, b: f32| a + (b - a) * anim;
                 let row = Rect::from_min_max(
-                    Pos2::new(
-                        lerp(cap_rect.left() + cap_pad, full.left() + 16.0),
-                        cap_rect.top(),
-                    ),
-                    Pos2::new(
-                        lerp(cap_rect.right() - cap_pad, full.right() - 16.0),
-                        cap_rect.bottom(),
-                    ),
+                    Pos2::new(lerp(cap_rect.left(), full.left() + 16.0), cap_rect.top()),
+                    Pos2::new(lerp(cap_rect.right(), full.right() - 16.0), cap_rect.bottom()),
                 );
                 let hit = crate::ui::compact::draw(
                     ui,
@@ -824,7 +835,7 @@ impl Island {
                         // same colour; drawing the pill too would only add a
                         // second border inside the card.
                         shell: anim < 0.02,
-                        pad: 0.0,
+                        pad: lerp(cap_pad, 0.0),
                         corner: anim,
                     },
                 );
@@ -880,6 +891,14 @@ impl Island {
         let c = clock::Clock::now();
         let snap = self.sampler.read();
         let metrics_on = self.cfg.metrics.show;
+        // The capsule carries a task name only while its reminder runs. Before
+        // this it showed whatever task was marked "current", all day: a pill
+        // permanently displaying "喝水" reads as an unread alert, and the task
+        // list is one click away.
+        let (task, flash) = match &self.reminder {
+            Some((title, at)) => (Some(title.clone()), flash_envelope(at.elapsed().as_secs_f32())),
+            None => (None, 0.0),
+        };
         crate::ui::compact::CapsuleState {
             // `clock.show = false` hides the whole clock module, weekday
             // included: the setting is called "显示时钟", not "显示时分".
@@ -916,7 +935,7 @@ impl Island {
             } else {
                 None
             },
-            task: self.tasks.current().map(|t| t.title.clone()),
+            task,
             unread: if self.cfg.inbox.badge {
                 self.inbox.unread()
             } else {
@@ -924,6 +943,7 @@ impl Island {
             },
             hovered: self.hovered,
             open: self.open,
+            flash,
         }
     }
 
@@ -1106,6 +1126,10 @@ impl Island {
         if self.open {
             // While open, keep the panel responsive (hover, drag, animations).
             ctx.request_repaint_after(Duration::from_millis(120));
+        } else if self.reminder.is_some() {
+            // The pulse is the alert: it has to run at a real frame rate, and
+            // only for the twelve seconds it lasts.
+            ctx.request_repaint_after(Duration::from_millis(50));
         } else {
             let c = clock::Clock::now();
             let mut wait = c.to_next_second();
@@ -1187,4 +1211,17 @@ impl eframe::App for Island {
 
 fn file_stamp(path: &std::path::Path) -> Option<SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
+/// Pulse envelope for a reminder, 0..1: rises in 0.25 s, breathes at ~0.85 s,
+/// fades out over the last 1.6 s. It never reaches zero inside the window, so
+/// the pill reads as "alerting" rather than as a blinking cursor.
+fn flash_envelope(t: f32) -> f32 {
+    if t < 0.0 || t > REMINDER_SECS {
+        return 0.0;
+    }
+    let rise = (t / 0.25).min(1.0);
+    let fall = ((REMINDER_SECS - t) / 1.6).clamp(0.0, 1.0);
+    let breathe = 0.5 - 0.5 * (t * std::f32::consts::TAU * 1.18).cos();
+    rise * fall * (0.35 + 0.65 * breathe)
 }

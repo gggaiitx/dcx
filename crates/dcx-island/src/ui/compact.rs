@@ -18,10 +18,18 @@ pub struct CapsuleState {
     pub mem: Option<f32>,
     /// Down/up rate in bytes per second, already summed for display.
     pub net: Option<(f64, f64)>,
+    /// Only ever filled by a running reminder. The capsule used to show the
+    /// task marked "current" all day, which made an idle island read as a
+    /// notification that never went away; the task list is one click away in
+    /// the panel, and the capsule is for the time.
     pub task: Option<String>,
     pub unread: usize,
     pub hovered: bool,
     pub open: bool,
+    /// 0..1 pulse driven by a reminder: the pill tints towards the accent and
+    /// its border thickens, once every ~0.85 s. This is the alert now that the
+    /// panel no longer pops open by itself.
+    pub flash: f32,
 }
 
 /// How the row should be drawn. The same layout runs in both states; only the
@@ -59,18 +67,38 @@ pub fn draw(
 ) -> CapsuleHit {
     let mut hit = CapsuleHit::default();
     let radius = rect.height() * 0.5;
+    let flash = st.flash.clamp(0.0, 1.0);
 
     if opts.shell {
         let surface = with_alpha(p.surface, opacity);
-        let stroke = if st.open {
+        let stroke = if flash > 0.01 {
+            // The reminder owns the border while it runs: a thin accent ring
+            // that breathes, so "something is due" is visible from across the
+            // room without a second window.
+            Stroke::new(1.0 + 1.3 * flash, with_alpha(p.accent, 0.25 + 0.75 * flash))
+        } else if st.open {
             Stroke::new(1.0_f32, with_alpha(p.accent, 0.55))
         } else if st.hovered {
             Stroke::new(1.0_f32, with_alpha(p.stroke, 0.9))
         } else {
             Stroke::new(1.0_f32, p.stroke)
         };
-        widgets::shadow(ui, rect, radius, p.shadow);
+        // No drop shadow here. The window is exactly the pill, so every shadow
+        // ring would be clipped at the window edge — the soft gradient survived
+        // only on the two ends (the content row was inset) and the cut-off at
+        // the window border is what read as "a transparent box behind the
+        // island". The card has the same geometry, so it never had a shadow
+        // either.
         widgets::round_rect(ui, rect, radius, surface, stroke);
+        if flash > 0.01 {
+            widgets::round_rect(
+                ui,
+                rect,
+                radius,
+                with_alpha(p.accent, 0.06 + 0.16 * flash),
+                Stroke::NONE,
+            );
+        }
 
         // A very light top sheen, the same trick the taskbar pill uses: it makes
         // a translucent capsule read as glass instead of as flat grey.
@@ -290,20 +318,26 @@ pub fn draw(
         }
     }
 
-    // -- current task ------------------------------------------------------
+    // -- current task (reminders only) --------------------------------------
     if let Some(task) = &st.task {
         let avail = (right - left).max(0.0);
         if avail > 40.0 {
+            // A bell marks the text as a reminder rather than as part of the
+            // clock, and the accent colour matches the pulsing border.
+            let bell_x = left + 5.0;
+            widgets::glyph(ui, Pos2::new(bell_x, mid_y), 10.0, Glyph::Bell, p.accent);
+            let text_left = bell_x + 9.0;
+            let avail = (right - text_left).max(0.0);
             let galley = ui.painter().layout(
                 task.clone(),
                 FontId::proportional(11.0),
-                p.text_dim,
+                p.accent,
                 avail,
             );
             let h = galley.size().y.min(rect.height() - 6.0);
-            let pos = Pos2::new(left, mid_y - h * 0.5);
+            let pos = Pos2::new(text_left, mid_y - h * 0.5);
             let clip = Rect::from_min_size(pos, Vec2::new(avail, h));
-            ui.painter().with_clip_rect(clip).galley(pos, galley, p.text_dim);
+            ui.painter().with_clip_rect(clip).galley(pos, galley, p.accent);
         }
     }
 

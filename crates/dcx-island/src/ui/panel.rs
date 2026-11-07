@@ -745,9 +745,6 @@ fn clip_tab(
         }
         if resp.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-            // The row can only show two lines; hovering is how the rest of a
-            // long snippet is readable without adding a preview pane.
-            resp.on_hover_text(full_text(item));
         }
         y += row_h;
     }
@@ -774,14 +771,65 @@ fn inbox_tab(
         .map(|(s, c)| (*s, c.state.clone(), c.last_at, c.note))
         .collect();
 
-    // Every tab opens with its own tool row at the top and its actions
-    // right-aligned. The inbox used to put "全部已读 / 清空" *below* the channel
-    // cards, so it was the only tab whose actions sat in the middle of the page
-    // — the same two controls changed height depending on which tab you were on,
-    // which is exactly what makes a panel feel assembled rather than designed.
+    // Order on this page: channel health, then the two list actions, then the
+    // list. The actions used to sit above the health rows, which meant "全部已读
+    // / 清空" hung a line away from the only thing they act on and the page
+    // opened with a toolbar for an empty list.
+    let mut y = rect.top();
+    for (source, state, last_at, note) in &channels {
+        let row = Rect::from_min_size(Pos2::new(rect.left(), y), Vec2::new(rect.width(), card_h));
+        let resp = ui.interact(row, ui.id().with(("ch", source.key())), egui::Sense::hover());
+        if resp.hovered() {
+            widgets::round_rect(ui, row, 7.0, with_alpha(p.surface_alt, 0.7), Stroke::NONE);
+        }
+        // The dot reports the connection, not the brand. Four brand-coloured
+        // dots read as four working channels, and one of them was an account
+        // that is not even filled in; now colour means "live" and grey means
+        // "not live", which is the only reading that survives a glance.
+        let connected = state.is_ok();
+        let dot_color = if connected {
+            let (r, g, b) = source.color();
+            Color32::from_rgb(r, g, b)
+        } else {
+            p.text_faint
+        };
+        let dot = Pos2::new(row.left() + 6.0, row.center().y);
+        ui.painter().circle_filled(dot, 3.5, dot_color);
+        widgets::text(
+            ui,
+            Pos2::new(dot.x + 10.0, row.center().y),
+            Align2::LEFT_CENTER,
+            source.label(),
+            11.0,
+            if connected { p.text } else { p.text_dim },
+        );
+        let (label, state_color) = channel_status(state, *last_at, st.today, p);
+        let galley = ui
+            .painter()
+            .layout_no_wrap(label.clone(), FontId::proportional(10.0), state_color);
+        let max_w = row.width() - 150.0;
+        let clipped = if galley.size().x > max_w {
+            ui.painter()
+                .layout(label.clone(), FontId::proportional(10.0), state_color, max_w)
+        } else {
+            galley
+        };
+        ui.painter().with_clip_rect(row).galley(
+            Pos2::new(row.right() - clipped.size().x - 4.0, row.center().y - clipped.size().y * 0.5),
+            clipped,
+            state_color,
+        );
+        // The row explains itself on hover: the right-hand label has room for
+        // a state, not for how the channel listens, and "已接入" alone does not
+        // tell anyone what the island can see from that app.
+        resp.on_hover_text(format!("{}\n{}", label, note));
+        y += card_h;
+    }
+
+    y += 4.0;
     let toolbar = Rect::from_min_size(
-        Pos2::new(rect.left(), rect.top()),
-        Vec2::new(rect.width(), 22.0),
+        Pos2::new(rect.left(), y),
+        Vec2::new(rect.width(), 20.0),
     );
     let read_all = Rect::from_min_size(
         Pos2::new(toolbar.right() - 140.0, toolbar.top()),
@@ -798,58 +846,7 @@ fn inbox_tab(
         actions.push(Action::ClearInbox);
     }
 
-    let mut y = toolbar.bottom() + 6.0;
-    for (source, state, last_at, note) in &channels {
-        let row = Rect::from_min_size(Pos2::new(rect.left(), y), Vec2::new(rect.width(), card_h));
-        let (r, g, b) = source.color();
-        let dot = Pos2::new(row.left() + 6.0, row.center().y);
-        ui.painter().circle_filled(dot, 3.5, Color32::from_rgb(r, g, b));
-        widgets::text(
-            ui,
-            Pos2::new(dot.x + 10.0, row.center().y),
-            Align2::LEFT_CENTER,
-            source.label(),
-            11.0,
-            p.text,
-        );
-        let state_color = match state {
-            ChannelState::Ok => p.ok,
-            ChannelState::Off => p.text_faint,
-            ChannelState::Idle => p.text_dim,
-            _ => p.warn,
-        };
-        let mut label = state.label();
-        if state.is_ok() {
-            match last_at {
-                Some(at) => {
-                    label = format!("已就绪 · 上次{}", crate::inbox::short_time(*at, st.today));
-                }
-                None => label = "已就绪 · 尚未收到信号".to_string(),
-            }
-        }
-        let galley = ui
-            .painter()
-            .layout_no_wrap(label.clone(), FontId::proportional(10.0), state_color);
-        let max_w = row.width() - 150.0;
-        let clipped = if galley.size().x > max_w {
-            ui.painter()
-                .layout(label.clone(), FontId::proportional(10.0), state_color, max_w)
-        } else {
-            galley
-        };
-        ui.painter().with_clip_rect(row).galley(
-            Pos2::new(row.right() - clipped.size().x - 4.0, row.center().y - clipped.size().y * 0.5),
-            clipped,
-            state_color,
-        );
-        if state.is_problem() {
-            let _ = ui.interact(row, ui.id().with(("ch", source.key())), egui::Sense::hover())
-                .on_hover_text(*note);
-        }
-        y += card_h;
-    }
-
-    y += 2.0;
+    y = toolbar.bottom() + 4.0;
     ui.painter().line_segment(
         [Pos2::new(rect.left(), y), Pos2::new(rect.right(), y)],
         Stroke::new(1.0_f32, p.divider),
@@ -1240,6 +1237,30 @@ fn empty_state(ui: &mut egui::Ui, rect: Rect, p: &Palette, title: &str, sub: &st
     );
 }
 
+/// Right-hand status of a channel row, with the colour it is written in.
+///
+/// "已接入 / 未接入" rather than the state machine's own vocabulary: the dot on
+/// the left says the same thing in colour, and both have to agree.
+fn channel_status(
+    state: &ChannelState,
+    last_at: Option<u64>,
+    today: &str,
+    p: &Palette,
+) -> (String, Color32) {
+    match state {
+        ChannelState::Ok => (
+            match last_at {
+                Some(at) => format!("已接入 · {}", crate::inbox::short_time(at, today)),
+                None => "已接入 · 尚未收到信号".to_string(),
+            },
+            p.ok,
+        ),
+        ChannelState::Idle => ("接入中".to_string(), p.text_dim),
+        ChannelState::Off => ("未接入".to_string(), p.text_faint),
+        other => (other.label(), p.warn),
+    }
+}
+
 fn small_button(
     ui: &mut egui::Ui,
     rect: Rect,
@@ -1308,7 +1329,9 @@ fn with_alpha(color: Color32, factor: f32) -> Color32 {
 ///
 /// Fixed heights were the bug: 40 pt fitted one line, 46 pt fitted two, and a
 /// three-line entry was cut in the middle of the third line. The row now grows
-/// with its text, capped at three lines (the tooltip shows the rest).
+/// with its text, capped at three lines — and there is no hover tooltip to read
+/// the rest in: a tooltip that covers the list it belongs to made the whole tab
+/// flicker while the pointer moved over it.
 fn clip_row_h(ui: &egui::Ui, item: &ClipItem, text_w: f32) -> f32 {
     match item.kind {
         Kind::Image => 52.0,
@@ -1328,23 +1351,6 @@ fn clip_row_h(ui: &egui::Ui, item: &ClipItem, text_w: f32) -> f32 {
             (lines * line + PAD).max(34.0)
         }
     }
-}
-
-/// Full entry text for the hover tooltip. Capped at 400 characters: a 200 KB
-/// paste must not become a 200 KB tooltip several times a second.
-fn full_text(item: &ClipItem) -> String {
-    match item.kind {
-        Kind::Text => truncate(&item.text, 400),
-        Kind::Image => format!("图片 {}×{} · 点击写回剪贴板", item.width, item.height),
-    }
-}
-
-fn truncate(text: &str, max: usize) -> String {
-    if text.chars().count() <= max {
-        return text.to_string();
-    }
-    let head: String = text.chars().take(max).collect();
-    format!("{head}…")
 }
 
 /// Trims `text` to a single line of `max_w` at `size`, ending in an ellipsis.
