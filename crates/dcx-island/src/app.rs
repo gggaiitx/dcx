@@ -937,6 +937,18 @@ impl Island {
 }
 
 impl eframe::App for Island {
+    /// The window is transparent by design: only the capsule and the panel are
+    /// painted, so the window corners, the `GAP` band between them and the
+    /// strips beside the capsule (the panel is wider) must show the desktop.
+    ///
+    /// eframe's default is `rgba(12, 12, 12, 180)` — a 70 % black veil over the
+    /// whole window rectangle. That is the "black frame" around the capsule and
+    /// the panel: it is not a DWM border and not a shadow, it is the clear
+    /// colour showing through every unpainted pixel.
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        egui::Rgba::TRANSPARENT.to_array()
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.ensure();
         ctx.set_pixels_per_point(self.scale);
