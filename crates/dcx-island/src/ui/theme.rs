@@ -99,7 +99,12 @@ impl Palette {
         if dcx_win32::apps_use_light_theme() {
             Palette {
                 light: true,
-                surface: Color32::from_rgba_unmultiplied(0xFA, 0xFA, 0xFC, 0xF2),
+                // Fully opaque: the panel is a solid card. It used to be 95 %
+                // (`0xF2`) and a wallpaper with any colour in it showed through,
+                // which reads as "the island still has a transparent
+                // background". The translucent look belongs to the capsule
+                // only — that is what the opacity setting says it controls.
+                surface: Color32::from_rgba_unmultiplied(0xFA, 0xFA, 0xFC, 0xFF),
                 surface_alt: Color32::from_rgba_unmultiplied(0xEE, 0xEE, 0xF4, 0xFF),
                 stroke: Color32::from_rgba_unmultiplied(0x1A, 0x1A, 0x22, 0x1F),
                 text: Color32::from_rgb(0x1B, 0x1B, 0x22),
@@ -117,7 +122,8 @@ impl Palette {
         } else {
             Palette {
                 light: false,
-                surface: Color32::from_rgba_unmultiplied(0x1C, 0x1C, 0x22, 0xF0),
+                // Opaque for the same reason as the light palette.
+                surface: Color32::from_rgba_unmultiplied(0x1C, 0x1C, 0x22, 0xFF),
                 surface_alt: Color32::from_rgba_unmultiplied(0x2A, 0x2A, 0x33, 0xFF),
                 stroke: Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 0x20),
                 text: Color32::from_rgb(0xF2, 0xF2, 0xF6),

@@ -212,6 +212,16 @@ impl Inbox {
         self.version += 1;
     }
 
+    /// One row was opened: it is the only item that loses its unread dot.
+    pub fn mark_read(&mut self, id: u64) {
+        if let Some(item) = self.items.iter_mut().find(|i| i.id == id) {
+            if !item.read {
+                item.read = true;
+                self.version += 1;
+            }
+        }
+    }
+
     pub fn clear(&mut self) {
         self.items.clear();
         self.version += 1;

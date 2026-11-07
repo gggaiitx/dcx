@@ -73,6 +73,7 @@ extern "system" {
     fn GetMonitorInfoW(monitor: isize, info: *mut dcx_win32::MONITORINFO) -> i32;
     fn GetDpiForWindow(hwnd: isize) -> u32;
     fn IsWindow(hwnd: isize) -> i32;
+    fn IsZoomed(hwnd: isize) -> i32;
     fn GetDpiForSystem() -> u32;
     fn WindowFromPoint(point: dcx_win32::POINT) -> isize;
 }
@@ -234,20 +235,27 @@ fn is_shell_class(class: &str) -> bool {
     )
 }
 
-/// Is a full-screen window (video, game, slideshow, RDP session) in front?
+/// Is something in front that should hide the island?
 ///
-/// The capsule is topmost, so without this test it would sit on top of a
-/// full-screen video with no way to dismiss it.
+/// Three signals, strongest first:
 ///
-/// The primary signal is the shell's own answer (`SHQueryUserNotificationState`,
-/// the same call that decides whether a toast may appear). The rectangle
-/// heuristic below is only a fallback: a **maximized** window has exactly the
-/// monitor's rectangle when the taskbar auto-hides, so the heuristic alone
-/// parked the island — invisible, topmost, nowhere — on a perfectly normal
-/// desktop with one maximized window.
-pub fn foreground_is_fullscreen(mon: &Monitor, own: isize) -> bool {
-    if let Some(park) = shell_says_no_popups() {
-        return park;
+/// 1. `SHQueryUserNotificationState` — the shell's own answer (D3D full screen,
+///    presentation mode, app full screen). It costs one call and covers games
+///    and video players that never touch their window rectangle.
+/// 2. A window covering its whole monitor. With an auto-hidden taskbar a
+///    **maximized** window has exactly that rectangle, and users mean exactly
+///    that by "全屏": the island must not float over a maximized WeChat.
+/// 3. A maximized window that covers the capsule's own strip (the taskbar is
+///    visible, so its rectangle stops at the work area and never equals the
+///    monitor). Only the place the island lives matters — a window that merely
+///    overlaps part of the screen keeps the island visible.
+///
+/// `strip` is `None` while the panel is open: the island is topmost and the
+/// user is reading it, so "a window is behind the capsule" is not a reason to
+/// disappear; a true full-screen app is still caught by (1).
+pub fn foreground_is_fullscreen(mon: &Monitor, own: isize, strip: Option<[i32; 4]>) -> bool {
+    if shell_says_no_popups() == Some(true) {
+        return true;
     }
     let fg = unsafe { GetForegroundWindow() };
     if fg == 0 || fg == own {
@@ -267,7 +275,18 @@ pub fn foreground_is_fullscreen(mon: &Monitor, own: isize) -> bool {
     let (ww, wh) = (rc[2] - rc[0], rc[3] - rc[1]);
     // 2 px tolerance: a maximised window is one border-pixel smaller than the
     // monitor on some drivers.
-    ww >= mw - 2 && wh >= mh - 2 && rc[0] <= mon.rect[0] + 2 && rc[1] <= mon.rect[1] + 2
+    let covers_monitor =
+        ww >= mw - 2 && wh >= mh - 2 && rc[0] <= mon.rect[0] + 2 && rc[1] <= mon.rect[1] + 2;
+    if covers_monitor {
+        return true;
+    }
+    match strip {
+        Some(s) => {
+            let zoomed = unsafe { IsZoomed(fg) } != 0;
+            zoomed && rc[0] <= s[0] && rc[1] <= s[1] && rc[2] >= s[2] && rc[3] >= s[3]
+        }
+        None => false,
+    }
 }
 
 /// `SHQueryUserNotificationState` → is a full-screen app in the way?
@@ -423,7 +442,7 @@ impl Window {
         }
         let due = self
             .frame_fix_at
-            .map(|t| now.duration_since(t) >= Duration::from_secs(2))
+            .map(|t| now.duration_since(t) >= Duration::from_secs(10))
             .unwrap_or(true);
         if !due {
             return;

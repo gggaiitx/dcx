@@ -7,7 +7,7 @@
 //! of that drag. Rows are painted and hit-tested by the same numbers, so a click
 //! can never land on a row the user is not looking at.
 
-use egui::{Align2, Color32, FontId, Pos2, Rect, Stroke, Vec2};
+use egui::{Align2, Color32, FontId, Pos2, Rect, Stroke, Ui, Vec2};
 
 use crate::clipboard::{ClipItem, Kind};
 use crate::inbox::{ChannelState, Inbox, Source};
@@ -83,37 +83,47 @@ pub enum Action {
     MarkAllRead,
     ClearInbox,
     RemoveInbox(u64),
+    /// Open the app that produced this row (and mark the row read).
+    OpenInbox(u64, Source),
 }
 
+/// `merged` means the caller already painted one card over the whole window
+/// (capsule row included), so this function must not paint a second, rounded
+/// background of its own — doing so would draw the panel's top corners and
+/// border in the middle of that card.
 pub fn draw(
     ui: &mut egui::Ui,
     rect: Rect,
     st: &mut PanelState<'_>,
     p: &Palette,
     actions: &mut Vec<Action>,
+    merged: bool,
 ) {
     let radius = 14.0;
-    widgets::shadow(ui, rect, radius, p.shadow);
-    widgets::round_rect(
-        ui,
-        rect,
-        radius,
-        p.surface,
-        Stroke::new(1.0_f32, p.stroke),
-    );
+    if !merged {
+        widgets::shadow(ui, rect, radius, p.shadow);
+        widgets::round_rect(
+            ui,
+            rect,
+            radius,
+            p.surface,
+            Stroke::new(1.0_f32, p.stroke),
+        );
+    }
 
     let pad = 14.0;
-    let header_h = 38.0;
     let tab_h = 34.0;
     let footer_h = 26.0;
 
-    // -- header ------------------------------------------------------------
-    let header = Rect::from_min_size(rect.min, Vec2::new(rect.width(), header_h));
-    draw_header(ui, header, p, st, actions);
+    // No header of its own. The island's capsule row is the panel's title row
+    // now: it carries the clock, the date, the metrics and the close button, and
+    // it is drawn by `app.rs` above this rectangle. A second header row here
+    // repeated the date and pushed the tab bar down for nothing — that duplicate
+    // row was most of why the two halves read as separate panels.
 
     // -- tab bar -----------------------------------------------------------
     let tabbar = Rect::from_min_size(
-        Pos2::new(rect.left(), header.bottom() + 2.0),
+        Pos2::new(rect.left(), rect.top() + 2.0),
         Vec2::new(rect.width(), tab_h),
     );
     draw_tabs(ui, tabbar, p, st, actions);
@@ -151,50 +161,6 @@ pub fn draw(
     );
 }
 
-fn draw_header(
-    ui: &mut egui::Ui,
-    rect: Rect,
-    p: &Palette,
-    st: &PanelState<'_>,
-    actions: &mut Vec<Action>,
-) {
-    let clock = crate::clock::Clock::now();
-    let left = rect.left() + 16.0;
-    let y = rect.center().y;
-
-    let title = format!("{} {}", clock.date_cn(), clock.weekday_cn());
-    widgets::text(ui, Pos2::new(left, y), Align2::LEFT_CENTER, &title, 13.0, p.text);
-
-    let open = st.tasks.for_day(st.today).iter().filter(|t| !t.done).count();
-    let detail = format!("{open} 项待办");
-    widgets::text(
-        ui,
-        Pos2::new(left + 118.0, y + 0.5),
-        Align2::LEFT_CENTER,
-        &detail,
-        11.0,
-        p.text_faint,
-    );
-
-    let btn = Rect::from_center_size(
-        Pos2::new(rect.right() - 20.0, y),
-        Vec2::splat(22.0),
-    );
-    if widgets::icon_button(ui, btn, Glyph::Close, p, false).clicked() {
-        actions.push(Action::Close);
-    }
-    let archive = Rect::from_center_size(
-        Pos2::new(rect.right() - 46.0, y),
-        Vec2::splat(22.0),
-    );
-    if widgets::icon_button(ui, archive, Glyph::Doc, p, false)
-        .on_hover_text("把今天的任务导出为 Markdown")
-        .clicked()
-    {
-        actions.push(Action::Archive);
-    }
-}
-
 fn draw_tabs(
     ui: &mut egui::Ui,
     rect: Rect,
@@ -228,6 +194,16 @@ fn draw_tabs(
             p.text_dim
         };
         let mut label = tab.label().to_string();
+        // Counts live on the tab that owns them. The panel header used to carry
+        // "N 项待办"; with the island row taking over as the title bar there is
+        // no room for it up there, and next to the word "任务" is where a user
+        // looks for it anyway.
+        if *tab == Tab::Tasks {
+            let open = st.tasks.for_day(st.today).iter().filter(|t| !t.done).count();
+            if open > 0 {
+                label = format!("{} {}", label, open.min(99));
+            }
+        }
         if *tab == Tab::Inbox {
             let n = st.inbox.unread();
             if n > 0 {
@@ -577,10 +553,12 @@ fn clip_tab(
     }
 
     let ctx = ui.ctx().clone();
-    let content_h: f32 = items
-        .iter()
-        .map(|i| if i.kind == Kind::Image { 46.0 } else { 40.0 })
-        .sum();
+    // Row height follows the text: a fixed 40/46 pt row clipped the third line
+    // of every longer entry in half, which is what "内容看不完整" was. The width
+    // here is what the text actually gets (left padding + pin/delete column).
+    let text_w = (list.width() - 8.0 - 22.0 - 22.0 - 4.0).max(60.0);
+    let heights: Vec<f32> = items.iter().map(|i| clip_row_h(ui, i, text_w)).collect();
+    let content_h: f32 = heights.iter().sum();
     let offset = scroll(ui, list, content_h, st.clip_scroll);
     let mut y = list.top() - offset;
     // Rows are painted from an explicit rectangle, so the painter has to be
@@ -589,8 +567,7 @@ fn clip_tab(
     // this tab and would otherwise be clipped away too.
     let prev_clip = ui.clip_rect();
     ui.set_clip_rect(list);
-    for item in &items {
-        let row_h = if item.kind == Kind::Image { 46.0 } else { 40.0 };
+    for (item, row_h) in items.iter().zip(heights.iter().copied()) {
         if y + row_h < list.top() {
             y += row_h;
             continue;
@@ -664,14 +641,13 @@ fn clip_tab(
             if item.pinned { p.text } else { p.text_dim },
             text_rect.width(),
         );
-        let ty = if item.kind == Kind::Text {
-            text_rect.center().y - galley.size().y * 0.5
-        } else {
-            text_rect.center().y - galley.size().y * 0.5
-        };
+        // Top-aligned: a three-line entry used to be centred inside a two-line
+        // box, so its first line was clipped in half and the text read as cut
+        // off. Now the overflow goes below the clip, which looks like a list row
+        // that continues rather than a broken glyph row.
         ui.painter()
             .with_clip_rect(text_rect)
-            .galley(Pos2::new(text_rect.left(), ty), galley, p.text_dim);
+            .galley(Pos2::new(text_rect.left(), text_rect.top()), galley, p.text_dim);
 
         let resp = ui.interact(
             Rect::from_min_max(
@@ -686,6 +662,9 @@ fn clip_tab(
         }
         if resp.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            // The row can only show two lines; hovering is how the rest of a
+            // long snippet is readable without adding a preview pane.
+            resp.on_hover_text(full_text(item));
         }
         y += row_h;
     }
@@ -802,16 +781,33 @@ fn inbox_tab(
         );
         return;
     }
-    let row_h = 40.0;
+    // Line heights are measured, not guessed. The row used to be a fixed 40/48
+    // with hand-picked offsets, and those offsets were computed for 100 % DPI:
+    // at 125 % the 12 pt headline needs ~17 pt while the detail line was being
+    // drawn at `bottom - 5`, so the two boxes overlapped and "来源 / 标题 /
+    // 详情" read as one smeared clump. Everything below is derived from these
+    // three numbers, so the row is correct at any scale.
+    let lh_small = ui.fonts(|f| f.row_height(&FontId::proportional(9.5))).max(12.0);
+    let lh_title = ui.fonts(|f| f.row_height(&FontId::proportional(12.0))).max(15.0);
+    const PAD_TOP: f32 = 3.0;
+    const PAD_BOT: f32 = 5.0;
     // Only the message list scrolls; the per-channel health cards above it stay
     // pinned, which is what makes a long list usable.
     let list = Rect::from_min_max(Pos2::new(rect.left(), y), rect.max);
-    let content_h = row_h * items.len() as f32;
+    // `content_h` has to agree with the per-row height below or the scrollbar
+    // runs out of travel early.
+    let row_h_for = |detail: &str| {
+        let h = PAD_TOP + lh_small + lh_title + PAD_BOT
+            + if detail.is_empty() { 0.0 } else { lh_small };
+        h.max(40.0)
+    };
+    let content_h: f32 = items.iter().map(|(_, _, _, d, _, _)| row_h_for(d)).sum();
     let offset = scroll(ui, list, content_h, st.inbox_scroll);
     let prev_clip = ui.clip_rect();
     ui.set_clip_rect(list);
     y = list.top() - offset;
     for (id, source, title, detail, at, read) in items {
+        let row_h = row_h_for(&detail);
         if y + row_h < list.top() {
             y += row_h;
             continue;
@@ -828,59 +824,78 @@ fn inbox_tab(
         }
         if !read {
             ui.painter().circle_filled(
-                Pos2::new(row.left() + 4.0, row.center().y),
+                Pos2::new(row.left() + 4.0, row.top() + PAD_TOP + lh_small * 0.5),
                 2.0,
                 p.accent,
             );
         }
-        let name = source.label();
+        // Line 1: source on the left, age on the right, both on the same
+        // measured baseline so neither can climb into the headline.
+        let line1_y = row.top() + PAD_TOP;
         widgets::text(
             ui,
-            Pos2::new(row.left() + 12.0, row.top() + 12.0),
+            Pos2::new(row.left() + 12.0, line1_y),
             Align2::LEFT_TOP,
-            name,
+            source.label(),
             9.5,
             p.text_faint,
-        );
-        let title_rect = Rect::from_min_max(
-            Pos2::new(row.left() + 12.0, row.top() + 20.0),
-            Pos2::new(row.right() - 56.0, row.bottom()),
-        );
-        let galley = ui.painter().layout(
-            title.clone(),
-            FontId::proportional(12.0),
-            if read { p.text_dim } else { p.text },
-            title_rect.width(),
-        );
-        ui.painter().with_clip_rect(title_rect).galley(
-            Pos2::new(title_rect.left(), title_rect.top()),
-            galley,
-            if read { p.text_dim } else { p.text },
         );
         let time = crate::inbox::short_time(at, st.today);
         widgets::text(
             ui,
-            Pos2::new(row.right() - 34.0, row.top() + 12.0),
-            Align2::RIGHT_TOP,
+            Pos2::new(row.right() - 8.0, line1_y + lh_small * 0.5),
+            Align2::RIGHT_CENTER,
             &time,
             9.5,
             p.text_faint,
         );
+        // Line 2: the headline, on one line and ellipsised to the width it has.
+        // Wrapping it into the detail line is the bug this row is recovering
+        // from, so the fit is done by measurement rather than by character count.
+        let title_y = line1_y + lh_small;
+        // 24 pt on the right is where the hover-only delete button sits.
+        let title_w = row.width() - 12.0 - 26.0;
+        let title_color = if read { p.text_dim } else { p.text };
+        widgets::text(
+            ui,
+            Pos2::new(row.left() + 12.0, title_y),
+            Align2::LEFT_TOP,
+            &fit_one_line(ui, &title, 12.0, title_w),
+            12.0,
+            title_color,
+        );
+        if !detail.is_empty() {
+            widgets::text(
+                ui,
+                Pos2::new(row.left() + 12.0, title_y + lh_title),
+                Align2::LEFT_TOP,
+                &fit_one_line(ui, &detail, 9.5, title_w),
+                9.5,
+                p.text_faint,
+            );
+        }
         if hovered {
-            let del = Rect::from_center_size(Pos2::new(row.right() - 14.0, row.bottom() - 12.0), Vec2::splat(18.0));
+            let del = Rect::from_center_size(Pos2::new(row.right() - 14.0, row.bottom() - 13.0), Vec2::splat(18.0));
             if widgets::icon_button(ui, del, Glyph::Trash, p, true).clicked() {
                 actions.push(Action::RemoveInbox(id));
             }
         }
-        if !detail.is_empty() {
-            widgets::text(
-                ui,
-                Pos2::new(row.left() + 12.0, row.bottom() - 6.0),
-                Align2::LEFT_BOTTOM,
-                &truncate(&detail, 40),
-                9.5,
-                p.text_faint,
-            );
+        // Clicking the row opens the app that raised it. The delete button owns
+        // the bottom-right corner, so the click target stops short of it.
+        let hit = Rect::from_min_max(
+            Pos2::new(row.left(), row.top()),
+            Pos2::new(row.right() - 30.0, row.bottom()),
+        );
+        let resp = ui.interact(
+            hit,
+            ui.id().with(("inbox-row", id)),
+            egui::Sense::click(),
+        );
+        if resp.clicked() {
+            actions.push(Action::OpenInbox(id, source));
+        }
+        if resp.hovered() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
         y += row_h;
     }
@@ -1160,10 +1175,84 @@ fn with_alpha(color: Color32, factor: f32) -> Color32 {
     Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), a)
 }
 
+/// Clipboard row height, measured from the wrapped preview.
+///
+/// Fixed heights were the bug: 40 pt fitted one line, 46 pt fitted two, and a
+/// three-line entry was cut in the middle of the third line. The row now grows
+/// with its text, capped at three lines (the tooltip shows the rest).
+fn clip_row_h(ui: &egui::Ui, item: &ClipItem, text_w: f32) -> f32 {
+    match item.kind {
+        Kind::Image => 52.0,
+        Kind::Text => {
+            const PAD: f32 = 8.0;
+            const MAX_LINES: f32 = 3.0;
+            let galley = ui.painter().layout(
+                item.preview(),
+                FontId::proportional(12.0),
+                Color32::WHITE,
+                text_w,
+            );
+            let line = ui
+                .fonts(|f| f.row_height(&FontId::proportional(12.0)))
+                .max(12.0);
+            let lines = (galley.size().y / line).round().clamp(1.0, MAX_LINES);
+            (lines * line + PAD).max(34.0)
+        }
+    }
+}
+
+/// Full entry text for the hover tooltip. Capped at 400 characters: a 200 KB
+/// paste must not become a 200 KB tooltip several times a second.
+fn full_text(item: &ClipItem) -> String {
+    match item.kind {
+        Kind::Text => truncate(&item.text, 400),
+        Kind::Image => format!("图片 {}×{} · 点击写回剪贴板", item.width, item.height),
+    }
+}
+
 fn truncate(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
         return text.to_string();
     }
     let head: String = text.chars().take(max).collect();
     format!("{head}…")
+}
+
+/// Trims `text` to a single line of `max_w` at `size`, ending in an ellipsis.
+///
+/// Measured, not counted: a 12 pt CJK glyph is about twice as wide as a 12 pt
+/// Latin one, so "40 characters" is either a wasted line or two inches of
+/// overflow depending on the string. Binary search over the prefix length keeps
+/// this to a handful of layout calls per row.
+fn fit_one_line(ui: &Ui, text: &str, size: f32, max_w: f32) -> String {
+    if max_w <= 0.0 {
+        return String::new();
+    }
+    let font = FontId::proportional(size);
+    let width = |s: &str| {
+        ui.fonts(|f| {
+            f.layout_no_wrap(s.to_owned(), font.clone(), Color32::WHITE)
+                .size()
+                .x
+        })
+    };
+    if width(text) <= max_w {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut lo = 0usize;
+    let mut hi = chars.len();
+    while lo < hi {
+        let mid = (lo + hi + 1) / 2;
+        let cand: String = chars[..mid].iter().collect::<String>() + "…";
+        if width(&cand) <= max_w {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    if lo == 0 {
+        return "…".to_string();
+    }
+    chars[..lo].iter().collect::<String>() + "…"
 }

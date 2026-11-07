@@ -92,10 +92,12 @@ impl Notifier {
 
         if let Some(shell) = &self.shell {
             while let Ok(flash) = shell.rx.try_recv() {
-                let label = flash.source.label();
+                // No app name in the title: the inbox row already prints the
+                // source on its own line, and "微信：有新消息" under a "微信"
+                // caption read as a duplicated line.
                 inbox.push(
                     flash.source,
-                    &format!("{label}：有新消息"),
+                    "有新消息",
                     "",
                     &format!("flash-{}-{}", flash.source.key(), crate::inbox::now_secs() / 3),
                 );

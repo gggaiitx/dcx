@@ -24,10 +24,31 @@ pub struct CapsuleState {
     pub open: bool,
 }
 
+/// How the row should be drawn. The same layout runs in both states; only the
+/// chrome and the corner buttons change, so the content can grow out of the
+/// capsule into the panel's title row without a second code path.
+#[derive(Clone, Copy)]
+pub struct CapsuleOpts {
+    /// Paint the pill itself (shadow, fill, sheen, border). False once the panel
+    /// owns the card: a second rounded shape inside the card is what made the
+    /// island look like a separate object sitting on top of the panel.
+    pub shell: bool,
+    /// Horizontal padding of the content row, in points. Interpolated by the
+    /// caller because the pill pads by its own height while the panel pads by
+    /// its own grid.
+    pub pad: f32,
+    /// 0..1 — the corner buttons fade in as the panel unfolds.
+    pub corner: f32,
+    /// Show the "export today's tasks" button next to the close button.
+    pub archive: bool,
+}
+
 /// What the capsule wants the app to do after this frame.
 #[derive(Default)]
 pub struct CapsuleHit {
     pub clicked: bool,
+    pub close: bool,
+    pub archive: bool,
 }
 
 pub fn draw(
@@ -37,39 +58,50 @@ pub fn draw(
     p: &Palette,
     opacity: f32,
     time_size: f32,
+    opts: CapsuleOpts,
 ) -> CapsuleHit {
+    let mut hit = CapsuleHit::default();
     let radius = rect.height() * 0.5;
-    let surface = with_alpha(p.surface, opacity);
-    let stroke = if st.open {
-        Stroke::new(1.0_f32, with_alpha(p.accent, 0.55))
-    } else if st.hovered {
-        Stroke::new(1.0_f32, with_alpha(p.stroke, 0.9))
-    } else {
-        Stroke::new(1.0_f32, p.stroke)
-    };
 
-    widgets::shadow(ui, rect, radius, p.shadow);
-    widgets::round_rect(ui, rect, radius, surface, stroke);
+    if opts.shell {
+        let surface = with_alpha(p.surface, opacity);
+        let stroke = if st.open {
+            Stroke::new(1.0_f32, with_alpha(p.accent, 0.55))
+        } else if st.hovered {
+            Stroke::new(1.0_f32, with_alpha(p.stroke, 0.9))
+        } else {
+            Stroke::new(1.0_f32, p.stroke)
+        };
+        widgets::shadow(ui, rect, radius, p.shadow);
+        widgets::round_rect(ui, rect, radius, surface, stroke);
 
-    // A very light top sheen, the same trick the taskbar pill uses: it makes a
-    // translucent capsule read as glass instead of as flat grey.
-    if !p.light {
-        let sheen = Rect::from_min_max(
-            rect.min + Vec2::new(radius * 0.6, 1.0),
-            Pos2::new(rect.right() - radius * 0.6, rect.center().y),
-        );
-        widgets::round_rect(
-            ui,
-            sheen,
-            sheen.height() * 0.5,
-            Color32::from_rgba_unmultiplied(255, 255, 255, 10),
-            Stroke::NONE,
-        );
+        // A very light top sheen, the same trick the taskbar pill uses: it makes
+        // a translucent capsule read as glass instead of as flat grey.
+        if !p.light {
+            let sheen = Rect::from_min_max(
+                rect.min + Vec2::new(radius * 0.6, 1.0),
+                Pos2::new(rect.right() - radius * 0.6, rect.center().y),
+            );
+            widgets::round_rect(
+                ui,
+                sheen,
+                sheen.height() * 0.5,
+                Color32::from_rgba_unmultiplied(255, 255, 255, 10),
+                Stroke::NONE,
+            );
+        }
     }
 
-    let pad = (rect.height() * 0.34).clamp(9.0, 14.0);
+    let pad = opts.pad;
     let mut left = rect.left() + pad;
     let mid_y = rect.center().y;
+
+    // The row's own click area is allocated **before** everything it contains.
+    // egui gives the click to the last widget registered in a layer, so a
+    // full-row hit area allocated at the end would sit on top of the close and
+    // export buttons and eat their clicks. Allocating it first puts it
+    // underneath them, where it belongs.
+    let row_resp = ui.allocate_rect(rect, egui::Sense::click());
 
     // -- clock -------------------------------------------------------------
     let time_rect = widgets::mono_text(
@@ -107,6 +139,35 @@ pub fn draw(
 
     // -- right cluster -----------------------------------------------------
     let mut right = rect.right() - pad;
+
+    // Close, then "export tasks", both pinned to the row's right end. The close
+    // button is the right-most thing on the card when the panel is open — that
+    // is the "最右上角" the user asked for — so it is laid out first and every
+    // other right-hand element has to fit inside what is left.
+    if opts.corner > 0.01 {
+        let size = 22.0;
+        let close = Rect::from_center_size(
+            Pos2::new(right - size * 0.5, mid_y),
+            Vec2::splat(size),
+        );
+        if corner_button(ui, close, Glyph::Close, p, opts.corner, true).clicked() {
+            hit.close = true;
+        }
+        right = close.left() - 2.0;
+        if opts.archive {
+            let doc = Rect::from_center_size(
+                Pos2::new(right - size * 0.5, mid_y),
+                Vec2::splat(size),
+            );
+            if corner_button(ui, doc, Glyph::Doc, p, opts.corner, false)
+                .on_hover_text("把今天的任务导出为 Markdown")
+                .clicked()
+            {
+                hit.archive = true;
+            }
+            right = doc.left() - 2.0;
+        }
+    }
 
     // Unread badge: a filled pill with the count, not a bare dot — a dot is
     // indistinguishable from a rendering artefact at this size.
@@ -219,10 +280,39 @@ pub fn draw(
         }
     }
 
+    hit.clicked = row_resp.clicked() && !hit.close && !hit.archive;
+    hit
+}
+
+/// Small circular icon button whose whole glyph — not just its hover plate —
+/// fades with `alpha`, so the corner buttons can grow in with the panel instead
+/// of popping into place on the frame the unfold ends.
+fn corner_button(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    which: Glyph,
+    p: &Palette,
+    alpha: f32,
+    danger: bool,
+) -> egui::Response {
     let resp = ui.allocate_rect(rect, egui::Sense::click());
-    CapsuleHit {
-        clicked: resp.clicked(),
+    if resp.hovered() {
+        let fill = if danger {
+            with_alpha(p.danger, 0.14)
+        } else {
+            p.accent_soft
+        };
+        widgets::round_rect(ui, rect, rect.height() * 0.5, fill, Stroke::NONE);
     }
+    let base = if !resp.hovered() {
+        p.text_dim
+    } else if danger {
+        p.danger
+    } else {
+        p.accent
+    };
+    widgets::glyph(ui, rect.center(), 13.0, which, with_alpha(base, alpha));
+    resp
 }
 
 fn with_alpha(color: Color32, factor: f32) -> Color32 {

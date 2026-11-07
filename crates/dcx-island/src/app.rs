@@ -125,6 +125,13 @@ struct Island {
     cfg_at: Instant,
 
     win: win::Window,
+    /// Monitor the island lives on, cached while it is visible.
+    ///
+    /// `MonitorFromWindow` on the parked (off-screen at -32000) window returns
+    /// the *nearest* monitor, which is the other screen here — so recomputing it
+    /// while parked flip-flopped park state every poll: hidden, visible,
+    /// hidden…
+    mon: win::Monitor,
     scale: f32,
     pal: theme::Palette,
     pal_at: Option<Instant>,
@@ -203,6 +210,7 @@ impl Island {
             cfg_stamp: file_stamp(&dcx_island_config::config_path()),
             cfg_at: Instant::now(),
             win: win::Window::new(),
+            mon: win::monitor(0),
             scale: 1.0,
             pal: theme::Palette::system(),
             pal_at: None,
@@ -257,6 +265,10 @@ impl Island {
             if (scale - self.scale).abs() > 0.01 {
                 win::trace(&format!("scale {scale}"));
                 self.scale = scale;
+            }
+            // Only while on screen: see the `mon` field comment.
+            if !self.parked {
+                self.mon = self.win.monitor();
             }
         }
     }
@@ -492,10 +504,37 @@ impl Island {
             }
             return;
         }
-        let mon = self.win.monitor();
-        let full = win::foreground_is_fullscreen(&mon, self.win.hwnd);
+        let mon = self.mon;
+        // The strip the capsule occupies, in physical pixels. Computed from the
+        // monitor rather than from the window rectangle: while parked the window
+        // sits off-screen and its rectangle says nothing about where the island
+        // would be.
+        //
+        // `None` while the panel is open: the island is topmost and the user is
+        // looking at it, so "some window is behind the capsule" is not a reason
+        // to vanish. A real full-screen app is still caught by the shell state.
+        let strip = if self.open {
+            None
+        } else {
+            let scale = self.scale.max(1.0);
+            let mon_w = (mon.rect[2] - mon.rect[0]) as f32;
+            let cap_w = (self.cfg.behavior.capsule_width * scale).min(mon_w - 24.0 * scale);
+            let cap_h = self.cfg.behavior.capsule_height * scale;
+            let cx = (mon.rect[0] + mon.rect[2]) as f32 * 0.5;
+            let top = mon.work[1] + (EDGE_INSET * scale).round() as i32;
+            Some([
+                (cx - cap_w * 0.5).round() as i32,
+                top,
+                (cx + cap_w * 0.5).round() as i32,
+                top + cap_h.round() as i32,
+            ])
+        };
+        let full = win::foreground_is_fullscreen(&mon, self.win.hwnd, strip);
         if full != self.parked {
-            win::trace(&format!("fullscreen={full} parked={}", !full));
+            win::trace(&format!(
+                "fullscreen={full} → {}",
+                if full { "parked" } else { "shown" }
+            ));
             self.parked = full;
         }
     }
@@ -583,7 +622,7 @@ impl Island {
 
     fn compute_geo(&self) -> Geo {
         let scale = self.scale.max(1.0);
-        let mon = self.win.monitor();
+        let mon = self.mon;
         let mon_w = (mon.rect[2] - mon.rect[0]) as f32;
         let mon_h = (mon.rect[3] - mon.rect[1]) as f32;
 
@@ -592,9 +631,19 @@ impl Island {
         let panel_w = (self.cfg.ui.panel_width * scale).min(mon_w - 16.0 * scale);
         let panel_h = (self.cfg.ui.panel_height * scale).min(mon_h - 120.0 * scale);
 
-        let open = self.open && !self.parked;
-        let win_w = if open { capsule_w.max(panel_w) } else { capsule_w };
-        let win_h = if open { capsule_h + (GAP * scale) + panel_h } else { capsule_h };
+        // The window follows the same easing as the panel fade. Growing it by
+        // 500 px in a single `SetWindowPos` makes DWM recompose the whole
+        // layered surface at once — that is the flash seen when clicking the
+        // capsule. Growing it over the same ~100 ms as the fade reads as one
+        // deliberate unfold.
+        let e = self.anim.clamp(0.0, 1.0);
+        let win_w = (capsule_w + (panel_w - capsule_w) * e).max(capsule_w);
+        // The 8 pt gap between capsule and panel closes as the panel unfolds:
+        // at the end the capsule row *is* the top of the card, not a pill
+        // floating above it. The window height ignores the gap entirely — it
+        // grows by the body only — so collapsed it is exactly the capsule.
+        let gap = GAP * (1.0 - e);
+        let win_h = capsule_h + panel_h * e;
 
         let center_x = (mon.rect[0] + mon.rect[2]) as f32 * 0.5;
         let x = (center_x - win_w * 0.5).round() as i32;
@@ -610,10 +659,12 @@ impl Island {
             ),
             scale,
         );
-        let panel = if open {
+        // The panel keeps its final geometry and is clipped by the growing
+        // window, so the content does not re-flow on every animation frame.
+        let panel = if (self.open && !self.parked) || e > 0.02 {
             Some(win::snap(
                 Rect::from_min_size(
-                    Pos2::new((w_pt - panel_w / scale) * 0.5, capsule_h / scale + GAP),
+                    Pos2::new((w_pt - panel_w / scale) * 0.5, capsule_h / scale + gap),
                     Vec2::new(panel_w / scale, panel_h / scale),
                 ),
                 scale,
@@ -630,17 +681,19 @@ impl Island {
         }
     }
 
+    /// Advance the open/close easing. Driven from `update` (before geometry) so
+    /// the window rectangle and the panel fade always use the same value.
+    fn advance_anim(&mut self) {
+        let target = if self.open && !self.parked { 1.0 } else { 0.0 };
+        self.anim += (target - self.anim) * 0.32;
+        if (target - self.anim).abs() < 0.008 {
+            self.anim = target;
+        }
+    }
+
     fn draw(&mut self, ctx: &egui::Context, geo: &Geo) {
         let pal = self.pal;
         let caps = self.capsule_state();
-        let open = self.open;
-        let target = if open { 1.0 } else { 0.0 };
-        // 0.18 per frame at 60 Hz ≈ 90 ms: fast enough to feel instant, slow
-        // enough that the panel does not pop.
-        self.anim += (target - self.anim) * 0.32;
-        if (target - self.anim).abs() < 0.01 {
-            self.anim = target;
-        }
         let anim = self.anim;
 
         let mut actions: Vec<Action> = Vec::new();
@@ -669,6 +722,32 @@ impl Island {
                     ),
                 );
                 ui.set_min_size(full.size());
+
+                // One surface for the whole window, from the first frame of the
+                // unfold onwards.
+                //
+                // The capsule used to be its own pill with its own border and a
+                // see-through 8 pt gap under it, so the two halves of the app
+                // looked like two objects stacked on each other. Now the card is
+                // the window: it starts life as the pill (same radius, same
+                // colour, the pill drawn on top of it is indistinguishable) and
+                // ends as the panel, with no seam in between.
+                //
+                // Painting the card over the whole window also leaves the
+                // desktop visible only outside the rounded corners, which is
+                // unavoidable for a rounded window and invisible in practice.
+                let radius = 14.0 + (cap_rect.height() * 0.5 - 14.0) * (1.0 - anim);
+                if anim > 0.005 {
+                    let card = Rect::from_min_max(Pos2::ZERO, full.max);
+                    crate::ui::widgets::shadow(ui, card, radius, pal.shadow);
+                    crate::ui::widgets::round_rect(
+                        ui,
+                        card,
+                        radius,
+                        pal.surface,
+                        egui::Stroke::new(1.0_f32, pal.stroke),
+                    );
+                }
 
                 if let Some(rect) = panel_rect {
                     if anim > 0.01 {
@@ -705,20 +784,56 @@ impl Island {
                                 toast: self.toast.as_ref().map(|(t, _)| t.as_str()),
                                 dispatch_note: self.send_note.as_ref().map(|(t, _)| t.as_str()),
                             };
-                            crate::ui::panel::draw(&mut child, faded, &mut st, &pal, &mut actions);
+                            crate::ui::panel::draw(&mut child, faded, &mut st, &pal, &mut actions, true);
                         });
                     }
                 }
 
+                // The island's own content becomes the panel's title row: the
+                // row's left and right edges travel from the pill's padding to
+                // the card's padding, so the clock slides left and the metrics
+                // slide right as it opens instead of the whole row jumping to a
+                // new width. That travel is what "向面板铺开" is.
+                let cap_pad = (cap_rect.height() * 0.34).clamp(9.0, 14.0);
+                let lerp = |a: f32, b: f32| a + (b - a) * anim;
+                let row = Rect::from_min_max(
+                    Pos2::new(
+                        lerp(cap_rect.left() + cap_pad, full.left() + 16.0),
+                        cap_rect.top(),
+                    ),
+                    Pos2::new(
+                        lerp(cap_rect.right() - cap_pad, full.right() - 16.0),
+                        cap_rect.bottom(),
+                    ),
+                );
                 let hit = crate::ui::compact::draw(
                     ui,
-                    cap_rect,
+                    row,
                     &caps,
                     &pal,
                     self.cfg.behavior.opacity,
                     (cap_rect.height() * 0.46).clamp(13.0, 19.0),
+                    crate::ui::compact::CapsuleOpts {
+                        // The card above already covers the pill's area with the
+                        // same colour; drawing the pill too would only add a
+                        // second border inside the card.
+                        shell: anim < 0.02,
+                        pad: 0.0,
+                        corner: anim,
+                        archive: true,
+                    },
                 );
-                if hit.clicked {
+                if hit.close {
+                    self.set_open(false, ctx);
+                }
+                if hit.archive {
+                    self.apply(Action::Archive, ctx);
+                }
+                // Collapsed, the whole pill is the open button. Open, that row
+                // belongs to the panel and only the close button brings it
+                // back down — clicking the title bar of a window does not
+                // close it.
+                if hit.clicked && anim < 0.5 {
                     if self.open {
                         self.set_open(false, ctx);
                     } else {
@@ -811,11 +926,27 @@ impl Island {
     }
 
     fn handle_resize(&mut self, ctx: &egui::Context, _geo: &Geo, resp: &egui::Response) {
+        // Only while the panel is fully open and settled.
+        //
+        // The grip rectangle is derived from the panel geometry, but the window
+        // is still growing for ~200 ms after opening. A press that started
+        // somewhere else (a tab, the capsule) then produced one enormous
+        // `drag_delta` here and clamped the panel to its minimum size — which is
+        // how a 351×307 panel became 320×260 without anyone dragging it.
+        if !self.open || self.anim < 0.99 {
+            if resp.hovered() {
+                ctx.set_cursor_icon(egui::CursorIcon::ResizeNwSe);
+            }
+            return;
+        }
         if resp.hovered() || resp.dragged() {
             ctx.set_cursor_icon(egui::CursorIcon::ResizeNwSe);
         }
-        if resp.dragged() {
+        if resp.dragged_by(egui::PointerButton::Primary) {
             let d = resp.drag_delta();
+            // A single frame never moves more than 60 pt: a real drag is bounded
+            // by how fast the hand moves, a bogus delta is not.
+            let d = Vec2::new(d.x.clamp(-60.0, 60.0), d.y.clamp(-60.0, 60.0));
             if d != Vec2::ZERO {
                 self.cfg.ui.panel_width =
                     (self.cfg.ui.panel_width + d.x).clamp(320.0, 720.0);
@@ -910,11 +1041,31 @@ impl Island {
             Action::MarkAllRead => self.inbox.mark_all_read(),
             Action::ClearInbox => self.inbox.clear(),
             Action::RemoveInbox(id) => self.inbox.remove(id),
+            Action::OpenInbox(id, source) => {
+                self.inbox.mark_read(id);
+                if crate::activate::activate(source) {
+                    // The other app has the foreground now; a topmost island
+                    // left open would sit over it for no reason.
+                    self.set_open(false, ctx);
+                } else {
+                    self.toast = Some((
+                        format!("没有找到正在运行的「{}」窗口", source.label()),
+                        Instant::now(),
+                    ));
+                }
+            }
         }
         ctx.request_repaint();
     }
 
     fn schedule_repaint(&self, ctx: &egui::Context) {
+        let target = if self.open && !self.parked { 1.0 } else { 0.0 };
+        if (target - self.anim).abs() > 0.001 {
+            // Mid-unfold: the window grows every frame, so the frames have to
+            // keep coming or the resize would visibly step.
+            ctx.request_repaint_after(Duration::from_millis(16));
+            return;
+        }
         if self.open {
             // While open, keep the panel responsive (hover, drag, animations).
             ctx.request_repaint_after(Duration::from_millis(120));
@@ -953,6 +1104,8 @@ impl eframe::App for Island {
         self.ensure();
         ctx.set_pixels_per_point(self.scale);
         self.housekeeping(ctx);
+        // Before geometry: the window rectangle is derived from the easing.
+        self.advance_anim();
 
         if self.parked {
             // Full-screen content in front: park off-screen and stop drawing.
