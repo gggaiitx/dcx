@@ -73,6 +73,8 @@ pub struct PanelState<'a> {
     pub media: Option<&'a crate::media::Snapshot>,
     pub media_pos: f64,
     pub media_cover: Option<&'a egui::TextureHandle>,
+    /// Desktop/library counts from the organizer; absent until the first scan.
+    pub library: Option<crate::library::Snapshot>,
     pub textures: &'a mut TextureCache,
     pub toast: Option<&'a str>,
     pub dispatch_note: Option<&'a str>,
@@ -102,6 +104,10 @@ pub enum Action {
     DismissCard(String),
     /// Transport key for the now-playing row.
     MediaCmd(crate::media::Cmd),
+    /// Copy this entry into the organizer's collection ("收进盒子").
+    ClipToBox(u64),
+    /// Open the organizer's library root in Explorer.
+    OpenLibrary,
 }
 
 /// `merged` means the caller already painted one card over the whole window
@@ -174,7 +180,7 @@ pub fn draw(
         Tab::Tasks => tasks_tab(ui, content, p, st, actions),
         Tab::Clip => clip_tab(ui, content, p, st, actions),
         Tab::Inbox => inbox_tab(ui, content, p, st, actions),
-        Tab::Perf => perf_tab(ui, content, p, st),
+        Tab::Perf => perf_tab(ui, content, p, st, actions),
         Tab::Live => live_tab(ui, content, p, st, actions),
     }
 
@@ -822,7 +828,7 @@ fn clip_tab(
     // Row height follows the text: a fixed 40/46 pt row clipped the third line
     // of every longer entry in half, which is what "内容看不完整" was. The width
     // here is what the text actually gets (left padding + pin/delete column).
-    let text_w = (list.width() - 8.0 - 22.0 - 22.0 - 4.0).max(60.0);
+    let text_w = (list.width() - 8.0 - 22.0 - 22.0 - 22.0 - 4.0).max(60.0);
     let heights: Vec<f32> = items.iter().map(|i| clip_row_h(ui, i, text_w)).collect();
     let content_h: f32 = heights.iter().sum();
     let offset = scroll(ui, list, content_h, st.clip_scroll);
@@ -888,6 +894,18 @@ fn clip_tab(
         }
         if item.pinned {
             widgets::glyph(ui, pin.center(), 12.0, Glyph::Pin, p.accent);
+        }
+        icons_right -= 22.0;
+
+        let collect = Rect::from_center_size(
+            Pos2::new(icons_right - 8.0, row.center().y),
+            Vec2::splat(20.0),
+        );
+        if widgets::icon_button(ui, collect, Glyph::Collect, p, false)
+            .on_hover_text("收进盒子")
+            .clicked()
+        {
+            actions.push(Action::ClipToBox(item.id));
         }
         icons_right -= 22.0;
 
@@ -1430,7 +1448,13 @@ fn live_tab(
 // Performance
 // ---------------------------------------------------------------------------
 
-fn perf_tab(ui: &mut egui::Ui, rect: Rect, p: &Palette, st: &mut PanelState<'_>) {
+fn perf_tab(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    p: &Palette,
+    st: &mut PanelState<'_>,
+    actions: &mut Vec<Action>,
+) {
     // Cloned because the rows below borrow `st.perf_scroll` mutably while they
     // read the snapshot; it is a handful of numbers and a small `Vec`.
     let snap = st.snap.clone();
@@ -1469,6 +1493,8 @@ fn perf_tab(ui: &mut egui::Ui, rect: Rect, p: &Palette, st: &mut PanelState<'_>)
         Caption(String),
         Volume { name: String, value: String, frac: f32, level: u8 },
         Error(String),
+        /// Desktop backlog + collection size, with the "open library" button.
+        Library { desktop: usize, library: usize },
     }
     let mut rows: Vec<Row> = Vec::new();
     rows.push(Row::Line {
@@ -1534,6 +1560,12 @@ fn perf_tab(ui: &mut egui::Ui, rect: Rect, p: &Palette, st: &mut PanelState<'_>)
     if let Some(err) = &st.metrics_error {
         rows.push(Row::Error(err.clone()));
     }
+    if let Some(lib) = st.library {
+        rows.push(Row::Library {
+            desktop: lib.desktop,
+            library: lib.library,
+        });
+    }
 
     // 20 pt a row, 16 pt for a caption: with the cards at 66 pt this leaves room
     // for three volumes in the default 292 pt panel, and the column scrolls when
@@ -1541,6 +1573,7 @@ fn perf_tab(ui: &mut egui::Ui, rect: Rect, p: &Palette, st: &mut PanelState<'_>)
     // a variable-length list cannot afford that.
     let height_of = |row: &Row| match row {
         Row::Caption(_) => 16.0,
+        Row::Library { .. } => 24.0,
         _ => 20.0,
     };
     let content_h: f32 = rows.iter().map(height_of).sum();
@@ -1553,7 +1586,7 @@ fn perf_tab(ui: &mut egui::Ui, rect: Rect, p: &Palette, st: &mut PanelState<'_>)
     for row in &rows {
         let h = height_of(row);
         if y + h > view.top() && y < view.bottom() {
-            paint(ui, view, y, h, row, p);
+            paint(ui, view, y, h, row, p, actions);
         }
         y += h;
     }
@@ -1565,7 +1598,15 @@ fn perf_tab(ui: &mut egui::Ui, rect: Rect, p: &Palette, st: &mut PanelState<'_>)
     /// and a volume puts a bar in the gap between the two: the same order as
     /// the metric rows, so the whole column reads as one table instead of three
     /// widget styles.
-    fn paint(ui: &mut egui::Ui, view: Rect, y: f32, h: f32, row: &Row, p: &Palette) {
+    fn paint(
+        ui: &mut egui::Ui,
+        view: Rect,
+        y: f32,
+        h: f32,
+        row: &Row,
+        p: &Palette,
+        actions: &mut Vec<Action>,
+    ) {
     let mid = y + h * 0.5;
     match row {
         Row::Caption(text) => {
@@ -1607,6 +1648,38 @@ fn perf_tab(ui: &mut egui::Ui, rect: Rect, p: &Palette, st: &mut PanelState<'_>)
                 10.0,
                 p.danger,
             );
+        }
+        Row::Library { desktop, library } => {
+            widgets::text(
+                ui,
+                Pos2::new(view.left() + 1.0, mid),
+                Align2::LEFT_CENTER,
+                "桌面待整理",
+                11.0,
+                p.text_dim,
+            );
+            let label = "打开收纳库";
+            let btn_w = ui
+                .painter()
+                .layout_no_wrap(label.to_string(), FontId::proportional(10.0), Color32::WHITE)
+                .size()
+                .x
+                + 16.0;
+            let btn = Rect::from_min_size(
+                Pos2::new(view.right() - btn_w, mid - 9.0),
+                Vec2::new(btn_w, 18.0),
+            );
+            widgets::mono_text(
+                ui,
+                Pos2::new(btn.left() - 8.0, mid),
+                Align2::RIGHT_CENTER,
+                &format!("{desktop} 项 · 收纳库 {library} 项"),
+                10.0,
+                p.text,
+            );
+            if small_button(ui, btn, p, label).clicked() {
+                actions.push(Action::OpenLibrary);
+            }
         }
         Row::Volume {
             name,

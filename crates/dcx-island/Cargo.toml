@@ -13,6 +13,9 @@ path = "src/main.rs"
 [dependencies]
 dcx-win32 = { path = "../dcx-win32" }
 dcx-island-config = { path = "../dcx-island-config" }
+# Read-only use: desktop/library counts and the absorb + manifest-patch calls
+# the "send to the box" paths share with the box panel.
+dcx-organizer = { path = "../dcx-organizer" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -955,6 +955,7 @@ name = "dcx-island"
 version = "0.1.1"
 dependencies = [
  "dcx-island-config",
+ "dcx-organizer",
  "dcx-win32",
  "eframe",
  "egui",

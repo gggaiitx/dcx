@@ -242,6 +242,8 @@ pub enum Glyph {
     Play,
     Pause,
     Next,
+    /// Arrow into a tray — "收进盒子".
+    Collect,
 }
 
 pub fn glyph(ui: &Ui, center: Pos2, size: f32, which: Glyph, color: Color32) {
@@ -516,6 +518,17 @@ fn draw_glyph(
                     color,
                 ));
             }
+        }
+        Glyph::Collect => {
+            // Down-arrow into a tray. Deliberately not a box outline: next to
+            // the clipboard tab and the doc glyph, a third rectangular
+            // silhouette would read as paper again.
+            line(c + Vec2::new(0.0, -s * 0.8), c + Vec2::new(0.0, s * 0.15));
+            line(c + Vec2::new(-s * 0.42, -s * 0.25), c + Vec2::new(0.0, s * 0.2));
+            line(c + Vec2::new(s * 0.42, -s * 0.25), c + Vec2::new(0.0, s * 0.2));
+            line(c + Vec2::new(-s * 0.8, s * 0.55), c + Vec2::new(-s * 0.8, s * 0.85));
+            line(c + Vec2::new(s * 0.8, s * 0.55), c + Vec2::new(s * 0.8, s * 0.85));
+            line(c + Vec2::new(-s * 0.8, s * 0.85), c + Vec2::new(s * 0.8, s * 0.85));
         }
     }
 }

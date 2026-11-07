@@ -24,6 +24,7 @@
 //! no faster than the next clock second (or 250 ms while the panel is open), so
 //! an idle island costs almost no CPU.
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver};
 use std::time::{Duration, Instant, SystemTime};
@@ -35,7 +36,7 @@ use dcx_island_config::Config;
 
 use crate::ui::panel::{Action, PanelState, TextureCache};
 use crate::ui::{theme, Tab};
-use crate::{api, clipboard, clock, dispatch, inbox, media, metrics, notify, sys, tasks, win};
+use crate::{api, clipboard, clock, dispatch, inbox, library, media, metrics, notify, sys, tasks, win};
 
 /// Must equal `AppEntry.window_title` in `dcx-host/src/apps.rs` byte for byte:
 /// the host uses `FindWindowW` to stop a manually started instance and to
@@ -124,6 +125,14 @@ enum MailMsg {
     Failed(String),
 }
 
+/// Result of one absorb worker. `clip` selects the toast wording: the drop
+/// path counts files, the clipboard path collects one entry.
+struct Absorbed {
+    adopted: usize,
+    saved: bool,
+    clip: bool,
+}
+
 struct Island {
     cfg: Config,
     cfg_stamp: Option<SystemTime>,
@@ -178,6 +187,12 @@ struct Island {
     media: Option<media::Media>,
     /// Latest now-playing snapshot with its local interpolation clock.
     now_playing: media::NowPlaying,
+    library: library::Library,
+    library_snap: Option<library::Snapshot>,
+    /// A file drag is over the island; the capsule shows it as a drop target.
+    drop_hover: bool,
+    /// Result of the last absorb worker; `None` when nothing is running.
+    absorb_rx: Option<Receiver<Absorbed>>,
 
     textures: TextureCache,
     tab: Tab,
@@ -268,6 +283,10 @@ impl Island {
             card_flash: None,
             media: media::start(cfg.media.enabled),
             now_playing: media::NowPlaying::new(),
+            library: library::start(),
+            library_snap: None,
+            drop_hover: false,
+            absorb_rx: None,
             textures: TextureCache::new(),
             tab: Tab::from_key(&cfg.ui.last_tab),
             task_input: String::new(),
@@ -317,6 +336,8 @@ impl Island {
             self.drain_clipboard(ctx);
             self.drain_api(ctx);
             self.drain_media(ctx);
+            self.drain_library(ctx);
+            self.drain_absorb(ctx);
             if self.notifier.poll(&mut self.inbox) {
                 ctx.request_repaint();
             }
@@ -607,6 +628,78 @@ impl Island {
         if changed {
             ctx.request_repaint();
         }
+    }
+
+    fn drain_library(&mut self, ctx: &egui::Context) {
+        let mut latest = None;
+        while let Ok(snap) = self.library.rx.try_recv() {
+            latest = Some(snap);
+        }
+        if let Some(snap) = latest {
+            let changed = self
+                .library_snap
+                .map(|s| (s.desktop, s.library) != (snap.desktop, snap.library))
+                .unwrap_or(true);
+            self.library_snap = Some(snap);
+            if changed {
+                ctx.request_repaint();
+            }
+        }
+    }
+
+    fn drain_absorb(&mut self, ctx: &egui::Context) {
+        let Some(rx) = &self.absorb_rx else { return };
+        let mut done = None;
+        while let Ok(msg) = rx.try_recv() {
+            done = Some(msg);
+        }
+        let Some(msg) = done else { return };
+        self.absorb_rx = None;
+        let text = if msg.adopted == 0 {
+            "没有可收纳的文件".to_string()
+        } else if !msg.saved {
+            format!("已收纳 {} 个（清单未保存）", msg.adopted)
+        } else if msg.clip {
+            "已收进盒子".to_string()
+        } else {
+            format!("已收纳 {} 个", msg.adopted)
+        };
+        self.toast = Some((text, Instant::now()));
+        ctx.request_repaint();
+    }
+
+    /// Files dragged over the island and dropped on it. `raw.dropped_files` is
+    /// already wired by winit's OLE drop target; nothing is registered here.
+    fn drain_drop(&mut self, ctx: &egui::Context) {
+        let (hovered, dropped) =
+            ctx.input(|i| (i.raw.hovered_files.len(), i.raw.dropped_files.clone()));
+        let hover = hovered > 0;
+        if hover != self.drop_hover {
+            self.drop_hover = hover;
+            ctx.request_repaint();
+        }
+        if dropped.is_empty() {
+            return;
+        }
+        let paths: Vec<PathBuf> = dropped.into_iter().filter_map(|f| f.path).collect();
+        if paths.is_empty() {
+            return;
+        }
+        self.spawn_absorb(paths, false);
+    }
+
+    fn spawn_absorb(&mut self, paths: Vec<PathBuf>, clip: bool) {
+        let (tx, rx) = channel();
+        self.absorb_rx = Some(rx);
+        self.toast = Some(("正在收纳…".to_string(), Instant::now()));
+        std::thread::spawn(move || {
+            let (adopted, saved) = library::absorb(paths);
+            let _ = tx.send(Absorbed {
+                adopted,
+                saved,
+                clip,
+            });
+        });
     }
 
     fn poll_send(&mut self) {
@@ -966,6 +1059,7 @@ impl Island {
                                 media: self.now_playing.snap(),
                                 media_pos: self.now_playing.position(),
                                 media_cover: self.now_playing.cover(),
+                                library: self.library_snap,
                                 textures: &mut self.textures,
                                 toast: self.toast.as_ref().map(|(t, _)| t.as_str()),
                                 dispatch_note: self.send_note.as_ref().map(|(t, _)| t.as_str()),
@@ -1139,6 +1233,7 @@ impl Island {
             open: self.open,
             flash,
             flash_t,
+            drop_hover: self.drop_hover,
         }
     }
 
@@ -1336,6 +1431,32 @@ impl Island {
                     media.send(cmd);
                 }
             }
+            Action::ClipToBox(id) => {
+                let Some(item) = self.clip.file.items.iter().find(|i| i.id == id).cloned() else {
+                    return;
+                };
+                let now = clock::Clock::now();
+                // Staged outside the library on purpose: the panel's absorb
+                // wants a path it may move, and for images that path must be a
+                // copy so the clipboard thumbnail keeps working.
+                let staged = match item.kind {
+                    clipboard::Kind::Text => library::stage_text(&item.text, &now),
+                    clipboard::Kind::Image => match &item.image {
+                        Some(name) => library::stage_image(&self.clip.dir.join(name), &now),
+                        None => Err("图片文件不存在".to_string()),
+                    },
+                };
+                match staged {
+                    Ok(path) => self.spawn_absorb(vec![path], true),
+                    Err(e) => self.toast = Some((e, Instant::now())),
+                }
+            }
+            Action::OpenLibrary => {
+                let dir = dcx_organizer::Config::load().library_dir();
+                if let Err(e) = std::process::Command::new("explorer.exe").arg(&dir).spawn() {
+                    self.toast = Some((format!("打开收纳库失败：{e}"), Instant::now()));
+                }
+            }
         }
         ctx.request_repaint();
     }
@@ -1390,6 +1511,8 @@ impl eframe::App for Island {
         self.ensure();
         ctx.set_pixels_per_point(self.scale);
         self.housekeeping(ctx);
+        // Drop input is per-frame, so it cannot live on the 200 ms tick.
+        self.drain_drop(ctx);
         // Before geometry: the window rectangle is derived from the easing.
         self.advance_anim();
 

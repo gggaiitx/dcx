@@ -33,6 +33,9 @@ pub struct CapsuleState {
     /// Seconds since the reminder fired; the bell's shake and the sweep are
     /// driven by this, while `flash` is the envelope that fades them out.
     pub flash_t: f32,
+    /// A file drag is over the island: the pill takes the accent wash as a
+    /// drop target. Not an alert — no pulse, no border thickening.
+    pub drop_hover: bool,
 }
 
 /// How the row should be drawn. The same layout runs in both states; only the
@@ -94,6 +97,16 @@ pub fn draw(
                 with_alpha(p.accent, 0.02 + 0.06 * flash),
                 Stroke::NONE,
             );
+        } else if st.drop_hover {
+            // A steady wash, not the reminder's pulse: the pointer is already
+            // over the pill, so the only question is whether a drop will land.
+            widgets::round_rect_smooth(
+                ui,
+                rect,
+                radius,
+                with_alpha(p.accent, 0.10),
+                Stroke::NONE,
+            );
         }
 
         // No top sheen. It was meant to make a translucent capsule read as
@@ -109,6 +122,8 @@ pub fn draw(
             Stroke::new(1.2_f32, with_alpha(p.accent, 0.30 + 0.65 * flash))
         } else if st.open {
             Stroke::new(1.0_f32, with_alpha(p.accent, 0.55))
+        } else if st.drop_hover {
+            Stroke::new(1.0_f32, with_alpha(p.accent, 0.75))
         } else if st.hovered {
             Stroke::new(1.0_f32, with_alpha(p.stroke, 0.9))
         } else {
