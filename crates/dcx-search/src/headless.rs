@@ -20,6 +20,9 @@ struct Out {
     query: String,
     partial: bool,
     elapsed_ms: u64,
+    /// Age of the on-disk snapshot the answer came from. The island shows it:
+    /// a snapshot can lag behind the file system by an hour or more.
+    index_age_secs: u64,
     hits: Vec<HitOut>,
 }
 
@@ -70,6 +73,12 @@ pub fn run(args: &[String]) -> i32 {
         );
         return 2;
     };
+    let index_age_secs = std::fs::metadata(&path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
 
     let (tx, rx) = unbounded();
     let gen = 1u64;
@@ -121,6 +130,7 @@ pub fn run(args: &[String]) -> i32 {
         query: text,
         partial,
         elapsed_ms,
+        index_age_secs,
         hits: hits
             .into_iter()
             .map(|h| {

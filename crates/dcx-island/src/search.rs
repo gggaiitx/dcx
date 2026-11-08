@@ -18,6 +18,11 @@ pub struct FileHit {
     pub path: String,
     pub name: String,
     pub dir: String,
+    #[serde(default)]
+    pub size: Option<u64>,
+    /// Last write time, seconds since the Unix epoch.
+    #[serde(default)]
+    pub mtime: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -25,11 +30,15 @@ pub struct Outcome {
     pub query: String,
     pub hits: Vec<FileHit>,
     pub error: Option<String>,
+    /// How old the snapshot behind the answer is, in seconds.
+    pub index_age_secs: u64,
 }
 
 #[derive(Deserialize)]
 struct Reply {
     hits: Vec<FileHit>,
+    #[serde(default)]
+    index_age_secs: u64,
 }
 
 pub fn start(query: String, limit: usize) -> Receiver<Outcome> {
@@ -51,6 +60,7 @@ fn run(query: &str, limit: usize) -> Outcome {
         query: query.to_string(),
         hits: Vec::new(),
         error: Some(msg),
+        index_age_secs: 0,
     };
     let Some(exe) = exe_path() else {
         return error("找不到 dcx-search.exe（应与信息岛放在同一目录）".to_string());
@@ -112,6 +122,7 @@ fn run(query: &str, limit: usize) -> Outcome {
             query: query.to_string(),
             hits: reply.hits,
             error: None,
+            index_age_secs: reply.index_age_secs,
         },
         Err(e) => error(format!("解析检索结果失败：{e}")),
     }

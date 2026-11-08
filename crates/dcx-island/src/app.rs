@@ -207,6 +207,8 @@ struct Island {
     /// Query the current `search_hits`/`search_error` answer.
     search_done_for: String,
     search_hits: Vec<search::FileHit>,
+    /// Age of the snapshot behind `search_hits`, seconds.
+    search_index_age: Option<u64>,
     search_error: Option<String>,
 
     textures: TextureCache,
@@ -311,6 +313,7 @@ impl Island {
             search_rx: None,
             search_done_for: String::new(),
             search_hits: Vec::new(),
+            search_index_age: None,
             search_error: None,
             textures: TextureCache::new(),
             tab: Tab::from_key(&cfg.ui.last_tab),
@@ -763,6 +766,7 @@ impl Island {
                 self.search_pending_at = None;
                 self.search_done_for = outcome.query;
                 self.search_hits = outcome.hits;
+                self.search_index_age = Some(outcome.index_age_secs);
                 self.search_error = outcome.error;
                 ctx.request_repaint();
             }
@@ -792,7 +796,9 @@ impl Island {
         }
         self.search_pending = Some(query.clone());
         self.search_pending_at = Some(Instant::now());
-        self.search_rx = Some(search::start(query, 12));
+        // 50 is the headless cap; the panel shows the first 20 and points at
+        // the full search app for anything deeper.
+        self.search_rx = Some(search::start(query, 50));
     }
 
     fn poll_send(&mut self) {
@@ -1161,6 +1167,7 @@ impl Island {
                                 search_query: &mut self.search_query,
                                 search_scroll: &mut self.search_scroll,
                                 search_hits: &self.search_hits,
+                                search_index_age: self.search_index_age,
                                 search_ready,
                                 search_error: if search_ready {
                                     self.search_error.as_deref()
@@ -1571,6 +1578,7 @@ impl Island {
                 self.search_at = Some(Instant::now());
                 if self.search_query.trim().chars().count() < 2 {
                     self.search_hits.clear();
+                    self.search_index_age = None;
                     self.search_error = None;
                     self.search_done_for.clear();
                     self.search_pending = None;

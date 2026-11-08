@@ -83,6 +83,8 @@ pub struct PanelState<'a> {
     pub search_hits: &'a [crate::search::FileHit],
     pub search_ready: bool,
     pub search_error: Option<&'a str>,
+    /// Age of the snapshot behind `search_hits`, seconds.
+    pub search_index_age: Option<u64>,
     pub textures: &'a mut TextureCache,
     pub toast: Option<&'a str>,
     pub dispatch_note: Option<&'a str>,
@@ -358,6 +360,19 @@ fn draw_media_row(
 fn fmt_time(secs: f64) -> String {
     let s = secs.max(0.0) as u64;
     format!("{}:{:02}", s / 60, s % 60)
+}
+
+/// Snapshot age in words: "刚刚" / "12 分钟前" / "3 小时前" / "2 天前".
+fn age_label(secs: u64) -> String {
+    if secs < 60 {
+        "刚刚".to_string()
+    } else if secs < 3600 {
+        format!("{} 分钟前", secs / 60)
+    } else if secs < 86_400 {
+        format!("{} 小时前", secs / 3600)
+    } else {
+        format!("{} 天前", secs / 86_400)
+    }
 }
 
 fn draw_tabs(
@@ -1515,16 +1530,27 @@ fn search_tab(
             list,
             p,
             "输入至少 2 个字符",
-            "同时搜索开始菜单应用与本地文件",
+            "搜应用与文件名 · 内容检索请用文件检索（Alt+S）",
         );
         return;
     }
 
     let apps: Vec<&crate::launcher::AppEntry> = crate::launcher::matches(st.apps, &query, 5);
     let files: Vec<&crate::search::FileHit> = if st.search_ready {
-        st.search_hits.iter().take(8).collect()
+        // The headless query returns up to 50; the list shows the first 20 and
+        // the caption points at the full app for anything deeper.
+        st.search_hits.iter().take(20).collect()
     } else {
         Vec::new()
+    };
+    // Name-only + snapshot age belong in the caption: this quick search is not
+    // the full story, and the full story is one hotkey away.
+    let index_note = match st.search_index_age {
+        Some(age) if age > 3600 => {
+            format!("索引 {} · 可能不含新文件 · Alt+S 刷新", age_label(age))
+        }
+        Some(age) => format!("索引 {} · 仅文件名 · 内容检索用 Alt+S", age_label(age)),
+        None => "仅文件名 · 内容检索用 Alt+S".to_string(),
     };
 
     // Enter opens the first row; Ctrl+Enter reveals it. The two are detected
@@ -1553,6 +1579,8 @@ fn search_tab(
 
     enum Row<'a> {
         Caption(&'static str),
+        /// The file-result header: label left, index age / scope note right.
+        Files { note: &'a str },
         App(&'a crate::launcher::AppEntry),
         File(&'a crate::search::FileHit),
         Note(&'a str),
@@ -1566,11 +1594,11 @@ fn search_tab(
         (false, _) => rows.push(Row::Note("搜索文件…")),
         (true, Some(err)) => rows.push(Row::Note(err)),
         (true, None) if files.is_empty() && apps.is_empty() => {
-            rows.push(Row::Note("没有匹配的应用或文件"))
+            rows.push(Row::Note("没有匹配的应用或文件 · 内容检索用 Alt+S"))
         }
         (true, None) if files.is_empty() => {}
         (true, None) => {
-            rows.push(Row::Caption("文件"));
+            rows.push(Row::Files { note: &index_note });
             rows.extend(files.iter().map(|f| Row::File(f)));
         }
     }
@@ -1578,6 +1606,7 @@ fn search_tab(
     let height_of = |row: &Row| -> f32 {
         match row {
             Row::Caption(_) => 16.0,
+            Row::Files { .. } => 16.0,
             Row::App(_) => 26.0,
             Row::File(_) => 34.0,
             Row::Note(_) => 20.0,
@@ -1621,7 +1650,25 @@ fn search_tab(
                     10.5,
                     p.text_faint,
                 );
-            }            Row::App(app) => {
+            }            Row::Files { note } => {
+                widgets::text(
+                    ui,
+                    Pos2::new(r.left() + 1.0, mid),
+                    Align2::LEFT_CENTER,
+                    "文件",
+                    9.0,
+                    p.text_faint,
+                );
+                widgets::text(
+                    ui,
+                    Pos2::new(r.right(), mid),
+                    Align2::RIGHT_CENTER,
+                    note,
+                    9.0,
+                    p.text_faint,
+                );
+            }
+            Row::App(app) => {
                 let hovered = ui.rect_contains_pointer(r);
                 if hovered {
                     widgets::round_rect(
@@ -1668,7 +1715,34 @@ fn search_tab(
                 // when one of the two lines did not fit — a hint on a row that
                 // already shows everything is noise.
                 let name = widgets::fit_one_line(ui, &file.name, 12.0, r.width() - 6.0);
-                let dir = widgets::fit_one_line(ui, &file.dir, 9.0, r.width() - 6.0);
+                let mut meta = String::new();
+                if let Some(size) = file.size {
+                    meta.push_str(&crate::metrics::human_bytes(size));
+                }
+                if let Some(mtime) = file.mtime {
+                    let stamp = dcx_win32::local_time_from_unix(mtime);
+                    if !stamp.is_empty() {
+                        if !meta.is_empty() {
+                            meta.push_str(" · ");
+                        }
+                        meta.push_str(&stamp);
+                    }
+                }
+                let meta_w = if meta.is_empty() {
+                    0.0
+                } else {
+                    ui.fonts(|f| {
+                        f.layout_no_wrap(meta.clone(), FontId::proportional(9.0), Color32::WHITE)
+                            .size()
+                            .x
+                    })
+                };
+                let dir = widgets::fit_one_line(
+                    ui,
+                    &file.dir,
+                    9.0,
+                    (r.width() - 8.0 - meta_w).max(20.0),
+                );
                 widgets::text(
                     ui,
                     Pos2::new(r.left() + 1.0, r.top() + 4.0),
@@ -1685,6 +1759,16 @@ fn search_tab(
                     9.0,
                     p.text_faint,
                 );
+                if !meta.is_empty() {
+                    widgets::text(
+                        ui,
+                        Pos2::new(r.right() - 1.0, r.top() + 19.0),
+                        Align2::RIGHT_TOP,
+                        &meta,
+                        9.0,
+                        with_alpha(p.text_faint, 0.85),
+                    );
+                }
                 let resp = ui.interact(
                     r,
                     ui.id().with(("search-file", &file.path)),
