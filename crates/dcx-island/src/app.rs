@@ -163,6 +163,8 @@ struct Island {
     focus_lost: Option<Instant>,
     last_input: Instant,
     last_fs: Instant,
+    /// Working set already handed back since the panel last opened.
+    trimmed: bool,
     last_marker: Instant,
     last_stamp: u128,
     /// What was last written to the `ui` table, so a close does not rewrite the
@@ -279,6 +281,7 @@ impl Island {
             focus_lost: None,
             last_input: Instant::now(),
             last_fs: Instant::now(),
+            trimmed: false,
             last_marker: Instant::now(),
             last_stamp: 0,
             ui_saved: (
@@ -403,6 +406,14 @@ impl Island {
             if now.duration_since(self.last_input) >= Duration::from_secs(auto) {
                 self.set_open(false, ctx);
             }
+        }
+        // Give the working set back once the panel has closed: an idle tray
+        // widget must not read like a 145 MB application in Task Manager. The
+        // committed heap is untouched; this only releases pages the GL driver
+        // and egui no longer need.
+        if !self.open && self.anim < 0.02 && !self.trimmed {
+            self.trimmed = true;
+            win::trim_working_set();
         }
     }
 
@@ -912,6 +923,8 @@ impl Island {
         self.open = open;
         self.last_input = Instant::now();
         if open {
+            // A new session in the panel: allow another trim when it closes.
+            self.trimmed = false;
             self.focus_lost = None;
             self.passive = !activate;
             // Focus is required for the task input; the window is created

@@ -618,3 +618,26 @@ pub fn snap(rect: Rect, scale: f32) -> Rect {
     let px = to_px(rect, scale);
     px_rect(px, scale)
 }
+
+#[link(name = "psapi")]
+extern "system" {
+    fn EmptyWorkingSet(process: isize) -> i32;
+}
+
+#[link(name = "kernel32")]
+extern "system" {
+    fn GetCurrentProcess() -> isize;
+}
+
+/// Return pages the process no longer needs to the OS.
+///
+/// The island is idle most of the day; most of its ~145 MB working set is GL
+/// driver and egui scratch pages that stay resident after a panel session.
+/// Trimming after the panel closes brings Task Manager's number back down
+/// without touching the committed heap (nothing is freed, pages are just
+/// paged out and fault back in on demand).
+pub fn trim_working_set() {
+    unsafe {
+        EmptyWorkingSet(GetCurrentProcess());
+    }
+}

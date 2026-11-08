@@ -27,14 +27,24 @@ impl TextureCache {
         }
     }
 
-    /// Load a thumbnail once. Images are decoded at full size and handed to egui
-    /// as `ColorImage`; the list shows at most a dozen, and the cache is capped
-    /// so a long session cannot grow without bound.
+    /// Load a thumbnail once, decoded no larger than the row can show.
+    ///
+    /// The row is 48×~42 pt (≈65×52 px at 125 %); a full-size screenshot
+    /// (2180×908) used to become a 7.9 MB RGBA texture *per entry* — nine of
+    /// those were ~70 MB of the island's memory. Decoding down to a 160 px box
+    /// keeps the aspect ratio, covers 200 % scaling, and costs ~40 KB each.
     fn get(&mut self, ctx: &egui::Context, id: u64, path: &std::path::Path) -> Option<egui::TextureHandle> {
         if let Some(t) = self.map.get(&id) {
             return Some(t.clone());
         }
-        let img = image::open(path).ok()?.to_rgba8();
+        const MAX_EDGE: u32 = 160;
+        let decoded = image::open(path).ok()?;
+        let decoded = if decoded.width() > MAX_EDGE || decoded.height() > MAX_EDGE {
+            decoded.thumbnail(MAX_EDGE, MAX_EDGE)
+        } else {
+            decoded
+        };
+        let img = decoded.to_rgba8();
         let size = [img.width() as usize, img.height() as usize];
         let color = egui::ColorImage::from_rgba_unmultiplied(size, img.as_raw());
         let tex = ctx.load_texture(format!("clip-{id}"), color, Default::default());
