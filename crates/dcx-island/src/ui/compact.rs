@@ -102,7 +102,7 @@ pub fn draw(
                 ui,
                 shell,
                 radius,
-                with_alpha(p.accent, 0.02 + 0.06 * flash),
+                with_alpha(p.accent, 0.05 + 0.16 * flash),
                 Stroke::NONE,
             );
         } else if st.drop_hover {
@@ -336,31 +336,35 @@ pub fn draw(
         let avail = (right - left).max(0.0);
         if avail > 40.0 {
             // Motion, not colour, is what says "ringing": the bell swings twice
-            // per breath and settles, on the same envelope as the border, so the
-            // alert has one rhythm instead of two competing ones.
+            // per breath and settles. The amplitude is deliberately large — at
+            // 2.4 px it read as a rendering wobble rather than as an alert, and
+            // the capsule no longer has a ring to fall back on.
             let phase = (st.flash_t / 0.85).fract();
             let swing = if flash > 0.01 {
-                2.4 * flash
+                4.8 * flash
                     * (-4.5 * phase).exp()
                     * (phase * std::f32::consts::TAU * 2.0).sin()
             } else {
                 0.0
             };
-            let bell_c = Pos2::new(left + 5.0 + swing, mid_y);
+            let bell_c = Pos2::new(left + 6.0 + swing, mid_y);
             if flash > 0.01 {
                 // Halo behind the bell instead of a wash over the whole pill:
                 // lighting one end says where the alert comes from without
                 // tinting the clock and the text beside it.
-                for (r, a) in [(9.0_f32, 0.05_f32), (6.5, 0.07), (4.0, 0.11)] {
+                for (r, a) in [(12.0_f32, 0.08_f32), (8.5, 0.11), (5.5, 0.16)] {
                     ui.painter()
                         .circle_filled(bell_c, r, with_alpha(p.accent, a * flash));
                 }
             }
-            widgets::glyph(ui, bell_c, 10.0, Glyph::Bell, p.accent);
-            let text_left = left + 14.0;
+            widgets::glyph(ui, bell_c, 11.5, Glyph::Bell, p.accent);
+            let text_left = left + 16.0;
+            // The title sways a little with the bell, so the movement reads as
+            // the whole alert shaking instead of one small icon twitching.
+            let text_left = text_left + swing * 0.35;
             let avail = (right - text_left).max(0.0);
             // Body colour, not accent: the task name has to stay as readable as
-            // the clock it sits next to. The bell and the ring carry "reminder".
+            // the clock it sits next to. The bell and the wash carry "reminder".
             // One line, ellipsised by measurement: wrapping inside a 28 pt
             // pill clipped the second line through its glyphs, which read as a
             // rendering fault rather than as "the title continues".

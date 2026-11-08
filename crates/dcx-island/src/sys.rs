@@ -315,15 +315,16 @@ const SND_MEMORY: u32 = 0x0004;
 /// `SND_ASYNC` returns immediately, so the render thread is never blocked by
 /// the 0.7 s of audio. The buffer is a `'static` `OnceLock`, which is the one
 /// hard requirement of `SND_MEMORY`: winmm keeps reading it after we return.
-pub fn chime() {
+pub fn chime() -> bool {
     let wav = chime_wav();
-    let played = unsafe { PlaySoundW(wav.as_ptr(), 0, SND_MEMORY | SND_ASYNC | SND_NODEFAULT) };
-    if played == 0 {
+    let played = unsafe { PlaySoundW(wav.as_ptr(), 0, SND_MEMORY | SND_ASYNC | SND_NODEFAULT) } != 0;
+    if !played {
         // Recorded rather than swallowed: a silent reminder looks exactly like a
         // broken reminder, and the log is the only place to tell them apart.
         crate::win::trace("chime: PlaySound refused the in-memory WAV; fell back to MessageBeep");
         beep();
     }
+    played
 }
 
 fn chime_wav() -> &'static [u8] {
@@ -332,19 +333,24 @@ fn chime_wav() -> &'static [u8] {
     WAV.get_or_init(build_chime)
 }
 
-/// A two-note rising chime (B5 → E6) as a 16-bit mono 44.1 kHz WAV image.
+/// A two-phrase rising chime (B5 → E6, twice) as a 16-bit mono 44.1 kHz WAV.
 ///
 /// Two notes rather than one beep because a single tone at this length reads as
-/// an error, and a reminder is not an error. Each note has a 6 ms attack and an
-/// exponential decay — a struck bell, not a test tone — plus a quiet octave so
-/// it still carries at low volume.
+/// an error, and a reminder is not an error. The phrase repeats once: on laptop
+/// speakers a single 0.7 s phrase was easy to miss while typing. Each note has a
+/// 6 ms attack and an exponential decay — a struck bell, not a test tone — plus
+/// a quiet octave so it still carries at low volume. The finished mix is
+/// normalised to just under full scale, so it is as loud as a WAV can be without
+/// clipping.
 fn build_chime() -> Vec<u8> {
     const RATE: u32 = 44_100;
-    const SECONDS: f32 = 0.75;
+    const SECONDS: f32 = 1.30;
     // (start s, Hz, length s, peak)
-    const NOTES: [(f32, f32, f32, f32); 2] = [
-        (0.00, 987.77, 0.34, 0.42),  // B5
-        (0.13, 1318.51, 0.55, 0.36), // E6
+    const NOTES: [(f32, f32, f32, f32); 4] = [
+        (0.00, 987.77, 0.30, 0.85),   // B5
+        (0.12, 1318.51, 0.50, 0.80),  // E6
+        (0.55, 987.77, 0.28, 0.62),   // B5, second phrase
+        (0.67, 1318.51, 0.52, 0.58),  // E6
     ];
 
     let frames = (RATE as f32 * SECONDS) as usize;
@@ -362,6 +368,15 @@ fn build_chime() -> Vec<u8> {
             let decay = (-t / (len * 0.42)).exp();
             let phase = std::f32::consts::TAU * freq * t;
             samples[idx] += peak * attack * decay * (phase.sin() + 0.25 * (2.0 * phase).sin());
+        }
+    }
+    // Normalise the mix: overlapping notes must not hard-clip, and the result
+    // should use the whole i16 range (the old mix peaked around 0.5).
+    let peak = samples.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+    if peak > 0.0 {
+        let gain = (0.92 / peak).min(4.0);
+        for s in &mut samples {
+            *s *= gain;
         }
     }
 

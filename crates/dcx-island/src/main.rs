@@ -89,7 +89,25 @@ fn main() {
         println!("  --push JSON : post one card to the running island's push API");
         println!("  --push-file PATH : same, JSON read from a UTF-8 file (use this from");
         println!("                     PowerShell 5.1 — its native quoting mangles embedded quotes)");
+        println!("  --chime-test : play the reminder chime once and report whether Windows accepted it");
         println!("  settings     : edit in dcx-host.exe --settings → 桌面信息岛");
+        return;
+    }
+
+    // Diagnostic: proves whether the reminder sound reaches Windows at all,
+    // independent of tasks, DND and scheduling.
+    if args.first().map(String::as_str) == Some("--chime-test") {
+        unsafe { dcx_win32::AttachConsole(dcx_win32::ATTACH_PARENT_PROCESS) };
+        let played = sys::chime();
+        println!(
+            "chime: {}",
+            if played {
+                "PlaySound accepted the WAV (listen on the default output device)"
+            } else {
+                "PlaySound refused the WAV; MessageBeep fallback was used"
+            }
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1500));
         return;
     }
 
