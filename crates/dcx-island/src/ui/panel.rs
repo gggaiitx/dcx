@@ -967,8 +967,8 @@ fn clip_tab(
         }
         y += row_h;
     }
-    scroll_bar(ui, list, p, content_h, offset);
     ui.set_clip_rect(prev_clip);
+    scroll_bar(ui, list, p, content_h, offset);
 }
 
 // ---------------------------------------------------------------------------
@@ -1261,8 +1261,8 @@ fn inbox_tab(
         }
         y += row_h;
     }
-    scroll_bar(ui, list, p, content_h, offset);
     ui.set_clip_rect(prev_clip);
+    scroll_bar(ui, list, p, content_h, offset);
 }
 
 // ---------------------------------------------------------------------------
@@ -1381,14 +1381,22 @@ fn live_tab(
             p.text_faint,
         );
         if hovered {
+            // A 13 pt glyph on an 18 pt plate (what `icon_button` draws) read
+            // as a title-bar close button bolted onto a 46 pt card. The
+            // dismiss affordance here is secondary to the card's own action,
+            // so it gets a smaller mark, a thinner stem and a tighter plate.
             let x = Rect::from_center_size(
-                Pos2::new(inner.right() - 6.0, inner.top() + lh_title * 0.5),
-                Vec2::splat(18.0),
+                Pos2::new(inner.right() - 7.0, inner.top() + lh_title * 0.5),
+                Vec2::splat(16.0),
             );
-            if widgets::icon_button(ui, x, Glyph::Close, p, false)
-                .on_hover_text("移除卡片")
-                .clicked()
-            {
+            let resp = ui.allocate_rect(x, egui::Sense::click());
+            if resp.hovered() {
+                widgets::round_rect(ui, x, 8.0, p.accent_soft, Stroke::NONE);
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            let color = if resp.hovered() { p.accent } else { p.text_dim };
+            widgets::glyph_weighted(ui, x.center(), 8.5, Glyph::Close, color, 1.15);
+            if resp.on_hover_text("移除卡片").clicked() {
                 actions.push(Action::DismissCard(card.id.clone()));
             }
         }
@@ -1458,8 +1466,8 @@ fn live_tab(
         }
         y += h + GAP;
     }
-    scroll_bar(ui, rect, p, content_h, offset);
     ui.set_clip_rect(prev_clip);
+    scroll_bar(ui, rect, p, content_h, offset);
 }
 
 // ---------------------------------------------------------------------------
@@ -1675,8 +1683,8 @@ fn search_tab(
         }
         y += h;
     }
-    scroll_bar(ui, list, p, content_h, offset);
     ui.set_clip_rect(prev_clip);
+    scroll_bar(ui, list, p, content_h, offset);
 }
 
 // ---------------------------------------------------------------------------
@@ -2053,14 +2061,21 @@ fn scroll(ui: &egui::Ui, view: Rect, content_h: f32, offset: &mut f32) -> f32 {
     *offset
 }
 
-/// Thin scrollbar on the right edge of `view`, drawn only when it overflows.
+/// Thin scrollbar hugging the panel's right edge, drawn only when the list
+/// overflows.
+///
+/// The list's own rectangle stops at the content padding (14 pt in from the
+/// panel edge); the bar lives in that gutter instead of at `view.right()`, so
+/// it reads as part of the panel frame rather than as a line drawn over the
+/// rows. Callers must restore their clip rect before calling: the track sits
+/// *outside* the list clip.
 fn scroll_bar(ui: &egui::Ui, view: Rect, p: &Palette, content_h: f32, offset: f32) {
     if content_h <= view.height() + 0.5 {
         return;
     }
     let track = Rect::from_min_max(
-        Pos2::new(view.right() - 3.0, view.top()),
-        Pos2::new(view.right(), view.bottom()),
+        Pos2::new(view.right() + 8.0, view.top()),
+        Pos2::new(view.right() + 11.0, view.bottom()),
     );
     let frac = (view.height() / content_h).clamp(0.08, 1.0);
     let h = (track.height() * frac).max(18.0);
