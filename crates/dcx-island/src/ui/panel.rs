@@ -550,7 +550,7 @@ fn tasks_tab(
     let time_ok = crate::clock::parse_hhmm_span(st.task_time).is_some()
         || st.task_time.trim().is_empty();
     let time_color = if time_ok { p.text_dim } else { p.danger };
-    ui.put(
+    let time_resp = ui.put(
         time_rect,
         egui::TextEdit::singleline(st.task_time)
             // A format hint, not a label: "09:00" tells the user what to type in
@@ -559,8 +559,8 @@ fn tasks_tab(
             .frame(false)
             .text_color(time_color)
             .margin(egui::Margin::symmetric(2.0, 4.0)),
-    )
-    .on_hover_text("09:00 单次；09:00-18:00 表示区间（配合右侧间隔）");
+    );
+    hover_hint(time_resp, "09:00 单次；09:00-18:00 表示区间（配合右侧间隔）");
 
     x = time_rect.right() + 2.0;
     let repeat_rect = Rect::from_min_size(
@@ -585,9 +585,11 @@ fn tasks_tab(
         Pos2::new(x, composer.top() + 4.0),
         Vec2::new(every_w, composer.height() - 8.0),
     );
-    if cycle_chip(ui, every_rect, p, every_label(*st.task_every), *st.task_every > 0)
-        .on_hover_text("每半小时提醒一次，例如工作日 09:00-18:00 每 30 分钟")
-        .clicked()
+    if hover_hint(
+        cycle_chip(ui, every_rect, p, every_label(*st.task_every), *st.task_every > 0),
+        "每半小时提醒一次，例如工作日 09:00-18:00 每 30 分钟",
+    )
+    .clicked()
     {
         *st.task_every = match *st.task_every {
             0 => 15,
@@ -610,9 +612,11 @@ fn tasks_tab(
         Pos2::new(add_rect.left() - doc_w + 2.0, composer.top() + 3.0),
         Vec2::new(doc_w - 4.0, composer.height() - 6.0),
     );
-    if widgets::icon_button(ui, doc_rect, Glyph::Doc, p, false)
-        .on_hover_text("把今天的任务导出为 Markdown")
-        .clicked()
+    if hover_hint(
+        widgets::icon_button(ui, doc_rect, Glyph::Doc, p, false),
+        "把今天的任务导出为 Markdown",
+    )
+    .clicked()
     {
         actions.push(Action::Archive);
     }
@@ -816,9 +820,11 @@ fn clip_tab(
         Pos2::new(search.right() - 14.0, search.center().y),
         Vec2::splat(18.0),
     );
-    if widgets::icon_button(ui, clear, Glyph::Trash, p, true)
-        .on_hover_text("清空未固定的条目")
-        .clicked()
+    if hover_hint(
+        widgets::icon_button(ui, clear, Glyph::Trash, p, true),
+        "清空未固定的条目",
+    )
+    .clicked()
     {
         actions.push(Action::ClearClips);
     }
@@ -847,7 +853,9 @@ fn clip_tab(
     let text_w = (list.width() - 8.0 - 22.0 - 22.0 - 22.0 - 4.0).max(60.0);
     let heights: Vec<f32> = items.iter().map(|i| clip_row_h(ui, i, text_w)).collect();
     let content_h: f32 = heights.iter().sum();
-    let offset = scroll(ui, list, content_h, st.clip_scroll);
+    scroll(ui, list, content_h, st.clip_scroll);
+    scroll_bar(ui, list, p, content_h, st.clip_scroll);
+    let offset = *st.clip_scroll;
     let mut y = list.top() - offset;
     // Rows are painted from an explicit rectangle, so the painter has to be
     // clipped to the list or a scrolled row would draw over the search field.
@@ -919,9 +927,11 @@ fn clip_tab(
             Pos2::new(icons_right - 8.0, row.center().y),
             Vec2::splat(20.0),
         );
-        if widgets::icon_button(ui, collect, Glyph::Collect, p, false)
-            .on_hover_text("收进盒子")
-            .clicked()
+        if hover_hint(
+            widgets::icon_button(ui, collect, Glyph::Collect, p, false),
+            "收进盒子",
+        )
+        .clicked()
         {
             actions.push(Action::ClipToBox(item.id));
         }
@@ -966,9 +976,7 @@ fn clip_tab(
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
         y += row_h;
-    }
-    ui.set_clip_rect(prev_clip);
-    scroll_bar(ui, list, p, content_h, offset);
+    }    ui.set_clip_rect(prev_clip);
 }
 
 // ---------------------------------------------------------------------------
@@ -1079,12 +1087,14 @@ fn inbox_tab(
         // the row has room for state-as-colour, not for "已接入 · 尚未收到信号"
         // written four times over.
         let (status, _) = channel_status(state, *last_at, st.today, p);
-        ui.interact(
-            chip,
-            ui.id().with(("ch", source.key())),
-            egui::Sense::hover(),
-        )
-        .on_hover_text(format!("{} · {}\n{}", source.label(), status, note));
+        hover_hint(
+            ui.interact(
+                chip,
+                ui.id().with(("ch", source.key())),
+                egui::Sense::hover(),
+            ),
+            format!("{} · {}\n{}", source.label(), status, note),
+        );
         x += CHIP_W + CHIP_GAP;
     }
 
@@ -1157,7 +1167,9 @@ fn inbox_tab(
         h.max(40.0)
     };
     let content_h: f32 = items.iter().map(|(_, _, _, _, d, _, _)| row_h_for(d)).sum();
-    let offset = scroll(ui, list, content_h, st.inbox_scroll);
+    scroll(ui, list, content_h, st.inbox_scroll);
+    scroll_bar(ui, list, p, content_h, st.inbox_scroll);
+    let offset = *st.inbox_scroll;
     let prev_clip = ui.clip_rect();
     ui.set_clip_rect(list);
     y = list.top() - offset;
@@ -1260,9 +1272,7 @@ fn inbox_tab(
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
         y += row_h;
-    }
-    ui.set_clip_rect(prev_clip);
-    scroll_bar(ui, list, p, content_h, offset);
+    }    ui.set_clip_rect(prev_clip);
 }
 
 // ---------------------------------------------------------------------------
@@ -1335,7 +1345,9 @@ fn live_tab(
         .map(|c| card_h(ui, c, inner_w, lh_title, lh_body))
         .sum::<f32>()
         + GAP * (cards.len().saturating_sub(1)) as f32;
-    let offset = scroll(ui, rect, content_h, st.live_scroll);
+    scroll(ui, rect, content_h, st.live_scroll);
+    scroll_bar(ui, rect, p, content_h, st.live_scroll);
+    let offset = *st.live_scroll;
     let prev_clip = ui.clip_rect();
     ui.set_clip_rect(rect);
     let mut y = rect.top() - offset;
@@ -1396,7 +1408,7 @@ fn live_tab(
             }
             let color = if resp.hovered() { p.accent } else { p.text_dim };
             widgets::glyph_weighted(ui, x.center(), 8.5, Glyph::Close, color, 1.15);
-            if resp.on_hover_text("移除卡片").clicked() {
+            if hover_hint(resp, "移除卡片").clicked() {
                 actions.push(Action::DismissCard(card.id.clone()));
             }
         }
@@ -1465,9 +1477,7 @@ fn live_tab(
             }
         }
         y += h + GAP;
-    }
-    ui.set_clip_rect(prev_clip);
-    scroll_bar(ui, rect, p, content_h, offset);
+    }    ui.set_clip_rect(prev_clip);
 }
 
 // ---------------------------------------------------------------------------
@@ -1574,7 +1584,9 @@ fn search_tab(
         }
     };
     let content_h: f32 = rows.iter().map(height_of).sum();
-    let offset = scroll(ui, list, content_h, st.search_scroll);
+    scroll(ui, list, content_h, st.search_scroll);
+    scroll_bar(ui, list, p, content_h, st.search_scroll);
+    let offset = *st.search_scroll;
     let prev_clip = ui.clip_rect();
     ui.set_clip_rect(list);
     let mut y = list.top() - offset;
@@ -1639,8 +1651,9 @@ fn search_tab(
                 if resp.hovered() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                 }
-                resp.on_hover_text(app.path.display().to_string());
-            }            Row::File(file) => {
+                hover_hint(resp, app.path.display().to_string());
+            }
+            Row::File(file) => {
                 let hovered = ui.rect_contains_pointer(r);
                 if hovered {
                     widgets::round_rect(
@@ -1651,11 +1664,16 @@ fn search_tab(
                         Stroke::NONE,
                     );
                 }
+                // Ellipsised by measurement; the full path is a tooltip only
+                // when one of the two lines did not fit — a hint on a row that
+                // already shows everything is noise.
+                let name = widgets::fit_one_line(ui, &file.name, 12.0, r.width() - 6.0);
+                let dir = widgets::fit_one_line(ui, &file.dir, 9.0, r.width() - 6.0);
                 widgets::text(
                     ui,
                     Pos2::new(r.left() + 1.0, r.top() + 4.0),
                     Align2::LEFT_TOP,
-                    &widgets::fit_one_line(ui, &file.name, 12.0, r.width() - 6.0),
+                    &name,
                     12.0,
                     p.text,
                 );
@@ -1663,7 +1681,7 @@ fn search_tab(
                     ui,
                     Pos2::new(r.left() + 1.0, r.top() + 19.0),
                     Align2::LEFT_TOP,
-                    &widgets::fit_one_line(ui, &file.dir, 9.0, r.width() - 6.0),
+                    &dir,
                     9.0,
                     p.text_faint,
                 );
@@ -1678,13 +1696,13 @@ fn search_tab(
                 if resp.hovered() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                 }
-                resp.on_hover_text(file.path.clone());
+                if name.ends_with('…') || dir.ends_with('…') {
+                    hover_hint(resp, file.path.clone());
+                }
             }
         }
         y += h;
-    }
-    ui.set_clip_rect(prev_clip);
-    scroll_bar(ui, list, p, content_h, offset);
+    }    ui.set_clip_rect(prev_clip);
 }
 
 // ---------------------------------------------------------------------------
@@ -1821,7 +1839,9 @@ fn perf_tab(
     };
     let content_h: f32 = rows.iter().map(height_of).sum();
     let view = Rect::from_min_max(Pos2::new(rect.left(), top.bottom() + 10.0), rect.max);
-    let offset = scroll(ui, view, content_h, st.perf_scroll);
+    scroll(ui, view, content_h, st.perf_scroll);
+    scroll_bar(ui, view, p, content_h, st.perf_scroll);
+    let offset = *st.perf_scroll;
 
     let prev_clip = ui.clip_rect();
     ui.set_clip_rect(view);
@@ -1832,9 +1852,7 @@ fn perf_tab(
             paint(ui, view, y, h, row, p, actions);
         }
         y += h;
-    }
-    ui.set_clip_rect(prev_clip);
-    scroll_bar(ui, view, p, content_h, offset);
+    }    ui.set_clip_rect(prev_clip);
 
     /// One line of the performance column. Labels are proportional, every
     /// number is monospace so a changing value never shifts the ones beside it,
@@ -2051,7 +2069,7 @@ fn ring_card(ui: &mut egui::Ui, rect: Rect, p: &Palette, label: &str, percent: f
 fn scroll(ui: &egui::Ui, view: Rect, content_h: f32, offset: &mut f32) -> f32 {
     let max = (content_h - view.height()).max(0.0);
     *offset = offset.clamp(0.0, max);
-    if max > 0.0 && ui.rect_contains_pointer(view) {
+    if max > 0.0 && ui.rect_contains_pointer(view.expand2(Vec2::new(12.0, 0.0))) {
         let delta = ui.input(|i| i.raw_scroll_delta.y);
         if delta.abs() > 0.01 {
             *offset = (*offset - delta).clamp(0.0, max);
@@ -2061,16 +2079,18 @@ fn scroll(ui: &egui::Ui, view: Rect, content_h: f32, offset: &mut f32) -> f32 {
     *offset
 }
 
-/// Thin scrollbar hugging the panel's right edge, drawn only when the list
-/// overflows.
+/// Thin scrollbar hugging the panel's right edge — draggable, with
+/// click-on-track jump.
 ///
 /// The list's own rectangle stops at the content padding (14 pt in from the
 /// panel edge); the bar lives in that gutter instead of at `view.right()`, so
 /// it reads as part of the panel frame rather than as a line drawn over the
-/// rows. Callers must restore their clip rect before calling: the track sits
-/// *outside* the list clip.
-fn scroll_bar(ui: &egui::Ui, view: Rect, p: &Palette, content_h: f32, offset: f32) {
-    if content_h <= view.height() + 0.5 {
+/// rows. It must be called **before** the rows are painted (and before the
+/// list clip is set): a drag then moves the thumb on the same frame that
+/// received it, instead of one frame behind the pointer.
+fn scroll_bar(ui: &mut egui::Ui, view: Rect, p: &Palette, content_h: f32, offset: &mut f32) {
+    let max = (content_h - view.height()).max(0.0);
+    if max <= 0.5 {
         return;
     }
     let track = Rect::from_min_max(
@@ -2079,15 +2099,52 @@ fn scroll_bar(ui: &egui::Ui, view: Rect, p: &Palette, content_h: f32, offset: f3
     );
     let frac = (view.height() / content_h).clamp(0.08, 1.0);
     let h = (track.height() * frac).max(18.0);
-    let t = offset / (content_h - view.height()).max(1.0);
-    let y = track.top() + (track.height() - h) * t;
-    widgets::round_rect(
-        ui,
-        Rect::from_min_size(Pos2::new(track.left(), y), Vec2::new(track.width(), h)),
-        1.5,
-        with_alpha(p.text_faint, 0.55),
-        Stroke::NONE,
+    let travel = (track.height() - h).max(1.0);
+    let thumb = Rect::from_min_size(
+        Pos2::new(track.left(), track.top() + travel * (*offset / max).clamp(0.0, 1.0)),
+        Vec2::new(track.width(), h),
     );
+
+    // A 3 pt sliver cannot be grabbed; the hit zone is 4 pt wider on each
+    // side, and a click anywhere on the track jumps there.
+    let hit = Rect::from_min_max(
+        Pos2::new(track.left() - 4.0, track.top()),
+        Pos2::new(track.right() + 4.0, track.bottom()),
+    );
+    let resp = ui.interact(
+        hit,
+        ui.id().with(("scroll-bar", view.top().to_bits(), view.left().to_bits())),
+        egui::Sense::click_and_drag(),
+    );
+    if resp.dragged() {
+        let dy = ui.input(|i| i.pointer.delta().y);
+        if dy != 0.0 {
+            *offset = (*offset + dy * max / travel).clamp(0.0, max);
+            ui.ctx().request_repaint();
+        }
+    } else if resp.clicked() {
+        if let Some(pos) = ui.ctx().pointer_interact_pos() {
+            // Clicking the thumb itself must not nudge the offset; only a
+            // click on bare track jumps.
+            if !thumb.contains(pos) {
+                let target = ((pos.y - track.top() - h * 0.5) / travel).clamp(0.0, 1.0);
+                *offset = target * max;
+                ui.ctx().request_repaint();
+            }
+        }
+    }
+    if resp.hovered() || resp.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+    }
+
+    let color = if resp.dragged() {
+        with_alpha(p.accent, 0.9)
+    } else if resp.hovered() {
+        with_alpha(p.text_dim, 0.85)
+    } else {
+        with_alpha(p.text_faint, 0.55)
+    };
+    widgets::round_rect(ui, thumb, 1.5, color, Stroke::NONE);
 }
 
 fn empty_state(ui: &mut egui::Ui, rect: Rect, p: &Palette, title: &str, sub: &str) {
@@ -2151,6 +2208,19 @@ fn channel_status(
         ChannelState::Off => ("未接入".to_string(), p.text_faint),
         other => (other.label(), p.warn),
     }
+}
+
+/// Tooltip sized to its content, capped to the island window.
+///
+/// egui's default tooltip width is 600 pt — wider than the whole panel — so a
+/// long path was laid out 600 pt wide and then cut off at the window edge.
+/// Inside this window a hint must wrap at the panel width instead.
+fn hover_hint(resp: egui::Response, text: impl Into<egui::WidgetText>) -> egui::Response {
+    let max = (resp.ctx.screen_rect().width() - 24.0).max(140.0);
+    resp.on_hover_ui(|ui| {
+        ui.set_max_width(max);
+        ui.label(text);
+    })
 }
 
 fn small_button(
