@@ -8,6 +8,9 @@ Thumbs.db
 /.idea/
 /.vscode/
 
+# Local-only engineering notes and reviews
+/docs/*.md
+
 # Local tool build output
 /tools/metadump/bin/
 /tools/metadump/obj/

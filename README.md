@@ -95,7 +95,7 @@ DCX 是一套用 Rust 编写的 Windows 11 桌面增强平台。它把四件事�
 - 任务提醒分两个独立维度：**重复**（不重复 / 每天 / 工作日 / 每周）决定哪几天存在，**间隔**（单次 / 15 分 / 30 分 / 1 时 / 2 时）决定一天里提醒几次；时间框接受 `09:00` 或 `09:00-18:00`，写了区间即表示起止，例：`喝水 工作日 09:00-18:00 每30分` 就是一条记录、一天 19 次提醒，睡过去的时段只补一次，不会醒来刷屏
 - 通知渠道：微信 / 企业微信走任务栏关注信号（`SHELLHOOK`，不读聊天正文）；QQ 走 WinRT 通知监听并按 AUMID 过滤；邮箱走 IMAP 只同步未读邮件头；系统通知走 WinRT 通知中心（默认关）
 - 出站：企业微信群机器人 webhook 与 SMTP 可把任务提醒推出去；**QQ / 微信个人号没有官方出站接口，不支持发送**
-- 本地推送 API：脚本可把进度/提醒卡片推到「动态」页（`127.0.0.1` + Bearer 令牌），支持 `dcx-island.exe --push` / `--push-file`，动作只有打开链接/文件夹/看面板；端点与示例见 [`docs/island-api.md`](docs/island-api.md)
+- 本地推送 API：脚本可把进度/提醒卡片推到「动态」页（`127.0.0.1` + Bearer 令牌），支持 `dcx-island.exe --push` / `--push-file`，动作只有打开链接/文件夹/看面板；端点与示例可在「设置中心 → 桌面信息岛 → 本地推送 API」中复制
 - 媒体：读取系统媒体会话（GSMTC），面板顶部显示封面 / 标题 / 艺术家与上一首 / 播放暂停 / 下一首，进度本地插值；无会话时整行消失
 - 收纳联动：Perf 页显示桌面待整理与收纳库计数；剪贴板可「存入收纳盒」；文件直接拖到胶囊即收纳（工作线程搬运，不卡窗口）
 - 搜索页：输入 ≥2 字符同时匹配开始菜单应用与文件名，`Enter` 打开首项、`Ctrl+Enter` 定位；内容检索与类型筛选请用 `Alt+S` 文件检索（索引快照年龄会标注在结果标题行）
@@ -205,11 +205,8 @@ dcx/
 │   ├── dcx-win32/         # Win32 绑定
 │   └── ...
 ├── brand/                 # 图标、Logo、预览图
-├── docs/                  # 工程笔记
+├── docs/images/           # README 截图
 ├── tools/                 # 品牌/图标生成、验证与分发启停脚本
-├── docs/prd.md            # 文件检索产品需求与开发方案
-├── docs/island-app-plan.md # 桌面信息岛移植方案
-├── docs/review.md         # 代码审查报告
 └── README.md
 ```
 
@@ -272,8 +269,6 @@ cargo test --workspace
 cargo clippy --workspace --all-targets
 ```
 
-完整的验证项目、历史踩坑和实现细节见 [`docs/engineering-notes.md`](docs/engineering-notes.md)。
-
 ## 已知限制
 
 - 任务栏引擎只匹配当前 Windows 11 任务栏 XAML 视觉树；系统大版本更新后可能需要重新核对元素路径。
@@ -286,9 +281,7 @@ cargo clippy --workspace --all-targets
 
 ## 文档与许可
 
-- 工程实现、调试记录与历史方案：[docs/engineering-notes.md](docs/engineering-notes.md)
-- 产品需求：[文件检索 PRD](docs/prd.md)、[桌面信息岛移植方案](docs/island-app-plan.md)
-- 代码审查报告：[docs/review.md](docs/review.md)
+- 工程笔记、产品需求与代码审查记录只保留在本地 `docs/`，不随仓库发布
 - 品牌资源生成：`tools/gen_brand.py`、`tools/gen_search_icon.py`、`tools/gen_island_icon.py`
 - 手动替换文件前可用：`tools/stop-dcx-all.bat`（源码）/ 发布包内的 `stop-dcx-all.bat`
 
