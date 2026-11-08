@@ -121,33 +121,13 @@ pub fn draw(
         // glass, but this window blends its surface in linear space: a 4 %
         // white overlay lands at roughly a fifth of the way to white, and the
         // sheen turned into a light band across the upper half of the pill.
-        // The fill and its hairline border are enough in both palettes.
 
-        // The reminder owns the border while it runs. Fixed 1.2 pt width: a ring
-        // that also thickens makes the pill's edge move every frame, which reads
-        // as a rendering glitch rather than as an alert.
-        let stroke = if flash > 0.01 {
-            Stroke::new(1.2_f32, with_alpha(p.accent, 0.30 + 0.65 * flash))
-        } else if st.open {
-            Stroke::new(1.0_f32, with_alpha(p.accent, 0.55))
-        } else if st.drop_hover {
-            Stroke::new(1.0_f32, with_alpha(p.accent, 0.75))
-        } else if st.hovered {
-            Stroke::new(1.0_f32, with_alpha(p.stroke, 0.9))
-        } else {
-            Stroke::new(1.0_f32, p.stroke)
-        };
-        // The border is stroked on a path inset by half its width so it lands
-        // flush on the pill's outer edge instead of forming a second, smaller
-        // outline inside it: an inset of a full point left a visible white gap
-        // between the border and the fill's edge.
-        widgets::round_rect_smooth(
-            ui,
-            shell.shrink(0.5),
-            (radius - 0.5).max(1.0),
-            Color32::TRANSPARENT,
-            stroke,
-        );
+        // No outline in **any** state. At the extreme left/right of a capsule
+        // the arc is vertical, so even a 1 pt stroke there reads as a
+        // free-standing grey vertical line next to the fill — the "spike" that
+        // kept showing up on the right edge. The opaque fill defines the pill
+        // on its own; alerts are carried by the accent wash above, the bell and
+        // the capsule pulse, not by a ring.
     }
 
     let pad = opts.pad;
