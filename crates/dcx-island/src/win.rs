@@ -76,13 +76,6 @@ extern "system" {
     fn IsZoomed(hwnd: isize) -> i32;
     fn GetDpiForSystem() -> u32;
     fn WindowFromPoint(point: dcx_win32::POINT) -> isize;
-    fn SetWindowRgn(hwnd: isize, rgn: isize, redraw: i32) -> i32;
-}
-
-#[link(name = "gdi32")]
-extern "system" {
-    fn CreateRoundRectRgn(x1: i32, y1: i32, x2: i32, y2: i32, w: i32, h: i32) -> isize;
-    fn DeleteObject(obj: isize) -> i32;
 }
 
 #[link(name = "shell32")]
@@ -324,10 +317,6 @@ pub struct Window {
     applied: Option<[i32; 4]>,
     frame_fix_at: Option<std::time::Instant>,
     raise_at: Option<std::time::Instant>,
-    /// Shape requested on the previous frame: (width, height, radius) in pixels.
-    asked: Option<(i32, i32, i32)>,
-    /// The rounded region currently set — always the previous frame's request.
-    region: Option<(i32, i32, i32)>,
 }
 
 impl Window {
@@ -337,8 +326,6 @@ impl Window {
             applied: None,
             frame_fix_at: None,
             raise_at: None,
-            asked: None,
-            region: None,
         }
     }
 
@@ -355,24 +342,10 @@ impl Window {
         }
         self.hwnd = hwnd;
         unsafe {
-            let ex = GetWindowLongPtrW(hwnd, dcx_win32::GWL_EXSTYLE);
-            // Tool window: no taskbar button, no Alt-Tab entry. Topmost: above
-            // the taskbar even when auto-hide raises the bar.
-            let want = (ex | WS_EX_TOOLWINDOW) & !WS_EX_NOACTIVATE as isize;
-            if want != ex {
-                SetWindowLongPtrW(hwnd, dcx_win32::GWL_EXSTYLE, want);
-                SetWindowPos(
-                    hwnd,
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
-                );
-            }
+            ensure_ex_style(hwnd);
             install_proc(hwnd);
             fix_dwm(hwnd);
+            strip_frame_style(hwnd);
         }
         if let Ok(mut done) = INSTALLED.lock() {
             *done = true;
@@ -403,70 +376,6 @@ impl Window {
                 SWP_NOACTIVATE | SWP_SHOWWINDOW,
             );
         }
-    }
-
-    /// Shape the window to the rounded rectangle that is actually painted.
-    ///
-    /// The window carries `WS_CAPTION` (winit gives every undecorated window a
-    /// frame style), so DWM draws its drop shadow around the **window
-    /// rectangle**. The surface is transparent outside the capsule's round ends
-    /// and the card's rounded corners, so that square shadow — and the 1 px
-    /// frame DWM puts on the right/bottom edges — leaks out next to the arcs as
-    /// a translucent spike. A window region makes DWM follow the painted
-    /// outline instead, and stops clicks in the transparent corner slivers from
-    /// landing on a window that shows nothing there. Same trick as
-    /// `dcx-box/src/win.rs`.
-    ///
-    /// The region lags the request by one frame **while the card grows**.
-    /// `SetWindowPos` gives the window its new size before egui has painted
-    /// it — the surface is still the old size for that frame. A region that
-    /// already had the new size would expose that unpainted strip, which is
-    /// the transparent block that appeared at the bottom corners during every
-    /// unfold and while dragging the resize grip. One frame behind, the region
-    /// only ever covers pixels that were painted. Shrinking needs no lag: the
-    /// surface is still the larger one, so the new (smaller) shape is painted
-    /// in full — and applying it at once keeps the last frame of the collapse
-    /// from showing a square edge for one frame.
-    pub fn set_shape(&mut self, w: i32, h: i32, radius: i32) {
-        if self.hwnd == 0 || w <= 0 || h <= 0 {
-            return;
-        }
-        let radius = radius.clamp(0, w.min(h) / 2);
-        let key = (w, h, radius);
-        // First frame after the window is (re)created or unparked: there is no
-        // earlier shape, so the current one is the only safe one to apply.
-        let prev = self.asked.unwrap_or(key);
-        self.asked = Some(key);
-        let grew = w > prev.0 || h > prev.1;
-        let target = if grew { prev } else { key };
-        if self.region == Some(target) {
-            return;
-        }
-        self.region = Some(target);
-        unsafe {
-            // `+ 1`: GDI region rectangles exclude their right/bottom edge, and
-            // one column short clipped the card's own border into a hairline.
-            let rgn = CreateRoundRectRgn(0, 0, target.0 + 1, target.1 + 1, target.2 * 2, target.2 * 2);
-            if rgn == 0 {
-                self.region = None;
-                return;
-            }
-            // On success the system owns the region; deleting it would be a
-            // use-after-free inside the window manager.
-            if SetWindowRgn(self.hwnd, rgn, 1) == 0 {
-                DeleteObject(rgn);
-                self.region = None;
-            }
-        }
-    }
-
-    /// Drop the shape (the window is parked off-screen at another size).
-    pub fn clear_shape(&mut self) {
-        if self.hwnd != 0 && self.region.is_some() {
-            unsafe { SetWindowRgn(self.hwnd, 0, 1) };
-        }
-        self.region = None;
-        self.asked = None;
     }
 
     /// Put the window back on top after something raised itself over it.
@@ -525,6 +434,18 @@ impl Window {
             self.raise_at = Some(now);
             self.ensure_raised();
         }
+        // winit re-applies its caption/border styles on flag changes (the
+        // window being shown at startup is one). Re-strip whenever they come
+        // back; the check is one GetWindowLongPtr and the write happens only
+        // on a real change.
+        if self.hwnd != 0 {
+            unsafe {
+                ensure_ex_style(self.hwnd);
+                if frame_styles_present(self.hwnd) {
+                    strip_frame_style(self.hwnd);
+                }
+            }
+        }
         let due = self
             .frame_fix_at
             .map(|t| now.duration_since(t) >= Duration::from_secs(10))
@@ -558,6 +479,93 @@ unsafe fn fix_dwm(hwnd: isize) {
     // rounds Win11 windows on its own, which fights a capsule.
     dcx_win32::set_border_color(hwnd, dcx_win32::DWMWA_COLOR_NONE);
     dcx_win32::set_corner_preference(hwnd, dcx_win32::DWMWCP_DONOTROUND);
+    disable_nc_rendering(hwnd);
+}
+
+/// Tool window (no taskbar button, no Alt-Tab entry), activating, topmost.
+/// winit's `to_window_styles` drops `WS_EX_TOOLWINDOW` and adds APPWINDOW
+/// whenever it re-applies styles, so this is checked again from
+/// `housekeeping`.
+unsafe fn ensure_ex_style(hwnd: isize) {
+    const WS_EX_APPWINDOW: isize = 0x0004_0000;
+    let ex = GetWindowLongPtrW(hwnd, dcx_win32::GWL_EXSTYLE);
+    let want = (ex | WS_EX_TOOLWINDOW) & !WS_EX_NOACTIVATE as isize & !WS_EX_APPWINDOW;
+    if want == ex {
+        return;
+    }
+    SetWindowLongPtrW(hwnd, dcx_win32::GWL_EXSTYLE, want);
+    SetWindowPos(
+        hwnd,
+        0,
+        0,
+        0,
+        0,
+        0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+    );
+}
+
+/// Remove DWM's non-client band (the 1 px frame it still paints along the
+/// right/bottom edge of a top-level window) and its square drop shadow.
+unsafe fn disable_nc_rendering(hwnd: isize) {
+    const DWMWA_NCRENDERING_POLICY: u32 = 2;
+    const DWMNCRP_DISABLED: i32 = 1;
+    dcx_win32::DwmSetWindowAttribute(
+        hwnd,
+        DWMWA_NCRENDERING_POLICY,
+        &DWMNCRP_DISABLED as *const i32 as *const core::ffi::c_void,
+        core::mem::size_of::<i32>() as u32,
+    );
+}
+
+/// Strip the caption/thick-frame bits winit leaves on an undecorated window.
+///
+/// With a frame style DWM draws its own border and drop shadow around the
+/// *window rectangle* and ignores the surface alpha, so the capsule needed a
+/// GDI window region to cut DWM's square shadow down to the painted outline.
+/// A GDI region is a 1-bit integer mask: it sliced the antialiased arcs into a
+/// staircase (visible jaggedness) and its `+1` right/bottom expansion left a
+/// one-pixel spike next to the right arc. Without the frame styles there is
+/// no DWM shadow or frame to shape, the region is gone, and the rounded ends
+/// are composited from the surface alpha — smooth at every DPI.
+///
+/// winit re-applies its full style whenever window flags change (showing the
+/// window at startup does exactly that), so this is checked from
+/// `housekeeping` as well, not only once in `ensure`.
+unsafe fn strip_frame_style(hwnd: isize) {
+    const WS_CAPTION: i32 = 0x00C0_0000;
+    const WS_THICKFRAME: i32 = 0x0004_0000;
+    const WS_SYSMENU: i32 = 0x0008_0000;
+    const WS_MINIMIZEBOX: i32 = 0x0002_0000;
+    const WS_MAXIMIZEBOX: i32 = 0x0001_0000;
+    let style = GetWindowLongPtrW(hwnd, dcx_win32::GWL_STYLE) as i32;
+    let stripped =
+        style & !(WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX);
+    if stripped == style {
+        return;
+    }
+    SetWindowLongPtrW(hwnd, dcx_win32::GWL_STYLE, stripped as isize);
+    // Even without the frame styles, DWM keeps painting a 1 px frame band along
+    // the right and bottom edges of a top-level window — the thin line the old
+    // region used to mask. Re-apply the policy after the style change.
+    disable_nc_rendering(hwnd);
+    SetWindowPos(
+        hwnd,
+        0,
+        0,
+        0,
+        0,
+        0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+    );
+    trace("frame styles stripped");
+}
+
+/// Whether winit's caption/border bits are back on the window.
+unsafe fn frame_styles_present(hwnd: isize) -> bool {
+    const WS_CAPTION: i32 = 0x00C0_0000;
+    let style = GetWindowLongPtrW(hwnd, dcx_win32::GWL_STYLE) as i32;
+    (style & WS_CAPTION) != 0
 }
 
 /// Subclass once so the window can (a) forward `WM_DPICHANGED` bookkeeping and

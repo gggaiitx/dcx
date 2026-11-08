@@ -72,10 +72,18 @@ pub fn draw(
     opts: CapsuleOpts,
 ) -> CapsuleHit {
     let mut hit = CapsuleHit::default();
-    let radius = rect.height() * 0.5;
     let flash = st.flash.clamp(0.0, 1.0);
 
     if opts.shell {
+        // One physical pixel of margin: the hairline border used to land on the
+        // window's outermost column, where the window edge clipped its
+        // antialiasing and left a hard dark line (the "spike" at the right
+        // end). The arc radius is snapped to whole physical pixels too — at
+        // 125 % a 35 px pill has a 17.5 px radius, and a half-pixel centre is
+        // what turned the ends into a staircase.
+        let ppp = ui.ctx().pixels_per_point();
+        let shell = rect.shrink(1.5 / ppp);
+        let radius = (shell.height() * 0.5 * ppp).round() / ppp;
         // Painting order matters here. The accent wash used to be drawn *over*
         // the pill's own border, so the ring was dimmed by its own highlight and
         // the whole pill went lavender with purple text on top: at 22 % over a
@@ -84,7 +92,7 @@ pub fn draw(
         // the border is the last thing painted.
         widgets::round_rect_smooth(
             ui,
-            rect,
+            shell,
             radius,
             with_alpha(p.surface, opacity),
             Stroke::NONE,
@@ -92,7 +100,7 @@ pub fn draw(
         if flash > 0.01 {
             widgets::round_rect_smooth(
                 ui,
-                rect,
+                shell,
                 radius,
                 with_alpha(p.accent, 0.02 + 0.06 * flash),
                 Stroke::NONE,
@@ -102,7 +110,7 @@ pub fn draw(
             // over the pill, so the only question is whether a drop will land.
             widgets::round_rect_smooth(
                 ui,
-                rect,
+                shell,
                 radius,
                 with_alpha(p.accent, 0.10),
                 Stroke::NONE,
@@ -135,7 +143,7 @@ pub fn draw(
         // between the border and the fill's edge.
         widgets::round_rect_smooth(
             ui,
-            rect.shrink(0.5),
+            shell.shrink(0.5),
             (radius - 0.5).max(1.0),
             Color32::TRANSPARENT,
             stroke,

@@ -7,8 +7,9 @@
 //! sideways, keeping the capsule at the same screen position. The window is
 //! therefore never larger than what it draws, which is the only reliable way to
 //! avoid a transparent band swallowing desktop clicks — `HTTRANSPARENT` does not
-//! forward to other processes, and a window region on a DWM-composited surface
-//! leaves stale pixels (both were tried in `dcx-box`).
+//! forward to other processes, and a GDI window region on a DWM-composited
+//! surface leaves stale pixels and hard-edged corner masks (both were tried in
+//! `dcx-box`).
 //!
 //! # Who writes what
 //!
@@ -1021,8 +1022,9 @@ impl Island {
         // collapsed, the card when open, and the interpolation between them
         // while it unfolds. Snapped to whole physical pixels — 14 pt at 125 %
         // is 17.5 px, and a corner whose centre sits on a half pixel breaks
-        // into an irregular staircase. The window region (see `draw`) uses the
-        // very same number, so the DWM shadow follows the painted arc.
+        // into an irregular staircase. `draw` paints this exact arc; the
+        // surface alpha at the edge is what DWM composites, so the arc stays
+        // antialiased (there is no window region to cut it).
         let raw_radius = 14.0 + (capsule.height() * 0.5 - 14.0) * (1.0 - e);
         let radius_px = (raw_radius * scale).round().max(1.0) as i32;
 
@@ -1090,17 +1092,17 @@ impl Island {
                 // Painting the card over the whole window also leaves the
                 // desktop visible only outside the rounded corners, which is
                 // unavoidable for a rounded window and invisible in practice.
-                // The radius comes from `Geo` so the window region set before
-                // painting (see `update`) describes exactly this arc.
+                // The radius comes from `Geo`; `draw` paints exactly this arc
+                // and the surface alpha carries the antialiasing.
                 let radius = geo.radius_px as f32 / geo.scale;
                 if anim > 0.005 {
-                    let card = Rect::from_min_max(Pos2::ZERO, full.max);
+                    // Same one-physical-pixel inset as the capsule shell: a
+                    // border on the window's outermost column is clipped by the
+                    // window edge into a hard, jagged line.
+                    let card = Rect::from_min_max(Pos2::ZERO, full.max)
+                        .shrink(1.5 / geo.scale);
                     // No `shadow()` call: the card is the whole window, so every
                     // ring of it fell outside the window and was clipped.
-                    //
-                    // DWM's own shadow is shaped by the window region (see
-                    // `win::Window::set_shape`); without it the square shadow
-                    // showed through the card's transparent corners.
                     crate::ui::widgets::round_rect_smooth(
                         ui,
                         card,
@@ -1109,8 +1111,7 @@ impl Island {
                         egui::Stroke::NONE,
                     );
                     // The border is stroked on a rect inset by half its width so
-                    // it lands flush on the card's outer edge; the window region
-                    // cuts the same profile, so the two lines coincide.
+                    // it lands flush on the card's outer edge.
                     crate::ui::widgets::round_rect_smooth(
                         ui,
                         card.shrink(0.5),
@@ -1662,8 +1663,6 @@ impl eframe::App for Island {
         if self.parked {
             // Full-screen content in front: park off-screen and stop drawing.
             // A hidden eframe window still runs `update`, so this is cheap.
-            // The region is dropped as well: the parked window has a different
-            // size, and a stale shape would clip it.
             //
             // Parked at the *open* footprint, not at a thumbnail: coming back
             // into the open state is then a pure move, with no resize whose
@@ -1676,7 +1675,6 @@ impl eframe::App for Island {
             let w = open.window_px[2] - open.window_px[0];
             let h = open.window_px[3] - open.window_px[1];
             self.win.place([-32_000, -32_000, -32_000 + w, -32_000 + h]);
-            self.win.clear_shape();
             ctx.request_repaint_after(Duration::from_millis(700));
             return;
         }
@@ -1686,15 +1684,6 @@ impl eframe::App for Island {
         // so a window that is still collapsed would drop the first expanded
         // frame — the frame in which every panel button first appears.
         self.win.place(geo.window_px);
-        // Shape the window to the same rounded rectangle `draw` paints next.
-        // DWM's drop shadow follows this region, which is what keeps the
-        // capsule's round ends and the card's corners free of square shadow
-        // spikes.
-        self.win.set_shape(
-            geo.window_px[2] - geo.window_px[0],
-            geo.window_px[3] - geo.window_px[1],
-            geo.radius_px,
-        );
         self.draw(ctx, &geo);
         self.win.housekeeping();
 
