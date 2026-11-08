@@ -554,6 +554,22 @@ pub fn icon_button(
     p: &Palette,
     danger: bool,
 ) -> Response {
+    icon_button_sized(ui, rect, which, p, danger, 13.0, 1.5)
+}
+
+/// [`icon_button`] with an explicit glyph size and stroke width. 13 pt is
+/// right for a toolbar, but too heavy for a hover affordance that appears
+/// beside 12 pt row text.
+#[allow(clippy::too_many_arguments)]
+pub fn icon_button_sized(
+    ui: &mut Ui,
+    rect: Rect,
+    which: Glyph,
+    p: &Palette,
+    danger: bool,
+    size: f32,
+    width: f32,
+) -> Response {
     let resp = ui.allocate_rect(rect, Sense::click());
     if resp.hovered() {
         let fill = if danger {
@@ -570,7 +586,7 @@ pub fn icon_button(
     } else {
         p.text_dim
     };
-    glyph(ui, rect.center(), 13.0, which, color);
+    glyph_weighted(ui, rect.center(), size, which, color, width);
     resp
 }
 

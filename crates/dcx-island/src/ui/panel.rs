@@ -925,7 +925,7 @@ fn clip_tab(
         // moment the pointer entered the row, so aiming at collect landed on
         // the pin (and at the pin landed on the trash).
         let del = Rect::from_center_size(Pos2::new(icons_right - 8.0, row.center().y), Vec2::splat(20.0));
-        if hovered && widgets::icon_button(ui, del, Glyph::Trash, p, true).clicked() {
+        if hovered && widgets::icon_button_sized(ui, del, Glyph::Trash, p, true, 10.5, 1.2).clicked() {
             actions.push(Action::RemoveClip(item.id));
         }
         icons_right -= 22.0;
@@ -944,7 +944,7 @@ fn clip_tab(
         );
         if hover_hint(
             widgets::icon_button(ui, collect, Glyph::Collect, p, false),
-            "收进盒子",
+            "存入收纳盒（复制一份，剪贴板保留）",
         )
         .clicked()
         {
