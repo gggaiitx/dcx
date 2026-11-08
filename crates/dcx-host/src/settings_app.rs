@@ -2834,6 +2834,23 @@ impl SettingsApp {
                 },
             );
             row_separator(ui, p);
+            row_reserve(
+                ui,
+                p,
+                RowIcon::Doc,
+                "接入示例",
+                "dcx-island.exe --push 或 POST /v1/island/push",
+                380.0,
+                |ui| {
+                    if standard_button(ui, p, "复制示例", true).clicked() {
+                        ui.ctx().copy_text(sample_push_command());
+                    }
+                    if standard_button(ui, p, "发送测试", true).clicked() {
+                        self.island_error = send_test_push();
+                    }
+                },
+            );
+            row_separator(ui, p);
             row_info(
                 ui,
                 p,
@@ -4622,6 +4639,47 @@ fn small_button(ui: &mut egui::Ui, p: &Palette, text: &str, active: bool) -> Res
 /// One credential row: masked editor, explicit「保存」/「清除」, and a status
 /// word. Secrets are never part of `island.toml` and never auto-saved — a
 /// debounced write would put a half-typed password on disk.
+/// The card "发送测试" posts. One fixed id, so repeated clicks renew one card
+/// instead of stacking a pile of them on the island.
+const SAMPLE_PUSH: &str = r#"{"id":"settings-test","title":"测试推送","body":"来自设置页的测试卡片","progress":0.5,"ttl_secs":30}"#;
+
+fn island_exe() -> Option<std::path::PathBuf> {
+    let dir = std::env::current_exe().ok()?.parent()?.to_path_buf();
+    let exe = dir.join("dcx-island.exe");
+    exe.exists().then_some(exe)
+}
+
+/// Copied text: the installed path plus a PowerShell single-quoted payload.
+/// The token is deliberately absent — `--push` reads it from its own file.
+fn sample_push_command() -> String {
+    match island_exe() {
+        Some(exe) => format!("& \"{}\" --push '{}'", exe.display(), SAMPLE_PUSH),
+        None => format!("dcx-island.exe --push '{}'", SAMPLE_PUSH),
+    }
+}
+
+fn send_test_push() -> Option<String> {
+    let Some(exe) = island_exe() else {
+        return Some("找不到 dcx-island.exe（应与设置程序在同一目录）".to_string());
+    };
+    match std::process::Command::new(exe)
+        .arg("--push")
+        .arg(SAMPLE_PUSH)
+        .output()
+    {
+        Ok(out) if out.status.success() => None,
+        Ok(out) => {
+            let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            Some(if err.is_empty() {
+                "测试推送失败：信息岛未运行或推送 API 已关闭".to_string()
+            } else {
+                err
+            })
+        }
+        Err(e) => Some(format!("启动 dcx-island 失败：{e}")),
+    }
+}
+
 fn island_cred_row(
     ui: &mut egui::Ui,
     p: &Palette,
