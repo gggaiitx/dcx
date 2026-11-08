@@ -87,6 +87,8 @@ fn main() {
         println!("dcx-island [--help]");
         println!("  (no option) : the island (normally started by dcx-host)");
         println!("  --push JSON : post one card to the running island's push API");
+        println!("  --push-file PATH : same, JSON read from a UTF-8 file (use this from");
+        println!("                     PowerShell 5.1 — its native quoting mangles embedded quotes)");
         println!("  settings     : edit in dcx-host.exe --settings → 桌面信息岛");
         return;
     }
@@ -99,6 +101,30 @@ fn main() {
         // the response and errors are visible there.
         unsafe { dcx_win32::AttachConsole(dcx_win32::ATTACH_PARENT_PROCESS) };
         let code = api::push_cli(args.get(1).map(String::as_str).unwrap_or(""));
+        std::process::exit(code);
+    }
+
+    // Shell-proof variant: Windows PowerShell 5.1 re-quotes arguments with
+    // embedded double quotes inconsistently (plain, `\"`-escaped and piped
+    // forms all behave differently), so the reliable recipe there is "write a
+    // file, pass the path".
+    if args.first().map(String::as_str) == Some("--push-file") {
+        unsafe { dcx_win32::AttachConsole(dcx_win32::ATTACH_PARENT_PROCESS) };
+        let path = args.get(1).map(String::as_str).unwrap_or("");
+        let code = if path.is_empty() {
+            eprintln!("用法：dcx-island --push-file <utf8-json-path>");
+            1
+        } else {
+            match std::fs::read_to_string(path) {
+                // `Set-Content -Encoding UTF8` and the .NET UTF8 encoding both
+                // write a BOM; serde_json does not skip it.
+                Ok(json) => api::push_cli(json.trim_start_matches('\u{feff}')),
+                Err(e) => {
+                    eprintln!("读取推送文件失败：{path}：{e}");
+                    1
+                }
+            }
+        };
         std::process::exit(code);
     }
 

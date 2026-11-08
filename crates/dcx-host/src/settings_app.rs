@@ -4649,13 +4649,19 @@ fn island_exe() -> Option<std::path::PathBuf> {
     exe.exists().then_some(exe)
 }
 
-/// Copied text: the installed path plus a PowerShell single-quoted payload.
-/// The token is deliberately absent — `--push` reads it from its own file.
+/// Copied text: a file-based recipe. Windows PowerShell 5.1 re-quotes native
+/// arguments that contain embedded double quotes inconsistently (`--push '{…}'`,
+/// `--push '{\"…\"}'` and the piped variants disagree), so the shell-proof path
+/// is "write a UTF-8 file, pass the path". The token is absent — `--push-file`
+/// reads it from its own file.
 fn sample_push_command() -> String {
-    match island_exe() {
-        Some(exe) => format!("& \"{}\" --push '{}'", exe.display(), SAMPLE_PUSH),
-        None => format!("dcx-island.exe --push '{}'", SAMPLE_PUSH),
-    }
+    let exe = match island_exe() {
+        Some(exe) => exe.display().to_string(),
+        None => "dcx-island.exe".to_string(),
+    };
+    format!(
+        "$j = '{SAMPLE_PUSH}'; [IO.File]::WriteAllText(\"$env:TEMP\\dcx-island-push.json\", $j, [Text.Encoding]::UTF8); & \"{exe}\" --push-file \"$env:TEMP\\dcx-island-push.json\" | Out-Host"
+    )
 }
 
 fn send_test_push() -> Option<String> {

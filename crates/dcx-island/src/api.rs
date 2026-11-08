@@ -670,7 +670,7 @@ fn shell_open(target: &str) -> Result<(), String> {
 /// `island_show` and never toggles the panel.
 pub fn push_cli(json: &str) -> i32 {
     if json.trim().is_empty() {
-        eprintln!("用法：dcx-island --push '{{\"id\":\"build\",\"title\":\"构建完成\"}}'");
+        eprintln!("用法：dcx-island --push '<json>' 或 --push-file <utf8-json-path>（文件和参数都为空）");
         return 1;
     }
     if let Err(e) = serde_json::from_str::<serde_json::Value>(json) {
