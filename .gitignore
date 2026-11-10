@@ -23,3 +23,7 @@ Thumbs.db
 *.ilk
 *.pyc
 __pycache__/
+
+# Site download mirror: binary bundles are uploaded separately, not tracked
+/site/assets/dist/*.7z
+/site/assets/dist/*.zip
