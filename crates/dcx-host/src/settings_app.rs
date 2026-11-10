@@ -55,12 +55,10 @@ use eframe::egui::{
     Rounding, Sense, Stroke,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};// winit is the exact same 0.30.13 instance eframe links against (see Cargo.lock),
-// so the `EventLoopBuilder` types match and `with_any_thread` applies cleanly.
+use std::time::{Duration, Instant}; // winit is the exact same 0.30.13 instance eframe links against (see Cargo.lock),
+                                    // so the `EventLoopBuilder` types match and `with_any_thread` applies cleanly.
 use winit::platform::windows::EventLoopBuilderExtWindows;
 
-/// Guards against opening more than one settings window at a time.
-static OPEN: AtomicBool = AtomicBool::new(false);
 /// Page the next window should open on (the tray's 「桌面整理」 jumps to the
 /// combined app + box page). Read once in `new`, reset after.
 static START_PAGE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
@@ -68,11 +66,13 @@ static START_PAGE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::ne
 /// window can raise itself instead of silently ignoring the click.
 static FOCUS_REQUEST: AtomicBool = AtomicBool::new(false);
 /// Result of a background 「重新应用」 injection, picked up by the next frame.
-static REAPPLY_RESULT: std::sync::Mutex<Option<Result<(), String>>> =
-    std::sync::Mutex::new(None);
+static REAPPLY_RESULT: std::sync::Mutex<Option<Result<(), String>>> = std::sync::Mutex::new(None);
 /// Result of a background library migration: `(new root, outcome)`.
 static MIGRATE_RESULT: std::sync::Mutex<
-    Option<(std::path::PathBuf, std::io::Result<dcx_organizer::MigrateReport>)>,
+    Option<(
+        std::path::PathBuf,
+        std::io::Result<dcx_organizer::MigrateReport>,
+    )>,
 > = std::sync::Mutex::new(None);
 
 /// Default window size. Win11 Settings opens wider than 900 px; the wider
@@ -135,6 +135,8 @@ pub const PAGE_BOX: u8 = 2;
 pub const PAGE_SEARCH: u8 = 3;
 /// Desktop info island: its one master switch and all module options.
 pub const PAGE_ISLAND: u8 = 4;
+/// 桌面快照（截图与标注）。
+pub const PAGE_SNIP: u8 = 5;
 
 /// Which page a freshly spawned settings process should open on.
 pub fn set_start_page(page: u8) {
@@ -180,8 +182,7 @@ pub fn open_settings_at(page: u8) {
 /// The one settings process this host owns. Kept so quitting the platform can
 /// take it down: it used to keep running (and keep writing the same TOML and
 /// `host.log`) after the tray's 「退出」.
-static SETTINGS_CHILD: std::sync::Mutex<Option<std::process::Child>> =
-    std::sync::Mutex::new(None);
+static SETTINGS_CHILD: std::sync::Mutex<Option<std::process::Child>> = std::sync::Mutex::new(None);
 
 /// Terminate the spawned settings window, if it is still alive.
 ///
@@ -334,8 +335,6 @@ fn spawn_settings(exe: &std::path::Path, page: u8) -> std::io::Result<std::proce
     Ok(child)
 }
 
-
-
 /// Run the settings window on the calling (main) thread. Used by
 /// `dcx-host --settings` for development: no tray, no injection, just the UI.
 pub fn run_standalone() -> eframe::Result<()> {
@@ -440,10 +439,9 @@ pub(crate) fn setup_fonts(ctx: &egui::Context) {
         r"C:\Windows\Fonts\arialbd.ttf",
     ];
     if let Some(bytes) = bold_sources.iter().find_map(|p| std::fs::read(p).ok()) {
-        fonts.font_data.insert(
-            "cjk-bold".to_string(),
-            egui::FontData::from_owned(bytes),
-        );
+        fonts
+            .font_data
+            .insert("cjk-bold".to_string(), egui::FontData::from_owned(bytes));
         let mut list = fonts
             .families
             .get(&egui::FontFamily::Proportional)
@@ -482,10 +480,9 @@ fn setup_icon_font(fonts: &mut egui::FontDefinitions) {
         r"C:\Windows\Fonts\segmdl2.ttf",
     ];
     if let Some(bytes) = sources.iter().find_map(|p| std::fs::read(p).ok()) {
-        fonts.font_data.insert(
-            "segoe-icons".to_string(),
-            egui::FontData::from_owned(bytes),
-        );
+        fonts
+            .font_data
+            .insert("segoe-icons".to_string(), egui::FontData::from_owned(bytes));
         fonts.families.insert(
             egui::FontFamily::Name(ICON_FAMILY.into()),
             vec!["segoe-icons".to_string()],
@@ -510,6 +507,8 @@ mod glyph {
     pub const SEARCH: char = '\u{E721}';
     /// Segoe MDL2 Assets 「Clock」— the island's compact capsule is a clock.
     pub const CLOCK: char = '\u{E823}';
+    /// Segoe MDL2 「Crop」— a viewfinder/crop frame.
+    pub const CROP: char = '\u{E7A8}';
     pub const INFO: char = '\u{E946}';
     pub const TRASH: char = '\u{E74D}';
     pub const PLUS: char = '\u{E710}';
@@ -806,10 +805,7 @@ fn paint_backdrop(ctx: &egui::Context, p: &Palette) {
         egui::pos2(gx0, gy1),
     ];
     let mut glow = egui::Mesh::default();
-    glow.colored_vertex(
-        egui::pos2((gx0 + gx1) / 2.0, (gy0 + gy1) / 2.0),
-        p.glow,
-    );
+    glow.colored_vertex(egui::pos2((gx0 + gx1) / 2.0, (gy0 + gy1) / 2.0), p.glow);
     for &q in &corners {
         glow.colored_vertex(q, clear);
     }
@@ -835,6 +831,9 @@ enum Page {
     /// Desktop info island: app enable/state, clock, metrics, tasks,
     /// clipboard, inbox and outbound channels.
     Island,
+    /// Desktop snapshot: app enable/state, hotkey, output defaults, annotation
+    /// defaults and the DPI override.
+    Snip,
     About,
 }
 
@@ -845,6 +844,7 @@ impl Page {
             PAGE_BOX => Page::Box,
             PAGE_SEARCH => Page::Search,
             PAGE_ISLAND => Page::Island,
+            PAGE_SNIP => Page::Snip,
             PAGE_ABOUT => Page::About,
             _ => Page::Look,
         }
@@ -939,14 +939,12 @@ fn default_excludes() -> Vec<String> {
 }
 
 fn string_array(value: Option<&toml::Value>) -> Option<Vec<String>> {
-    value
-        .and_then(toml::Value::as_array)
-        .map(|a| {
-            a.iter()
-                .filter_map(toml::Value::as_str)
-                .map(str::to_string)
-                .collect()
-        })
+    value.and_then(toml::Value::as_array).map(|a| {
+        a.iter()
+            .filter_map(toml::Value::as_str)
+            .map(str::to_string)
+            .collect()
+    })
 }
 
 fn search_doc_path() -> std::path::PathBuf {
@@ -1066,7 +1064,12 @@ fn load_search_values() -> SearchValues {
 /// process every few seconds, so a half-write would be observed as a reset.
 fn save_search_values(v: &SearchValues, prev_enabled: bool) -> Result<(), String> {
     let mut doc = read_search_doc();
-    search_set(&mut doc, "activation", "enabled", toml::Value::Boolean(v.enabled));
+    search_set(
+        &mut doc,
+        "activation",
+        "enabled",
+        toml::Value::Boolean(v.enabled),
+    );
     search_set(
         &mut doc,
         "activation",
@@ -1160,11 +1163,9 @@ fn save_search_values(v: &SearchValues, prev_enabled: bool) -> Result<(), String
     let text = toml::to_string_pretty(&doc).map_err(|e| format!("序列化失败：{e}"))?;
     let path = search_doc_path();
     {
-        let _guard = dcx_win32::config_file::FileLock::acquire(
-            &path,
-            dcx_win32::config_file::LOCK_TIMEOUT,
-        )
-        .map_err(|e| format!("配置文件被占用：{e}"))?;
+        let _guard =
+            dcx_win32::config_file::FileLock::acquire(&path, dcx_win32::config_file::LOCK_TIMEOUT)
+                .map_err(|e| format!("配置文件被占用：{e}"))?;
         if dcx_win32::config_file::is_poisoned(&path) {
             return Err(dcx_win32::config_file::poisoned_error(&path).to_string());
         }
@@ -1173,6 +1174,237 @@ fn save_search_values(v: &SearchValues, prev_enabled: bool) -> Result<(), String
     }
     if v.enabled != prev_enabled {
         crate::apps::set_enabled("search", v.enabled)?;
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// 桌面快照（截图与标注）
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, PartialEq)]
+struct SnipValues {
+    enabled: bool,
+    hotkey: String,
+    hotkey_enabled: bool,
+    /// "png" | "jpeg"
+    format: String,
+    jpeg_quality: u32,
+    /// Corner radius of the exported screenshot, physical pixels.
+    corner_radius: u32,
+    /// Empty = the default Pictures folder.
+    dir: String,
+    /// "#RRGGBB"
+    color: String,
+    width: f32,
+    font_size: f32,
+    /// GDI family name for new text annotations. The list is shared with
+    /// `dcx-snip` through `dcx_win32::font_catalog`.
+    font: String,
+    bold: bool,
+    italic: bool,
+    shadow: bool,
+    /// Seconds the app stays alive after a session when it is not resident.
+    idle_exit: u32,
+    /// 0 = follow the DPI of the monitor under the cursor.
+    scale: f32,
+}
+
+fn snip_doc_path() -> std::path::PathBuf {
+    let mut p = std::env::var_os("LOCALAPPDATA")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    p.push("dcx");
+    p.push("snip.toml");
+    p
+}
+
+fn read_snip_doc() -> toml::Value {
+    let path = snip_doc_path();
+    match std::fs::read_to_string(&path) {
+        Ok(s) => match s.parse::<toml::Value>() {
+            Ok(v) => {
+                dcx_win32::config_file::note_parse_ok(&path);
+                v
+            }
+            Err(e) => {
+                // `dcx-snip` reads the same document. A file we cannot parse
+                // must not be rewritten from these defaults.
+                eprintln!("[dcx-host] parse {path:?} failed ({e}); keeping it read-only");
+                dcx_win32::config_file::note_parse_error(&path);
+                toml::Value::Table(Default::default())
+            }
+        },
+        Err(_) => toml::Value::Table(Default::default()),
+    }
+}
+
+fn load_snip_values() -> SnipValues {
+    let doc = read_snip_doc();
+    let a = doc.get("activation");
+    let o = doc.get("output");
+    let d = doc.get("draw");
+    let u = doc.get("ui");
+
+    let pick = |node: Option<&toml::Value>, key: &str, default: &str| -> String {
+        node.and_then(|v| v.get(key))
+            .and_then(toml::Value::as_str)
+            .unwrap_or(default)
+            .to_string()
+    };
+    let flag = |node: Option<&toml::Value>, key: &str, default: bool| -> bool {
+        node.and_then(|v| v.get(key))
+            .and_then(toml::Value::as_bool)
+            .unwrap_or(default)
+    };
+    let num = |node: Option<&toml::Value>, key: &str, default: f64| -> f64 {
+        node.and_then(|v| v.get(key))
+            .and_then(toml::Value::as_float)
+            .or_else(|| {
+                node.and_then(|v| v.get(key))
+                    .and_then(toml::Value::as_integer)
+                    .map(|i| i as f64)
+            })
+            .unwrap_or(default)
+    };
+
+    let format = match pick(o, "format", "png").as_str() {
+        "jpeg" | "jpg" => "jpeg",
+        _ => "png",
+    };
+    let scale = num(u, "scale", 0.0);
+    SnipValues {
+        enabled: crate::apps::is_enabled("snip"),
+        hotkey: pick(a, "hotkey", "Alt+j"),
+        hotkey_enabled: flag(a, "hotkey_enabled", true),
+        format: format.to_string(),
+        jpeg_quality: num(o, "jpeg_quality", 92.0).clamp(40.0, 100.0) as u32,
+        corner_radius: num(o, "corner_radius", 0.0).clamp(0.0, 128.0) as u32,
+        dir: pick(o, "dir", ""),
+        color: pick(d, "color", "#E5484D"),
+        width: num(d, "width", 3.0).clamp(1.0, 40.0) as f32,
+        font_size: num(d, "font_size", 20.0).clamp(8.0, 96.0) as f32,
+        font: pick(d, "font", dcx_win32::font_catalog::DEFAULT_FACE),
+        bold: flag(d, "bold", false),
+        italic: flag(d, "italic", false),
+        shadow: flag(d, "shadow", false),
+        idle_exit: num(a, "idle_exit_seconds", 30.0).clamp(5.0, 3600.0) as u32,
+        scale: if scale > 0.01 {
+            ((scale * 100.0).round() / 100.0) as f32
+        } else {
+            0.0
+        },
+    }
+}
+
+/// Atomic replace + keep `apps.toml` in step. Same protocol as the search
+/// document: lock, refuse to overwrite a file we could not parse, then rename.
+fn save_snip_values(v: &SnipValues, prev_enabled: bool) -> Result<(), String> {
+    let mut doc = read_snip_doc();
+    let set = |doc: &mut toml::Value, section: &str, key: &str, value: toml::Value| {
+        if !doc.is_table() {
+            *doc = toml::Value::Table(Default::default());
+        }
+        let root = match doc.as_table_mut() {
+            Some(t) => t,
+            None => return,
+        };
+        let entry = root
+            .entry(section.to_string())
+            .or_insert_with(|| toml::Value::Table(Default::default()));
+        if !entry.is_table() {
+            *entry = toml::Value::Table(Default::default());
+        }
+        if let Some(t) = entry.as_table_mut() {
+            t.insert(key.to_string(), value);
+        }
+    };
+
+    set(
+        &mut doc,
+        "activation",
+        "hotkey",
+        toml::Value::String(v.hotkey.clone()),
+    );
+    set(
+        &mut doc,
+        "activation",
+        "hotkey_enabled",
+        toml::Value::Boolean(v.hotkey_enabled),
+    );
+    set(
+        &mut doc,
+        "activation",
+        "idle_exit_seconds",
+        toml::Value::Integer(v.idle_exit as i64),
+    );
+    set(
+        &mut doc,
+        "output",
+        "format",
+        toml::Value::String(v.format.clone()),
+    );
+    set(
+        &mut doc,
+        "output",
+        "jpeg_quality",
+        toml::Value::Integer(v.jpeg_quality as i64),
+    );
+    set(
+        &mut doc,
+        "output",
+        "corner_radius",
+        toml::Value::Integer(v.corner_radius as i64),
+    );
+    set(
+        &mut doc,
+        "output",
+        "dir",
+        toml::Value::String(v.dir.clone()),
+    );
+    set(
+        &mut doc,
+        "draw",
+        "color",
+        toml::Value::String(v.color.clone()),
+    );
+    set(
+        &mut doc,
+        "draw",
+        "width",
+        toml::Value::Float(v.width as f64),
+    );
+    set(
+        &mut doc,
+        "draw",
+        "font_size",
+        toml::Value::Float(v.font_size as f64),
+    );
+    set(
+        &mut doc,
+        "draw",
+        "font",
+        toml::Value::String(v.font.clone()),
+    );
+    set(&mut doc, "draw", "bold", toml::Value::Boolean(v.bold));
+    set(&mut doc, "draw", "italic", toml::Value::Boolean(v.italic));
+    set(&mut doc, "draw", "shadow", toml::Value::Boolean(v.shadow));
+    set(&mut doc, "ui", "scale", toml::Value::Float(v.scale as f64));
+
+    let text = toml::to_string_pretty(&doc).map_err(|e| format!("序列化失败：{e}"))?;
+    let path = snip_doc_path();
+    {
+        let _guard =
+            dcx_win32::config_file::FileLock::acquire(&path, dcx_win32::config_file::LOCK_TIMEOUT)
+                .map_err(|e| format!("配置文件被占用：{e}"))?;
+        if dcx_win32::config_file::is_poisoned(&path) {
+            return Err(dcx_win32::config_file::poisoned_error(&path).to_string());
+        }
+        dcx_win32::config_file::write_atomic(&path, text.as_bytes())
+            .map_err(|e| format!("写入失败：{e}"))?;
+    }
+    if v.enabled != prev_enabled {
+        crate::apps::set_enabled("snip", v.enabled)?;
     }
     Ok(())
 }
@@ -1246,6 +1478,17 @@ struct SettingsApp {
     /// mark the document dirty before「添加」is pressed.
     exclude_new: String,
 
+    // -- desktop snapshot ---------------------------------------------------
+    snip: SnipValues,
+    snip_saved: SnipValues,
+    snip_dirty: Option<Instant>,
+    snip_error: Option<String>,
+    /// 快捷键是否真的被平台注册了。每 2 s 重测一次：改键后 1 s 内宿主会重绑，
+    /// 重启平台后这里会立刻从「未注册」变成「已生效」。
+    snip_hk_at: Instant,
+    snip_hk_text: String,
+    snip_hk_ok: bool,
+
     // -- desktop info island ------------------------------------------------
     /// `island.toml` being edited. The island process also writes this document
     /// (tab, panel size), so `persist_island` merges the `ui` table from disk.
@@ -1276,6 +1519,7 @@ impl SettingsApp {
         // icons an earlier build hid and left an ownership marker behind.
         restore_desktop_icons_if_owned();
         let search = load_search_values();
+        let snip = load_snip_values();
         let mut island = dcx_island_config::load();
         // `apps.toml` is the host's registry; mirror it into the document so
         // the single master switch always shows one consistent state.
@@ -1302,6 +1546,13 @@ impl SettingsApp {
             caption_tint: None,
             search_saved: search.clone(),
             search,
+            snip_saved: snip.clone(),
+            snip,
+            snip_dirty: None,
+            snip_error: None,
+            snip_hk_at: Instant::now() - Duration::from_secs(10),
+            snip_hk_text: String::new(),
+            snip_hk_ok: false,
             search_dirty: None,
             search_error: None,
             exclude_new: String::new(),
@@ -1355,6 +1606,7 @@ impl SettingsApp {
             (Page::Box, NavIcon::Box, "桌面整理"),
             (Page::Search, NavIcon::Search, "文件检索"),
             (Page::Island, NavIcon::Island, "桌面信息岛"),
+            (Page::Snip, NavIcon::Snip, "截图与标注"),
             (Page::About, NavIcon::About, "关于"),
         ] {
             if nav_item(ui, p, self.page == page, icon, label).clicked() {
@@ -1384,36 +1636,42 @@ impl SettingsApp {
         });
     }
 
+    /// 「系统信息」used to be a taskbar-theme-only panel: one `settings.toml`
+    /// path, one engine state, and `summary(&self.s)` as 「当前配置」. With four
+    /// standalone apps in the platform that reads as if DCX had one module.
+    /// The card now reports the OS and the capability; module state and the
+    /// config documents live in their own cards below (see `Page::About`).
     fn about_card(&self, ui: &mut egui::Ui, p: &Palette) {
         card(ui, p, |ui| {
-            row(ui, p, RowIcon::Doc, "配置文件", "settings.toml", |ui| {
-                if standard_button(ui, p, "打开目录", true).clicked() {
-                    reveal_settings();
-                }
-            });
-            row_separator(ui, p);
-            let (engine, color) = engine_state_text(p);
-            row_info(ui, p, RowIcon::Info, "引擎状态", &engine, |ui| {
-                let (rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), Sense::hover());
-                ui.painter().circle_filled(rect.center(), 3.5, color);
-            });
-            row_separator(ui, p);
+            let ok = style_supported();
+            let color = if ok { p.ok } else { p.warn };
             row_info(
                 ui,
                 p,
-                RowIcon::Spacing,
-                "当前配置",
-                &summary(&self.s),
+                RowIcon::Desktop,
+                "操作系统",
+                &dcx_win32::platform::describe(),
                 |ui| {
-                    ui.label(RichText::new("").size(12.0).color(p.secondary));
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), Sense::hover());
+                    ui.painter().circle_filled(rect.center(), 3.5, color);
                 },
+            );
+            row_separator(ui, p);
+            state_row(
+                ui,
+                p,
+                RowIcon::Shape,
+                "任务栏样式能力",
+                "依赖 Windows 11 的 XAML 任务栏（内部版本 ≥ 22000）",
+                if ok { "可用" } else { "已停用" },
+                color,
             );
             row_separator(ui, p);
             row_info(
                 ui,
                 p,
-                RowIcon::Doc,
-                "版本",
+                RowIcon::Info,
+                "DCX 版本",
                 env!("CARGO_PKG_VERSION"),
                 |ui| {
                     ui.label(RichText::new("").size(12.0).color(p.secondary));
@@ -1425,6 +1683,89 @@ impl SettingsApp {
                     open_url(GITHUB_URL);
                 }
             });
+            row_separator(ui, p);
+            let dir = Settings::path()
+                .parent()
+                .map(|d| d.display().to_string())
+                .unwrap_or_default();
+            row(ui, p, RowIcon::Folder, "配置目录", &dir, |ui| {
+                if standard_button(ui, p, "打开目录", true).clicked() {
+                    reveal_settings();
+                }
+            });
+        });
+    }
+
+    /// Live state of every module. The engine row doubles as the honest
+    /// injection indicator; the app rows come from the same registry the
+    /// watchdog and the other pages use, so this cannot drift out of sync.
+    fn module_card(&self, ui: &mut egui::Ui, p: &Palette) {
+        card(ui, p, |ui| {
+            let (engine, engine_color) = engine_state_text(p);
+            // The old 「当前配置」 row was the only config shown; it belongs
+            // here as the engine module's detail, not as the whole platform's.
+            let engine_sub = format!("dcx_engine.dll · {}", summary(&self.s));
+            state_row(
+                ui,
+                p,
+                RowIcon::Shape,
+                "任务栏样式",
+                &engine_sub,
+                &engine,
+                engine_color,
+            );
+            row_separator(ui, p);
+            for (id, icon, detail) in [
+                ("box", RowIcon::BoxGlyph, "桌面文件收纳与分类"),
+                ("search", RowIcon::Search, "全盘文件名与内容检索"),
+                ("snip", RowIcon::Desktop, "冻结画面、标注与长截图"),
+                ("island", RowIcon::Info, "时间 / 性能 / 提醒 / 剪贴板"),
+            ] {
+                let entry = crate::apps::entries().iter().find(|e| e.id == id);
+                let name = entry.map(|e| e.name).unwrap_or(id);
+                let exe = entry.map(|e| e.exe).unwrap_or("dcx-app.exe");
+                let subtitle = format!("{exe} · {} · {detail}", app_config_name(id));
+                let running = crate::apps::is_running(id);
+                state_row(
+                    ui,
+                    p,
+                    icon,
+                    name,
+                    &subtitle,
+                    if running { "运行中" } else { "已停止" },
+                    if running { p.ok } else { p.tertiary },
+                );
+                if id != "island" {
+                    row_separator(ui, p);
+                }
+            }
+        });
+    }
+
+    /// Every TOML document the platform and its apps share. A dot means the
+    /// file already exists — most apps create theirs on first run, so a missing
+    /// one is normal rather than an error.
+    fn config_files_card(&self, ui: &mut egui::Ui, p: &Palette) {
+        card(ui, p, |ui| {
+            for (i, (name, desc)) in CONFIG_DOCS.into_iter().enumerate() {
+                if i > 0 {
+                    row_separator(ui, p);
+                }
+                let exists = dcx_file(name).is_file();
+                row_info(ui, p, RowIcon::Doc, name, desc, |ui| {
+                    let (rect, resp) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), Sense::hover());
+                    ui.painter().circle_filled(
+                        rect.center(),
+                        3.5,
+                        if exists { p.ok } else { p.tertiary },
+                    );
+                    resp.on_hover_text(if exists {
+                        "已创建"
+                    } else {
+                        "尚未创建（首次使用时生成）"
+                    })
+                });
+            }
         });
     }
 
@@ -1441,25 +1782,61 @@ impl SettingsApp {
         }
         let armed = self.confirm_quit_at.is_some();
 
+        // Without the engine there is nothing to restore; `shutdown::restore()`
+        // skips the Explorer restart and just stops the apps and quits.
+        let restorable = style_supported();
         let (title, subtitle) = if busy {
-            ("正在恢复任务栏", "正在重启资源管理器，随后退出")
+            (
+                if restorable {
+                    "正在恢复任务栏"
+                } else {
+                    "正在退出"
+                },
+                if restorable {
+                    "正在重启资源管理器，随后退出"
+                } else {
+                    "正在停止独立应用并退出"
+                },
+            )
         } else if armed {
-            ("确认恢复任务栏？", "再点一次确认，桌面会闪一下")
-        } else {
+            (
+                if restorable {
+                    "确认恢复任务栏？"
+                } else {
+                    "确认退出？"
+                },
+                if restorable {
+                    "再点一次确认，桌面会闪一下"
+                } else {
+                    "再点一次确认"
+                },
+            )
+        } else if restorable {
             (
                 "退出并恢复任务栏",
                 "重启资源管理器并退出 DCX，任务栏恢复系统默认",
+            )
+        } else {
+            (
+                "退出 DCX",
+                "停止平台与已启用的独立应用；任务栏一直保持系统默认",
             )
         };
 
         card(ui, p, |ui| {
             row(ui, p, RowIcon::Exit, title, subtitle, |ui| {
                 let label = if busy {
-                    "正在恢复…"
+                    if restorable {
+                        "正在恢复…"
+                    } else {
+                        "正在退出…"
+                    }
                 } else if armed {
-                    "确认恢复"
-                } else {
+                    "确认退出"
+                } else if restorable {
                     "恢复并退出"
+                } else {
+                    "退出 DCX"
                 };
                 let clicked = if armed {
                     danger_button(ui, p, label, !busy)
@@ -1525,7 +1902,10 @@ impl SettingsApp {
                         ui,
                         p,
                         &mut mode,
-                        &[(HoverEffect::Background, "背景"), (HoverEffect::Dock, "放大")],
+                        &[
+                            (HoverEffect::Background, "背景"),
+                            (HoverEffect::Dock, "放大"),
+                        ],
                     ) {
                         self.s.hover_effect = mode;
                     }
@@ -1571,7 +1951,9 @@ impl SettingsApp {
 
     fn metrics_card(&mut self, ui: &mut egui::Ui, p: &Palette) {
         card(ui, p, |ui| {
-            let height_max = MAX_TASKBAR_HEIGHT.min(TASKBAR_BUDGET).max(MIN_TASKBAR_HEIGHT);
+            let height_max = MAX_TASKBAR_HEIGHT
+                .min(TASKBAR_BUDGET)
+                .max(MIN_TASKBAR_HEIGHT);
             let mut h = self.s.effective_height();
             if slider_row(
                 ui,
@@ -1827,10 +2209,7 @@ impl SettingsApp {
                 "全局快捷键",
                 "示例 Alt+s、Ctrl+Shift+F；必须带 Alt / Ctrl / Shift / Win 之一，改键约 1 秒后生效",
                 |ui| {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut sv.hotkey)
-                            .desired_width(130.0),
-                    );
+                    ui.add(egui::TextEdit::singleline(&mut sv.hotkey).desired_width(130.0));
                     if let Err(why) = crate::hotkey::validate(&sv.hotkey) {
                         ui.label(RichText::new(why).size(11.0).color(p.danger));
                     }
@@ -2190,6 +2569,442 @@ impl SettingsApp {
         ui.add_space(18.0);
     }
 
+    // -- 桌面快照 -----------------------------------------------------------
+
+    fn persist_snip(&mut self) {
+        match save_snip_values(&self.snip, self.snip_saved.enabled) {
+            Ok(()) => {
+                self.snip_saved = self.snip.clone();
+                self.snip_dirty = None;
+                self.snip_error = None;
+            }
+            Err(e) => {
+                self.snip_error = Some(e);
+                self.snip_dirty = None;
+            }
+        }
+    }
+
+    fn snip_tick(&mut self, ctx: &egui::Context) {
+        if let Some(t) = self.snip_dirty {
+            if t.elapsed() >= Duration::from_millis(220) {
+                self.persist_snip();
+            }
+            ctx.request_repaint_after(Duration::from_millis(120));
+        }
+    }
+
+    /// 桌面快照：启停、热键、输出默认值、标注默认值与界面缩放。
+    ///
+    /// 应用自身不带设置界面 —— 这是 DCX 的既定架构：所有开关都在这一个窗口
+    /// 里，写入 `snip.toml` 后由 `dcx-snip` 在每次会话开始时重新读取。
+    /// 快捷键的**实际**状态：已生效 / 平台未注册 / 被别的程序占用 / 已关闭。
+    ///
+    /// 只读 `snip.toml` 是不够的 —— 文件里有键，不代表常驻宿主真的注册了它
+    /// （旧宿主进程、键被抢占都会这样）。这里直接试注册一次来判断。
+    fn snip_hotkey_state(&mut self) -> (String, bool) {
+        if self.snip_hk_at.elapsed() < Duration::from_secs(2) {
+            return (self.snip_hk_text.clone(), self.snip_hk_ok);
+        }
+        self.snip_hk_at = Instant::now();
+        let v = &self.snip;
+        let (text, ok) = if !v.hotkey_enabled {
+            ("已关闭".to_string(), true)
+        } else if let Some(err) = crate::hotkey::last_snip_error() {
+            (err, false)
+        } else {
+            match crate::hotkey::probe(&v.hotkey) {
+                Ok(true) => (
+                    "该组合键当前未被平台注册：重启平台（stop-dcx-all.bat → start-dcx.bat）后生效"
+                        .to_string(),
+                    false,
+                ),
+                Ok(false) => ("已生效".to_string(), true),
+                Err(e) => (e, false),
+            }
+        };
+        self.snip_hk_text = text.clone();
+        self.snip_hk_ok = ok;
+        (text, ok)
+    }
+
+    fn snip_cards(&mut self, ui: &mut egui::Ui, p: &Palette) {
+        let mut sv = self.snip.clone();
+        let (hk_text, hk_ok) = self.snip_hotkey_state();
+        // Native folder picker / Explorer are modal: they run after the egui
+        // paint closures have finished, never from inside one.
+        let mut want_dir = false;
+        let mut open_dir = false;
+
+        caption(ui, p, "常规");
+        card(ui, p, |ui| {
+            let mut enabled = sv.enabled;
+            row_tight(
+                ui,
+                p,
+                RowIcon::Power,
+                "启用桌面快照（常驻）",
+                "常驻会随平台启动；关闭后不占内存，快捷键仍可按需拉起，用完自动退出",
+                |ui| {
+                    switch(ui, p, &mut enabled);
+                },
+            );
+            sv.enabled = enabled;
+            row_separator(ui, p);
+            self.app_status_row(ui, p, "snip", RowIcon::Doc);
+            row_separator(ui, p);
+
+            let mut hk_on = sv.hotkey_enabled;
+            row_tight(
+                ui,
+                p,
+                RowIcon::Hover,
+                "启用全局快捷键",
+                "由 dcx-host 常驻监听，应用未运行时也能唤起；会话中再按一次取消",
+                |ui| {
+                    switch(ui, p, &mut hk_on);
+                },
+            );
+            sv.hotkey_enabled = hk_on;
+            row_separator(ui, p);
+
+            row(
+                ui,
+                p,
+                RowIcon::Hover,
+                "全局快捷键",
+                "示例 Alt+j、Ctrl+Shift+X；必须带 Alt / Ctrl / Shift / Win 之一，改键约 1 秒后生效",
+                |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut sv.hotkey).desired_width(130.0));
+                    if let Err(why) = crate::hotkey::validate(&sv.hotkey) {
+                        ui.label(RichText::new(why).size(11.0).color(p.danger));
+                    }
+                },
+            );
+            row_separator(ui, p);
+
+            row_info(ui, p, RowIcon::Info, "快捷键状态", &hk_text, |ui| {
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), Sense::hover());
+                let color = if hk_ok { p.ok } else { p.warn };
+                ui.painter().circle_filled(rect.center(), 3.5, color);
+            });
+            row_separator(ui, p);
+
+            let mut idle = sv.idle_exit;
+            row(
+                ui,
+                p,
+                RowIcon::Info,
+                "闲置退出",
+                "未启用常驻时，最后一次截图结束后等待多久退出；5–3600 秒",
+                |ui| {
+                    ui.add(
+                        egui::DragValue::new(&mut idle)
+                            .range(5..=3600)
+                            .suffix(" 秒"),
+                    );
+                },
+            );
+            sv.idle_exit = idle;
+        });
+
+        ui.add_space(18.0);
+        caption(ui, p, "输出");
+        card(ui, p, |ui| {
+            let mut fmt = if sv.format == "jpeg" { 1u8 } else { 0 };
+            row_reserve(
+                ui,
+                p,
+                RowIcon::Doc,
+                "保存格式",
+                "复制到剪贴板时同时给出 CF_DIB 与 PNG，两个格式对粘贴目标都兼容",
+                240.0,
+                |ui| {
+                    radios(ui, p, &mut fmt, &[(0u8, "PNG"), (1u8, "JPEG")]);
+                },
+            );
+            sv.format = if fmt == 1 { "jpeg" } else { "png" }.to_string();
+            row_separator(ui, p);
+
+            let mut q = sv.jpeg_quality;
+            row(
+                ui,
+                p,
+                RowIcon::Size,
+                "JPEG 质量",
+                "仅在保存为 JPEG 时使用；PNG 无损，不需要该值",
+                |ui| {
+                    ui.add(egui::DragValue::new(&mut q).range(40..=100));
+                },
+            );
+            sv.jpeg_quality = q;
+            row_separator(ui, p);
+
+            let mut cr = sv.corner_radius;
+            row(
+                ui,
+                p,
+                RowIcon::Shape,
+                "截图圆角",
+                "导出图片四角的透明半径（物理像素），0 = 直角；PNG 透明，JPEG 压白；会话里可用工具条圆角按钮临时切换",
+                |ui| {
+                    ui.add(egui::DragValue::new(&mut cr).range(0..=128).suffix(" px"));
+                },
+            );
+            sv.corner_radius = cr;
+            row_separator(ui, p);
+
+            // A path field plus two buttons is far wider than `row()`'s
+            // 132 pt action column: the old layout let them overlap the
+            // subtitle and pushed the field past the card edge. Stack the
+            // controls under the text instead, field taking the leftover
+            // width and the two buttons right-aligned.
+            row_below(
+                ui,
+                p,
+                RowIcon::Folder,
+                "保存目录",
+                "留空 = 图片\\DCX 截图；每次保存都会自动创建目录，同名文件自动加序号",
+                |ui| {
+                    // Showing the resolved default as the hint makes "留空"
+                    // concrete without pretending the field has a value.
+                    let default_hint = snip_output_dir("").to_string_lossy().to_string();
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if standard_button(ui, p, "打开目录", true).clicked() {
+                            open_dir = true;
+                        }
+                        if standard_button(ui, p, "选择目录", true).clicked() {
+                            want_dir = true;
+                        }
+                        let w = ui.available_width().max(180.0);
+                        ui.add(
+                            egui::TextEdit::singleline(&mut sv.dir)
+                                .hint_text(default_hint)
+                                .desired_width(w),
+                        );
+                    });
+                },
+            );
+        });
+
+        ui.add_space(18.0);
+        caption(ui, p, "标注默认值");
+        card(ui, p, |ui| {
+            row(
+                ui,
+                p,
+                RowIcon::Shape,
+                "默认颜色",
+                "#RRGGBB；会话里可在工具条上随时换色，这里只是新会话的起点",
+                |ui| {
+                    let mut text = sv.color.clone();
+                    if ui
+                        .add(
+                            egui::TextEdit::singleline(&mut text)
+                                .desired_width(90.0)
+                                .char_limit(7),
+                        )
+                        .changed()
+                    {
+                        sv.color = text;
+                    }
+                },
+            );
+            row_separator(ui, p);
+
+            let mut w = sv.width;
+            row(
+                ui,
+                p,
+                RowIcon::Width,
+                "默认线宽",
+                "物理像素；会话内滚轮可临时调整，不影响这里的默认值",
+                |ui| {
+                    ui.add(egui::DragValue::new(&mut w).range(1.0..=40.0).speed(0.2));
+                },
+            );
+            sv.width = w;
+            row_separator(ui, p);
+
+            let mut f = sv.font_size;
+            row(
+                ui,
+                p,
+                RowIcon::Size,
+                "默认字号",
+                "文本工具的初始字号（物理像素），会随界面缩放一起放大",
+                |ui| {
+                    ui.add(egui::DragValue::new(&mut f).range(8.0..=96.0).speed(0.5));
+                },
+            );
+            sv.font_size = f;
+            row_separator(ui, p);
+
+            // The radio list is the curated catalog plus the current value when
+            // it is something else (a family picked inside the overlay, which
+            // lists every installed face). Showing 微软雅黑 as "selected" next
+            // to a document that uses 思源黑体 would be a lie.
+            let known = dcx_win32::font_catalog::index(&sv.font);
+            let mut labels: Vec<String> = dcx_win32::font_catalog::FACES
+                .iter()
+                .map(|f| f.label.to_string())
+                .collect();
+            let mut face_idx = known.unwrap_or(0);
+            if known.is_none() && !sv.font.trim().is_empty() {
+                labels.push(sv.font.trim().to_string());
+                face_idx = labels.len() - 1;
+            }
+            let changed = row_below(
+                ui,
+                p,
+                RowIcon::Size,
+                "默认字体",
+                "文本标注的字族；会话里工具条的字体框可列全部已安装字族并临时切换，这里只是新会话的起点",
+                |ui| {
+                    let opts: Vec<(usize, &str)> = labels
+                        .iter()
+                        .enumerate()
+                        .map(|(i, s)| (i, s.as_str()))
+                        .collect();
+                    let mut idx = face_idx;
+                    let changed = radios(ui, p, &mut idx, &opts);
+                    face_idx = idx;
+                    changed
+                },
+            );
+            // Only write back on an actual click: an unknown family hand-edited
+            // into snip.toml must not be silently replaced by the default.
+            if changed {
+                if let Some(face) = dcx_win32::font_catalog::FACES.get(face_idx) {
+                    sv.font = face.id.to_string();
+                }
+            }
+            row_separator(ui, p);
+
+            let mut bold = sv.bold;
+            row_tight(
+                ui,
+                p,
+                RowIcon::Shape,
+                "默认粗体",
+                "新文本标注默认加粗；会话中可用 Ctrl+B 或工具条上的 B 切换",
+                |ui| {
+                    switch(ui, p, &mut bold);
+                },
+            );
+            sv.bold = bold;
+            row_separator(ui, p);
+
+            let mut italic = sv.italic;
+            row_tight(
+                ui,
+                p,
+                RowIcon::Width,
+                "默认斜体",
+                "新文本标注默认倾斜；会话中可用 Ctrl+I 或工具条上的 I 切换",
+                |ui| {
+                    switch(ui, p, &mut italic);
+                },
+            );
+            sv.italic = italic;
+            row_separator(ui, p);
+
+            let mut shadow = sv.shadow;
+            row_tight(
+                ui,
+                p,
+                RowIcon::Preset,
+                "默认文字阴影",
+                "在文字右下加一层硬投影，深浅背景上都更容易读；只影响文本标注",
+                |ui| {
+                    switch(ui, p, &mut shadow);
+                },
+            );
+            sv.shadow = shadow;
+        });
+
+        ui.add_space(18.0);
+        caption(ui, p, "界面");
+        card(ui, p, |ui| {
+            let mut mode = if sv.scale <= 0.01 {
+                0u8
+            } else if (sv.scale - 1.0).abs() < 0.01 {
+                1
+            } else if (sv.scale - 1.25).abs() < 0.01 {
+                2
+            } else if (sv.scale - 1.5).abs() < 0.01 {
+                3
+            } else {
+                4
+            };
+            // Five options do not fit in the right-hand control column: the
+            // last two were clipped by the window edge and unclickable, so this
+            // row stacks the radios under the title instead.
+            row_below(
+                ui,
+                p,
+                RowIcon::Size,
+                "工具栏缩放",
+                "选「跟随系统」时按光标所在显示器的 DPI 计算，并对高分屏做轻微放大",
+                |ui| {
+                    radios(
+                        ui,
+                        p,
+                        &mut mode,
+                        &[
+                            (0u8, "跟随系统"),
+                            (1u8, "100%"),
+                            (2u8, "125%"),
+                            (3u8, "150%"),
+                            (4u8, "200%"),
+                        ],
+                    );
+                },
+            );
+            sv.scale = match mode {
+                1 => 1.0,
+                2 => 1.25,
+                3 => 1.5,
+                4 => 2.0,
+                _ => 0.0,
+            };
+            row_separator(ui, p);
+            row_info(
+                ui,
+                p,
+                RowIcon::Info,
+                "权限说明",
+                "普通权限运行：无法覆盖以管理员身份运行的程序窗口，抓屏本身不受影响",
+                |ui| {
+                    ui.label(RichText::new("").size(12.0).color(p.secondary));
+                },
+            );
+            if let Some(err) = self.snip_error.clone() {
+                row_separator(ui, p);
+                row_info(ui, p, RowIcon::Info, "保存失败", &err, |ui| {
+                    ui.label(RichText::new("").size(12.0).color(p.danger));
+                });
+            }
+        });
+
+        // Modal shell dialogs must not run inside a paint closure. The picked
+        // path goes into `sv` first so the normal dirty-check below persists
+        // it to snip.toml (220 ms) before the next screenshot session starts.
+        if want_dir {
+            if let Some(dir) = pick_folder("选择截图保存目录") {
+                sv.dir = dir;
+            }
+        }
+        if open_dir {
+            open_snip_dir(&sv.dir);
+        }
+
+        if sv != self.snip {
+            self.snip = sv;
+            self.snip_dirty = Some(Instant::now());
+        }
+    }
+
     // -- 桌面信息岛 ---------------------------------------------------------
 
     /// Write `island.toml`. Both processes write this document, so the
@@ -2293,28 +3108,56 @@ impl SettingsApp {
             row_separator(ui, p);
 
             let mut hour24 = iv.clock.hour24;
-            row_tight(ui, p, RowIcon::Info, "24 小时制", "关闭后显示上午 / 下午", |ui| {
-                switch(ui, p, &mut hour24);
-            });
+            row_tight(
+                ui,
+                p,
+                RowIcon::Info,
+                "24 小时制",
+                "关闭后显示上午 / 下午",
+                |ui| {
+                    switch(ui, p, &mut hour24);
+                },
+            );
             iv.clock.hour24 = hour24;
             row_separator(ui, p);
 
             let mut show_seconds = iv.clock.show_seconds;
-            row_tight(ui, p, RowIcon::Info, "显示秒", "胶囊上的时间精确到秒", |ui| {
-                switch(ui, p, &mut show_seconds);
-            });
+            row_tight(
+                ui,
+                p,
+                RowIcon::Info,
+                "显示秒",
+                "胶囊上的时间精确到秒",
+                |ui| {
+                    switch(ui, p, &mut show_seconds);
+                },
+            );
             iv.clock.show_seconds = show_seconds;
             row_separator(ui, p);
 
             let mut show_weekday = iv.clock.show_weekday;
             let mut show_date = iv.clock.show_date;
-            row_tight(ui, p, RowIcon::Info, "显示星期", "在时间后显示周几", |ui| {
-                switch(ui, p, &mut show_weekday);
-            });
+            row_tight(
+                ui,
+                p,
+                RowIcon::Info,
+                "显示星期",
+                "在时间后显示周几",
+                |ui| {
+                    switch(ui, p, &mut show_weekday);
+                },
+            );
             row_separator(ui, p);
-            row_tight(ui, p, RowIcon::Info, "显示日期", "在时间后显示月日", |ui| {
-                switch(ui, p, &mut show_date);
-            });
+            row_tight(
+                ui,
+                p,
+                RowIcon::Info,
+                "显示日期",
+                "在时间后显示月日",
+                |ui| {
+                    switch(ui, p, &mut show_date);
+                },
+            );
             iv.clock.show_weekday = show_weekday;
             iv.clock.show_date = show_date;
             row_separator(ui, p);
@@ -2427,9 +3270,16 @@ impl SettingsApp {
         caption(ui, p, "系统性能");
         card(ui, p, |ui| {
             let mut show = iv.metrics.show;
-            row_tight(ui, p, RowIcon::Power, "显示性能指标", "在胶囊右侧显示 CPU、内存等读数", |ui| {
-                switch(ui, p, &mut show);
-            });
+            row_tight(
+                ui,
+                p,
+                RowIcon::Power,
+                "显示性能指标",
+                "在胶囊右侧显示 CPU、内存等读数",
+                |ui| {
+                    switch(ui, p, &mut show);
+                },
+            );
             iv.metrics.show = show;
             row_separator(ui, p);
             for (flag, title, subtitle) in [
@@ -2453,14 +3303,26 @@ impl SettingsApp {
                 "采样间隔",
                 "1–10 秒；间隔越长越省电，读数也越迟钝",
                 |ui| {
-                    ui.add(egui::DragValue::new(&mut iv.metrics.interval_secs).range(1..=10).suffix(" 秒"));
+                    ui.add(
+                        egui::DragValue::new(&mut iv.metrics.interval_secs)
+                            .range(1..=10)
+                            .suffix(" 秒"),
+                    );
                 },
             );
             row_separator(ui, p);
             let mut style = if iv.metrics.style == "ring" { 1u8 } else { 0u8 };
-            row_reserve(ui, p, RowIcon::Shape, "指标样式", "条形或环形，超过 75% 变色", 240.0, |ui| {
-                radios(ui, p, &mut style, &[(0u8, "条形"), (1u8, "环形")]);
-            });
+            row_reserve(
+                ui,
+                p,
+                RowIcon::Shape,
+                "指标样式",
+                "条形或环形，超过 75% 变色",
+                240.0,
+                |ui| {
+                    radios(ui, p, &mut style, &[(0u8, "条形"), (1u8, "环形")]);
+                },
+            );
             iv.metrics.style = if style == 1 { "ring" } else { "bar" }.to_string();
         });
 
@@ -2470,13 +3332,27 @@ impl SettingsApp {
             let mut carry = iv.tasks.carry_over;
             let mut sound = iv.tasks.sound;
             let mut dispatch_due = iv.tasks.dispatch_due;
-            row_tight(ui, p, RowIcon::Sort, "未完成任务自动结转", "每天首次启动时，把昨天未完成的任务移到今天", |ui| {
-                switch(ui, p, &mut carry);
-            });
+            row_tight(
+                ui,
+                p,
+                RowIcon::Sort,
+                "未完成任务自动结转",
+                "每天首次启动时，把昨天未完成的任务移到今天",
+                |ui| {
+                    switch(ui, p, &mut carry);
+                },
+            );
             row_separator(ui, p);
-            row_tight(ui, p, RowIcon::Info, "提醒声音", "提醒到点时发出提示音", |ui| {
-                switch(ui, p, &mut sound);
-            });
+            row_tight(
+                ui,
+                p,
+                RowIcon::Info,
+                "提醒声音",
+                "提醒到点时发出提示音",
+                |ui| {
+                    switch(ui, p, &mut sound);
+                },
+            );
             row_separator(ui, p);
             row_tight(
                 ui,
@@ -2524,9 +3400,16 @@ impl SettingsApp {
                 },
             );
             row_separator(ui, p);
-            row_tight(ui, p, RowIcon::Shape, "记录图片", "关闭后只记录文本", |ui| {
-                switch(ui, p, &mut images);
-            });
+            row_tight(
+                ui,
+                p,
+                RowIcon::Shape,
+                "记录图片",
+                "关闭后只记录文本",
+                |ui| {
+                    switch(ui, p, &mut images);
+                },
+            );
             row_separator(ui, p);
             row_tight(
                 ui,
@@ -2551,7 +3434,9 @@ impl SettingsApp {
                 "条数 20–2000，单条文本 200–200000 字，超出截断",
                 |ui| {
                     ui.add(egui::DragValue::new(&mut iv.clipboard.max_items).range(20..=2000));
-                    ui.add(egui::DragValue::new(&mut iv.clipboard.max_text_chars).range(200..=200_000));
+                    ui.add(
+                        egui::DragValue::new(&mut iv.clipboard.max_text_chars).range(200..=200_000),
+                    );
                 },
             );
             row_separator(ui, p);
@@ -2562,13 +3447,21 @@ impl SettingsApp {
                 "图片目录预算",
                 "超出后从最旧的图片开始清理，单位 MB",
                 |ui| {
-                    ui.add(egui::DragValue::new(&mut iv.clipboard.max_image_mb).range(0..=4096).suffix(" MB"));
+                    ui.add(
+                        egui::DragValue::new(&mut iv.clipboard.max_image_mb)
+                            .range(0..=4096)
+                            .suffix(" MB"),
+                    );
                 },
             );
             row_separator(ui, p);
             let mut excludes = iv.clipboard.exclude_patterns.join("\n");
             ui.add_space(4.0);
-            ui.label(RichText::new("不记录的文本规则（每行一条正则，命中即跳过）").size(12.5).color(p.secondary));
+            ui.label(
+                RichText::new("不记录的文本规则（每行一条正则，命中即跳过）")
+                    .size(12.5)
+                    .color(p.secondary),
+            );
             ui.add_space(4.0);
             ui.add(
                 egui::TextEdit::multiline(&mut excludes)
@@ -2664,9 +3557,16 @@ impl SettingsApp {
             );
             row_separator(ui, p);
             let mut badge = iv.inbox.badge;
-            row_tight(ui, p, RowIcon::Info, "紧凑态未读角标", "有新提醒时胶囊上显示计数", |ui| {
-                switch(ui, p, &mut badge);
-            });
+            row_tight(
+                ui,
+                p,
+                RowIcon::Info,
+                "紧凑态未读角标",
+                "有新提醒时胶囊上显示计数",
+                |ui| {
+                    switch(ui, p, &mut badge);
+                },
+            );
             iv.inbox.badge = badge;
             row_separator(ui, p);
 
@@ -2678,7 +3578,11 @@ impl SettingsApp {
                 "授权码保存在 Windows 凭据里，不写入配置文件",
                 330.0,
                 |ui| {
-                    ui.add(egui::TextEdit::singleline(&mut iv.mail.user).desired_width(150.0).hint_text("账号"));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut iv.mail.user)
+                            .desired_width(150.0)
+                            .hint_text("账号"),
+                    );
                     ui.add(egui::TextEdit::singleline(&mut iv.mail.imap_host).desired_width(120.0));
                     ui.add(egui::DragValue::new(&mut iv.mail.imap_port).range(1..=65535));
                 },
@@ -2692,7 +3596,11 @@ impl SettingsApp {
                 "收件人留空表示发给自己；使用 465 端口隐式加密",
                 330.0,
                 |ui| {
-                    ui.add(egui::TextEdit::singleline(&mut iv.mail.to).desired_width(140.0).hint_text("收件人（可选）"));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut iv.mail.to)
+                            .desired_width(140.0)
+                            .hint_text("收件人（可选）"),
+                    );
                     ui.add(egui::TextEdit::singleline(&mut iv.mail.smtp_host).desired_width(120.0));
                     ui.add(egui::DragValue::new(&mut iv.mail.smtp_port).range(1..=65535));
                 },
@@ -2705,14 +3613,25 @@ impl SettingsApp {
                 "邮箱轮询间隔",
                 "1–240 分钟；渠道关闭时不轮询",
                 |ui| {
-                    ui.add(egui::DragValue::new(&mut iv.mail.poll_minutes).range(1..=240).suffix(" 分钟"));
+                    ui.add(
+                        egui::DragValue::new(&mut iv.mail.poll_minutes)
+                            .range(1..=240)
+                            .suffix(" 分钟"),
+                    );
                 },
             );
             row_separator(ui, p);
             let mut skip_backlog = iv.mail.skip_backlog;
-            row_tight(ui, p, RowIcon::Info, "首次同步忽略历史邮件", "避免一开启就补报一堆旧邮件", |ui| {
-                switch(ui, p, &mut skip_backlog);
-            });
+            row_tight(
+                ui,
+                p,
+                RowIcon::Info,
+                "首次同步忽略历史邮件",
+                "避免一开启就补报一堆旧邮件",
+                |ui| {
+                    switch(ui, p, &mut skip_backlog);
+                },
+            );
             iv.mail.skip_backlog = skip_backlog;
         });
 
@@ -2732,9 +3651,16 @@ impl SettingsApp {
                 },
             );
             row_separator(ui, p);
-            row_tight(ui, p, RowIcon::Link, "邮件 SMTP", "用上方发件配置推送提醒", |ui| {
-                switch(ui, p, &mut dm);
-            });
+            row_tight(
+                ui,
+                p,
+                RowIcon::Link,
+                "邮件 SMTP",
+                "用上方发件配置推送提醒",
+                |ui| {
+                    switch(ui, p, &mut dm);
+                },
+            );
             iv.dispatch.wecom = dw;
             iv.dispatch.mail = dm;
             row_separator(ui, p);
@@ -2745,7 +3671,11 @@ impl SettingsApp {
                 "最小发送间隔",
                 "两条推送之间的最短间隔，默认 5 秒",
                 |ui| {
-                    ui.add(egui::DragValue::new(&mut iv.dispatch.min_gap_secs).range(0..=60).suffix(" 秒"));
+                    ui.add(
+                        egui::DragValue::new(&mut iv.dispatch.min_gap_secs)
+                            .range(0..=60)
+                            .suffix(" 秒"),
+                    );
                 },
             );
             row_separator(ui, p);
@@ -3015,7 +3945,8 @@ impl SettingsApp {
             );
             return;
         }
-        if dcx_organizer::is_same_or_under(&new, &old) || dcx_organizer::is_same_or_under(&old, &new)
+        if dcx_organizer::is_same_or_under(&new, &old)
+            || dcx_organizer::is_same_or_under(&old, &new)
         {
             alert(
                 "无法使用该目录",
@@ -3408,10 +4339,7 @@ impl SettingsApp {
         }
         if changed {
             // Keep the catch-all last: it is where everything unmatched lands.
-            if let Some(pos) = rows
-                .iter()
-                .position(|r| r.key == dcx_organizer::CATCH_ALL)
-            {
+            if let Some(pos) = rows.iter().position(|r| r.key == dcx_organizer::CATCH_ALL) {
                 let row = rows.remove(pos);
                 rows.push(row);
             }
@@ -3422,11 +4350,21 @@ impl SettingsApp {
 
     fn actions(&mut self, ui: &mut egui::Ui, p: &Palette) {
         ui.horizontal(|ui| {
-            if standard_button(ui, p, "恢复默认", !self.s.is_default()).clicked() {
+            // Both buttons below drive the taskbar engine; on a shell without
+            // one they are inert, so don't offer them as if they worked.
+            let can_style = style_supported();
+            let restore = standard_button(ui, p, "恢复默认", can_style && !self.s.is_default())
+                .on_disabled_hover_text("此系统不支持任务栏样式");
+            if restore.clicked() {
                 self.reset();
             }
             ui.add_space(2.0);
-            if standard_button(ui, p, "重新应用", !self.reapply_busy).clicked() {
+            // Injecting on a non-Win11 shell would just start an engine that
+            // never connects, so 「重新应用」 is disabled there too.
+            let can_reapply = can_style && !self.reapply_busy;
+            let reapply = standard_button(ui, p, "重新应用", can_reapply)
+                .on_disabled_hover_text("此系统不支持任务栏样式（需要 Windows 11 的 XAML 任务栏）");
+            if reapply.clicked() {
                 // Rewrites the file, which bumps mtime and forces a reload even
                 // when the content is unchanged (e.g. after an Explorer restart).
                 self.persist();
@@ -3487,6 +4425,9 @@ impl SettingsApp {
         }
         if self.island != self.island_saved {
             self.persist_island();
+        }
+        if self.snip != self.snip_saved {
+            self.persist_snip();
         }
     }
 
@@ -3563,6 +4504,7 @@ impl SettingsApp {
         self.box_tick(ctx);
         self.search_tick(ctx);
         self.island_tick(ctx);
+        self.snip_tick(ctx);
 
         // Debounced live apply: write at most once per ~220 ms of idle editing.
         if self.s != self.saved {
@@ -3624,7 +4566,13 @@ impl SettingsApp {
                                     ui,
                                     &p,
                                     "任务栏样式",
-                                    "任务栏形状、图标缩放、高度、间距与自动隐藏",
+                                    if style_supported() {
+                                        "任务栏形状、图标缩放、高度、间距与自动隐藏"
+                                    } else if dcx_win32::platform::simulated() {
+                                        "诊断模式：已强制停用任务栏样式"
+                                    } else {
+                                        "此系统不支持任务栏样式"
+                                    },
                                 );
                             }
                             Page::Box => {
@@ -3651,8 +4599,21 @@ impl SettingsApp {
                                     "顶部悬浮胶囊：时间、性能、任务、剪贴板与消息聚合",
                                 );
                             }
+                            Page::Snip => {
+                                self.page_head(
+                                    ui,
+                                    &p,
+                                    "截图与标注",
+                                    "全局热键唤起：冻结画面、框选、标注，回车即复制",
+                                );
+                            }
                             Page::About => {
-                                self.page_head(ui, &p, "关于", "DCX 桌面增强 · 任务栏主题");
+                                self.page_head(
+                                    ui,
+                                    &p,
+                                    "关于",
+                                    "DCX 桌面增强 · 平台能力与各独立应用",
+                                );
                             }
                         }
                     });
@@ -3662,6 +4623,7 @@ impl SettingsApp {
                     Page::Look => 0u8,
                     Page::Search => 3,
                     Page::Island => 4,
+                    Page::Snip => 5,
                     Page::Box => 2,
                     Page::About => 1,
                 };
@@ -3696,21 +4658,48 @@ impl SettingsApp {
                                     ui.set_width((content_w - 10.0).max(200.0));
                                     match self.page {
                                         Page::Look => {
-                                            caption(ui, &p, "外观");
-                                            self.appearance_card(ui, &p);
-                                            ui.add_space(18.0);
-                                            caption(ui, &p, "尺寸与间距");
-                                            self.metrics_card(ui, &p);
-                                            ui.add_space(18.0);
-                                            caption(ui, &p, "行为");
-                                            self.behavior_card(ui, &p);
+                                            let style_ok = style_supported();
+                                            if !style_ok {
+                                                capability_banner(ui, &p);
+                                                ui.add_space(18.0);
+                                            }
+                                            // One gate for the whole feature: every widget
+                                            // below (including the hand-painted ones) goes
+                                            // through `Ui::interact`, so egui's disabled
+                                            // scope both denies input and fades the paint.
+                                            ui.add_enabled_ui(style_ok, |ui| {
+                                                if !style_ok {
+                                                    // This app overrides `Visuals` heavily,
+                                                    // so the stock fade target is a very
+                                                    // pale wash. A second pass of opacity
+                                                    // makes the whole page read as inactive
+                                                    // instead of "still colourful, just
+                                                    // slightly lighter".
+                                                    ui.multiply_opacity(0.62);
+                                                }
+                                                caption(ui, &p, "外观");
+                                                self.appearance_card(ui, &p);
+                                                ui.add_space(18.0);
+                                                caption(ui, &p, "尺寸与间距");
+                                                self.metrics_card(ui, &p);
+                                                ui.add_space(18.0);
+                                                caption(ui, &p, "行为");
+                                                self.behavior_card(ui, &p);
+                                            });
                                         }
                                         Page::Box => self.box_page(ui, &p),
                                         Page::Search => self.search_cards(ui, &p),
                                         Page::Island => self.island_cards(ui, &p),
+                                        Page::Snip => self.snip_cards(ui, &p),
                                         Page::About => {
                                             caption(ui, &p, "系统信息");
                                             self.about_card(ui, &p);
+                                            ui.add_space(18.0);
+                                            caption(ui, &p, "模块状态");
+                                            self.module_card(ui, &p);
+                                            ui.add_space(18.0);
+                                            caption(ui, &p, "配置文件（圆点＝已创建）");
+                                            self.config_files_card(ui, &p);
                                             ui.add_space(18.0);
                                             self.platform_card(ui, &p);
                                             ui.add_space(18.0);
@@ -3790,7 +4779,6 @@ fn summary(s: &Settings) -> String {
     )
 }
 
-
 /// Physical x of the tile, published once a second by `dcx-box.exe` in
 /// `%LOCALAPPDATA%\dcx\box_ui.txt`. Used by 「锁定当前位置」 so the settings
 /// centre needs no new IPC channel with the app process.
@@ -3815,6 +4803,52 @@ fn reveal_settings() {
     if let Some(dir) = Settings::path().parent().map(|p| p.to_path_buf()) {
         let _ = std::process::Command::new("explorer").arg(dir).spawn();
     }
+}
+
+/// One of the TOML documents under `%LOCALAPPDATA%\dcx`. Derived from
+/// `settings.toml`'s own directory so the About page can never disagree with
+/// where the platform actually reads and writes.
+fn dcx_file(name: &str) -> std::path::PathBuf {
+    Settings::path()
+        .parent()
+        .map(|d| d.join(name))
+        .unwrap_or_else(|| std::path::PathBuf::from(name))
+}
+
+/// Config document a standalone app reads. The About page and its consistency
+/// test share this map so a new app cannot silently show an unknown file.
+fn app_config_name(id: &str) -> &'static str {
+    match id {
+        "box" => "organizer.toml",
+        "search" => "search.toml",
+        "snip" => "snip.toml",
+        "island" => "island.toml",
+        _ => "",
+    }
+}
+
+/// The folder the screenshot app actually writes into. **Must stay in sync
+/// with `dcx-snip/src/config.rs::Config::output_dir`** — the「打开目录」button
+/// has to open the same place the next save lands, not the config folder.
+fn snip_output_dir(dir: &str) -> std::path::PathBuf {
+    let raw = dir.trim();
+    if !raw.is_empty() {
+        return std::path::PathBuf::from(raw);
+    }
+    let mut p = std::env::var_os("USERPROFILE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    p.push("Pictures");
+    p.push("DCX 截图");
+    p
+}
+
+/// Open the *save* directory (creating it if this is the first save), never
+/// the config directory. `reveal_settings()` is for settings.toml only.
+fn open_snip_dir(dir: &str) {
+    let path = snip_output_dir(dir);
+    let _ = std::fs::create_dir_all(&path);
+    let _ = std::process::Command::new("explorer").arg(&path).spawn();
 }
 
 /// Hand a URL to the user's default browser.
@@ -4216,6 +5250,48 @@ fn icon_text_button(
     resp
 }
 
+/// 与 `row_reserve` 同一套行样式，但把控件放到标题下方单独一行。
+///
+/// 用在「选项多、右侧放不下」的行上：五个缩放档位放进 `row_reserve` 的
+/// 右侧 RTL 区域时会从右边缘往左排不下，最后两个被窗口裁掉、点不到。
+fn row_below<R>(
+    ui: &mut egui::Ui,
+    p: &Palette,
+    icon: RowIcon,
+    title: &str,
+    subtitle: &str,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    egui::Frame::none()
+        .inner_margin(Margin::symmetric(16.0, 13.0))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                row_icon(ui, p, icon);
+                ui.add_space(12.0);
+                ui.vertical(|ui| {
+                    ui.add(
+                        egui::Label::new(RichText::new(title).size(14.5).color(p.text)).truncate(),
+                    );
+                    if !subtitle.is_empty() {
+                        ui.add_space(2.0);
+                        ui.add(
+                            egui::Label::new(RichText::new(subtitle).size(12.5).color(p.secondary))
+                                .truncate(),
+                        );
+                    }
+                });
+            });
+            ui.add_space(9.0);
+            ui.horizontal(|ui| {
+                ui.add_space(32.0);
+                add(ui)
+            })
+            .inner
+        })
+        .inner
+}
+
 fn row_separator(ui: &mut egui::Ui, p: &Palette) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), Sense::hover());
     let rect = Rect::from_min_max(
@@ -4344,12 +5420,19 @@ fn row_icon(ui: &mut egui::Ui, p: &Palette, kind: RowIcon) {
             let r = Rect::from_center_size(c, egui::vec2(13.0, 10.0));
             painter.rect_stroke(r, Rounding::same(2.5), st);
             painter.hline(r.left() + 1.0..=r.right() - 1.0, c.y - 1.0, st);
-            painter.hline(c.x - 2.0..=c.x + 2.0, c.y - 1.0, Stroke::new(2.0_f32, p.secondary));
+            painter.hline(
+                c.x - 2.0..=c.x + 2.0,
+                c.y - 1.0,
+                Stroke::new(2.0_f32, p.secondary),
+            );
         }
         RowIcon::Search => {
             painter.circle_stroke(egui::pos2(c.x - 1.5, c.y - 1.5), 5.0, st);
             painter.line_segment(
-                [egui::pos2(c.x + 2.3, c.y + 2.3), egui::pos2(c.x + 7.0, c.y + 7.0)],
+                [
+                    egui::pos2(c.x + 2.3, c.y + 2.3),
+                    egui::pos2(c.x + 7.0, c.y + 7.0),
+                ],
                 Stroke::new(1.6_f32, p.secondary),
             );
         }
@@ -4360,11 +5443,17 @@ fn row_icon(ui: &mut egui::Ui, p: &Palette, kind: RowIcon) {
             }
             painter.vline(c.x + 6.0, c.y - 3.0..=c.y + 5.0, st);
             painter.line_segment(
-                [egui::pos2(c.x + 3.6, c.y + 2.2), egui::pos2(c.x + 6.0, c.y + 5.4)],
+                [
+                    egui::pos2(c.x + 3.6, c.y + 2.2),
+                    egui::pos2(c.x + 6.0, c.y + 5.4),
+                ],
                 st,
             );
             painter.line_segment(
-                [egui::pos2(c.x + 8.4, c.y + 2.2), egui::pos2(c.x + 6.0, c.y + 5.4)],
+                [
+                    egui::pos2(c.x + 8.4, c.y + 2.2),
+                    egui::pos2(c.x + 6.0, c.y + 5.4),
+                ],
                 st,
             );
         }
@@ -4425,15 +5514,24 @@ fn row_icon(ui: &mut egui::Ui, p: &Palette, kind: RowIcon) {
             );
             painter.rect_stroke(r, Rounding::same(2.0), st);
             painter.line_segment(
-                [egui::pos2(c.x - 0.5, c.y + 1.5), egui::pos2(c.x + 6.5, c.y - 6.5)],
+                [
+                    egui::pos2(c.x - 0.5, c.y + 1.5),
+                    egui::pos2(c.x + 6.5, c.y - 6.5),
+                ],
                 st,
             );
             painter.line_segment(
-                [egui::pos2(c.x + 2.0, c.y - 6.5), egui::pos2(c.x + 6.5, c.y - 6.5)],
+                [
+                    egui::pos2(c.x + 2.0, c.y - 6.5),
+                    egui::pos2(c.x + 6.5, c.y - 6.5),
+                ],
                 st,
             );
             painter.line_segment(
-                [egui::pos2(c.x + 6.5, c.y - 6.5), egui::pos2(c.x + 6.5, c.y - 2.0)],
+                [
+                    egui::pos2(c.x + 6.5, c.y - 6.5),
+                    egui::pos2(c.x + 6.5, c.y - 2.0),
+                ],
                 st,
             );
         }
@@ -4566,7 +5664,11 @@ fn slider<T: egui::emath::Numeric>(
             // so the opacity track could not be dragged at all.
             let raw = lo.to_f64() + nt as f64 * span;
             let whole = lo.to_f64().fract() == 0.0 && hi.to_f64().fract() == 0.0;
-            let nv = T::from_f64(if whole { raw.round() } else { (raw * 100.0).round() / 100.0 });
+            let nv = T::from_f64(if whole {
+                raw.round()
+            } else {
+                (raw * 100.0).round() / 100.0
+            });
             if nv.to_f64() != value.to_f64() {
                 *value = nv;
                 changed = true;
@@ -4730,6 +5832,7 @@ enum NavIcon {
     Box,
     Search,
     Island,
+    Snip,
     About,
 }
 
@@ -4741,6 +5844,7 @@ impl NavIcon {
             NavIcon::Box => glyph::FOLDER,
             NavIcon::Search => glyph::SEARCH,
             NavIcon::Island => glyph::CLOCK,
+            NavIcon::Snip => glyph::CROP,
             NavIcon::About => glyph::INFO,
         }
     }
@@ -4751,9 +5855,12 @@ impl NavIcon {
     fn tint(self) -> Color32 {
         match self {
             NavIcon::Appearance => Color32::from_rgb(0x2B, 0x7D, 0xE9), // blue
-            NavIcon::Box => Color32::from_rgb(0xE0, 0xA0, 0x20), // amber
-            NavIcon::Search => Color32::from_rgb(0x92, 0x61, 0xDC), // violet
-            NavIcon::Island => Color32::from_rgb(0xD1, 0x5C, 0x3E), // terracotta
+            NavIcon::Box => Color32::from_rgb(0xE0, 0xA0, 0x20),        // amber
+            NavIcon::Search => Color32::from_rgb(0x92, 0x61, 0xDC),     // violet
+            NavIcon::Island => Color32::from_rgb(0xD1, 0x5C, 0x3E),     // terracotta
+            // Teal: the snapshot overlay's own accent, and the only hue left
+            // that is not within ~20° of an existing page.
+            NavIcon::Snip => Color32::from_rgb(0x1E, 0x9C, 0x8B),
             NavIcon::About => Color32::from_rgb(0x20, 0xA5, 0x6E), // green
         }
     }
@@ -4774,7 +5881,13 @@ fn nav_icon(ui: &egui::Ui, p: &Palette, icon: NavIcon, center: egui::Pos2) {
     // badge made the sidebar read as a row of app tiles instead of Win11's
     // quiet category list.
     if icons_available() {
-        painter.text(center, Align2::CENTER_CENTER, icon.glyph(), icon_font(19.0), color);
+        painter.text(
+            center,
+            Align2::CENTER_CENTER,
+            icon.glyph(),
+            icon_font(19.0),
+            color,
+        );
         return;
     }
     // Fallback for a system without either icon font: the old hand-drawn set,
@@ -4801,13 +5914,29 @@ fn nav_icon(ui: &egui::Ui, p: &Palette, icon: NavIcon, center: egui::Pos2) {
                 st,
             );
         }
+        NavIcon::Snip => {
+            // Viewfinder: two bracket pairs around an open frame.
+            let r = Rect::from_center_size(center, egui::vec2(13.0, 13.0));
+            for (cx, cy, sx, sy) in [
+                (r.left(), r.top(), 1.0, 1.0),
+                (r.right(), r.top(), -1.0, 1.0),
+                (r.left(), r.bottom(), 1.0, -1.0),
+                (r.right(), r.bottom(), -1.0, -1.0),
+            ] {
+                painter.line_segment([egui::pos2(cx, cy), egui::pos2(cx + 4.0 * sx, cy)], st);
+                painter.line_segment([egui::pos2(cx, cy), egui::pos2(cx, cy + 4.0 * sy)], st);
+            }
+        }
         NavIcon::Island => {
             // A small capsule with a clock hand: one shape reads as "island"
             // without needing the icon font.
             let r = Rect::from_center_size(center, egui::vec2(17.0, 9.0));
             painter.rect_stroke(r, Rounding::same(4.5), st);
             painter.line_segment(
-                [egui::pos2(center.x, center.y), egui::pos2(center.x + 3.0, center.y - 2.0)],
+                [
+                    egui::pos2(center.x, center.y),
+                    egui::pos2(center.x + 3.0, center.y - 2.0),
+                ],
                 st,
             );
         }
@@ -4842,11 +5971,8 @@ fn ghost_edit(
     if focused {
         ui.painter()
             .rect_filled(rect, Rounding::same(4.0), p.accent_soft);
-        ui.painter().rect_stroke(
-            rect,
-            Rounding::same(4.0),
-            Stroke::new(1.0_f32, p.accent),
-        );
+        ui.painter()
+            .rect_stroke(rect, Rounding::same(4.0), Stroke::new(1.0_f32, p.accent));
     } else if ui.rect_contains_pointer(rect) {
         ui.painter().rect_filled(rect, Rounding::same(4.0), p.hover);
     }
@@ -4872,22 +5998,32 @@ fn delete_button(ui: &mut egui::Ui, p: &Palette, tip: &str) -> bool {
         .on_hover_text(tip);
     let hot = resp.hovered();
     if hot {
-        ui.painter()
-            .rect_filled(rect, Rounding::same(5.0), p.hover);
+        ui.painter().rect_filled(rect, Rounding::same(5.0), p.hover);
     }
     let color = if hot { p.danger } else { p.tertiary };
     if icons_available() {
-        ui.painter()
-            .text(rect.center(), Align2::CENTER_CENTER, glyph::TRASH, icon_font(14.0), color);
+        ui.painter().text(
+            rect.center(),
+            Align2::CENTER_CENTER,
+            glyph::TRASH,
+            icon_font(14.0),
+            color,
+        );
     } else {
         let c = rect.center();
         let st = Stroke::new(1.3_f32, color);
         ui.painter().line_segment(
-            [egui::pos2(c.x - 4.5, c.y - 4.5), egui::pos2(c.x + 4.5, c.y + 4.5)],
+            [
+                egui::pos2(c.x - 4.5, c.y - 4.5),
+                egui::pos2(c.x + 4.5, c.y + 4.5),
+            ],
             st,
         );
         ui.painter().line_segment(
-            [egui::pos2(c.x + 4.5, c.y - 4.5), egui::pos2(c.x - 4.5, c.y + 4.5)],
+            [
+                egui::pos2(c.x + 4.5, c.y - 4.5),
+                egui::pos2(c.x - 4.5, c.y + 4.5),
+            ],
             st,
         );
     }
@@ -4926,8 +6062,20 @@ fn exclude_chip(ui: &mut egui::Ui, p: &Palette, text: &str) -> bool {
     );
     let c = egui::pos2(rect.right() - 11.0, rect.center().y);
     let st = Stroke::new(1.2_f32, if hot { p.danger } else { p.tertiary });
-    painter.line_segment([egui::pos2(c.x - 3.5, c.y - 3.5), egui::pos2(c.x + 3.5, c.y + 3.5)], st);
-    painter.line_segment([egui::pos2(c.x + 3.5, c.y - 3.5), egui::pos2(c.x - 3.5, c.y + 3.5)], st);
+    painter.line_segment(
+        [
+            egui::pos2(c.x - 3.5, c.y - 3.5),
+            egui::pos2(c.x + 3.5, c.y + 3.5),
+        ],
+        st,
+    );
+    painter.line_segment(
+        [
+            egui::pos2(c.x + 3.5, c.y - 3.5),
+            egui::pos2(c.x - 3.5, c.y + 3.5),
+        ],
+        st,
+    );
     resp.clicked()
 }
 
@@ -5059,12 +6207,7 @@ fn nav_item(
         ui.painter()
             .rect_filled(pill, Rounding::same(4.0), p.nav_hover);
     }
-    nav_icon(
-        ui,
-        p,
-        icon,
-        egui::pos2(rect.left() + 27.0, rect.center().y),
-    );
+    nav_icon(ui, p, icon, egui::pos2(rect.left() + 27.0, rect.center().y));
     ui.painter().text(
         egui::pos2(rect.left() + 52.0, rect.center().y),
         Align2::LEFT_CENTER,
@@ -5075,25 +6218,113 @@ fn nav_item(
     resp
 }
 
+/// The TOML documents shown in 「关于」→「配置文件」. The two platform docs plus
+/// one per registered app; `about_page_config_list_covers_every_registered_app`
+/// fails the build when a new app is registered but not listed here.
+const CONFIG_DOCS: [(&str, &str); 6] = [
+    ("settings.toml", "任务栏样式：形状 / 图标 / 间距 / 悬停"),
+    ("apps.toml", "独立应用启停清单（平台看门狗读取）"),
+    ("organizer.toml", "桌面收纳盒：分类规则、收纳库路径"),
+    ("search.toml", "文件检索：索引范围、快捷键与常驻策略"),
+    ("snip.toml", "桌面快照：默认字体、颜色、保存目录"),
+    ("island.toml", "桌面信息岛：布局、数据源与提醒"),
+];
+
+/// The one capability question the whole settings window asks. Cached in
+/// `dcx-win32`, so calling it from every frame is free.
+fn style_supported() -> bool {
+    dcx_win32::platform::taskbar_style_supported()
+}
+
+/// Warning card at the top of 「任务栏样式」 on Windows 10 and older. It names
+/// the detected OS, the concrete reason, what the platform stopped doing, and —
+/// just as important — what still works.
+fn capability_banner(ui: &mut egui::Ui, p: &Palette) {
+    let (fill, border) = if p.dark {
+        (
+            Color32::from_rgb(0x3A, 0x2C, 0x16),
+            Color32::from_rgb(0x6B, 0x4E, 0x1E),
+        )
+    } else {
+        (
+            Color32::from_rgb(0xFF, 0xF6, 0xE3),
+            Color32::from_rgb(0xE8, 0xCB, 0x83),
+        )
+    };
+    let simulated = dcx_win32::platform::simulated();
+    let body = if simulated {
+        "诊断模式已模拟不支持的系统；其它独立功能不受影响。"
+    } else {
+        "任务栏样式仅支持 Windows 11；其它独立功能不受影响。"
+    };
+    egui::Frame::none()
+        .fill(fill)
+        .stroke(Stroke::new(1.0_f32, border))
+        .rounding(Rounding::same(CARD_RADIUS))
+        .inner_margin(Margin::symmetric(16.0, 13.0))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                row_icon(ui, p, RowIcon::Info);
+                ui.add_space(12.0);
+                let w = ui.available_width();
+                ui.vertical(|ui| {
+                    ui.set_max_width(w);
+                    ui.label(
+                        RichText::new(if simulated {
+                            "任务栏样式已强制停用（诊断模式）"
+                        } else {
+                            "此系统不支持任务栏样式"
+                        })
+                        .font(bold(14.5))
+                        .color(p.warn),
+                    );
+                    ui.add_space(5.0);
+                    ui.add(egui::Label::new(RichText::new(body).size(12.5).color(p.text)).wrap());
+                });
+            });
+        });
+}
+
+/// Read-only row with a coloured state word on the right (「运行中」/「已停用」…).
+fn state_row(
+    ui: &mut egui::Ui,
+    p: &Palette,
+    icon: RowIcon,
+    title: &str,
+    subtitle: &str,
+    state: &str,
+    color: Color32,
+) {
+    row(ui, p, icon, title, subtitle, |ui| {
+        ui.label(RichText::new(state).size(12.0).color(color));
+    });
+}
+
 fn engine_state_text(p: &Palette) -> (String, Color32) {
-    use crate::injector::{ENGINE_ABSENT, ENGINE_ATTACHED};
+    use crate::injector::{ENGINE_ABSENT, ENGINE_ATTACHED, ENGINE_UNSUPPORTED};
     match crate::injector::engine_state() {
         ENGINE_ATTACHED => ("已注入 explorer".to_string(), p.ok),
         ENGINE_ABSENT => ("未注入".to_string(), p.warn),
+        ENGINE_UNSUPPORTED => ("此系统不支持（未注入）".to_string(), p.warn),
         _ => ("检测中".to_string(), p.tertiary),
     }
 }
 
 fn status_block(ui: &mut egui::Ui, p: &Palette, dirty: bool, error: Option<&str>) {
-    use crate::injector::{ENGINE_ABSENT, ENGINE_ATTACHED};
+    use crate::injector::{ENGINE_ABSENT, ENGINE_ATTACHED, ENGINE_UNSUPPORTED};
     let (text, color) = if let Some(e) = error {
         (e.to_string(), p.warn)
     } else if dirty {
         ("应用中…".to_string(), p.secondary)
+    } else if !style_supported() {
+        // Do not claim "已写入 · 引擎未注入": no injection was even attempted.
+        ("任务栏样式已停用 · 独立功能可用".to_string(), p.warn)
     } else {
         match crate::injector::engine_state() {
             ENGINE_ATTACHED => ("已应用 · 约 1 秒内生效".to_string(), p.ok),
             ENGINE_ABSENT => ("已写入 · 引擎未注入".to_string(), p.warn),
+            ENGINE_UNSUPPORTED => ("任务栏样式已停用".to_string(), p.warn),
             _ => ("已写入配置".to_string(), p.secondary),
         }
     };
@@ -5125,16 +6356,17 @@ fn theme_switch(ui: &mut egui::Ui, p: &Palette, dark: bool) -> Option<bool> {
         .rect_filled(rect, Rounding::same(rect.height() / 2.0), p.track);
     let thumb = Rect::from_min_size(
         egui::pos2(
-            if dark { rect.left() + half + 2.0 } else { rect.left() + 2.0 },
+            if dark {
+                rect.left() + half + 2.0
+            } else {
+                rect.left() + 2.0
+            },
             rect.top() + 2.0,
         ),
         egui::vec2(half - 4.0, rect.height() - 4.0),
     );
-    ui.painter().rect_filled(
-        thumb,
-        Rounding::same(thumb.height() / 2.0),
-        thumb_fill,
-    );
+    ui.painter()
+        .rect_filled(thumb, Rounding::same(thumb.height() / 2.0), thumb_fill);
     ui.painter().rect_stroke(
         thumb,
         Rounding::same(thumb.height() / 2.0),
@@ -5205,5 +6437,62 @@ fn restore_desktop_icons_if_owned() {
     if dcx_win32::desktop_icons_owned() {
         let _ = dcx_win32::set_desktop_icons_hidden(false);
         dcx_win32::set_desktop_icons_owned(false);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snip_output_dir_uses_the_picked_folder_verbatim() {
+        assert_eq!(
+            snip_output_dir(r"D:\shots\截图"),
+            std::path::PathBuf::from(r"D:\shots\截图")
+        );
+        assert_eq!(
+            snip_output_dir("  D:/shots  "),
+            std::path::PathBuf::from("D:/shots")
+        );
+    }
+
+    #[test]
+    fn snip_output_dir_default_matches_dcx_snip() {
+        // Keep in sync with dcx-snip/src/config.rs::Config::output_dir():
+        // 「打开目录」must open the folder the next save actually writes into.
+        let p = snip_output_dir("");
+        assert!(p.ends_with("DCX 截图"), "{p:?}");
+        assert!(p.parent().is_some_and(|x| x.ends_with("Pictures")), "{p:?}");
+        assert_eq!(snip_output_dir("   "), p);
+    }
+
+    /// The old About page listed only `settings.toml` and a taskbar-only
+    /// 「当前配置」. This is the guard against drifting out of sync again.
+    #[test]
+    fn about_page_config_list_covers_every_registered_app() {
+        assert_eq!(
+            CONFIG_DOCS.len(),
+            crate::apps::entries().len() + 2,
+            "settings.toml + apps.toml + one row per standalone app"
+        );
+        for e in crate::apps::entries() {
+            let name = app_config_name(e.id);
+            assert!(!name.is_empty(), "app `{}` has no config mapping", e.id);
+            assert!(
+                CONFIG_DOCS.iter().any(|(f, _)| *f == name),
+                "app `{}` reads {} but the About page does not list it",
+                e.id,
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn config_rows_resolve_beside_settings_toml() {
+        let settings = Settings::path();
+        let apps = dcx_file("apps.toml");
+        assert_eq!(apps.parent(), settings.parent());
+        assert_eq!(apps.file_name().unwrap(), "apps.toml");
+        assert_ne!(apps, settings);
     }
 }

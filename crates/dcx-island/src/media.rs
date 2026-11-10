@@ -51,7 +51,7 @@ pub struct Cover {
     pub rgba: Vec<u8>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Snapshot {
     pub title: String,
     pub artist: String,
@@ -66,6 +66,11 @@ pub struct Snapshot {
     pub duration: f64,
     /// Playback rate (podcasts); 1.0 when unreported.
     pub rate: f64,
+    /// When `position` was read, on the monotonic clock the UI shares. The UI
+    /// interpolates from this instant rather than from when the message was
+    /// drained: the drain runs on a 200 ms tick and that lag would otherwise
+    /// look like a 200 ms timeline disagreement.
+    pub at: Instant,
     /// Shared, not cloned: a snapshot is sent every second and the RGBA
     /// buffer may be a quarter of a megabyte.
     pub cover: Option<Arc<Cover>>,
@@ -117,12 +122,29 @@ pub fn start(enabled: bool) -> Option<Media> {
 // UI-side view
 // ---------------------------------------------------------------------------
 
+/// How far the player's report may sit from the local clock before the clock
+/// is pulled over to it. Below this the two disagree only by sampling lag, and
+/// jumping would make the bar step backwards once per poll.
+const SYNC_TOL: f64 = 1.25;
+
 pub struct NowPlaying {
     snap: Option<Snapshot>,
     cover_tex: Option<(u64, egui::TextureHandle)>,
-    /// Local clock for `position`; `Instant` has no `Default`, so the struct
-    /// has no derived one either.
-    at: Instant,
+    /// The local clock: the position drawn is `base + (now - base_at) × rate`.
+    ///
+    /// It is deliberately *not* reset on every snapshot. Most players publish
+    /// a GSMTC timeline only on state changes, and a few publish it once per
+    /// track, so re-basing every second would pin the position to a stale
+    /// value — the progress that "does not move".
+    base: f64,
+    base_at: Instant,
+    rate: f64,
+    playing: bool,
+    /// Track identity `base` belongs to; a change re-bases the clock.
+    key: String,
+    /// The raw position the player last reported, used to tell a frozen
+    /// timeline from a real seek.
+    reported: Option<f64>,
 }
 
 impl NowPlaying {
@@ -130,13 +152,31 @@ impl NowPlaying {
         NowPlaying {
             snap: None,
             cover_tex: None,
-            at: Instant::now(),
+            base: 0.0,
+            base_at: Instant::now(),
+            rate: 1.0,
+            playing: false,
+            key: String::new(),
+            reported: None,
         }
+    }
+
+    /// Where the clock would be at `at`, without consulting the player.
+    fn estimate(&self, at: Instant) -> f64 {
+        if !self.playing {
+            return self.base;
+        }
+        let dt = at.saturating_duration_since(self.base_at).as_secs_f64();
+        (self.base + dt * self.rate).max(0.0)
     }
 
     pub fn set(&mut self, ctx: &egui::Context, snap: Option<Snapshot>) {
         if let Some(c) = snap.as_ref().and_then(|s| s.cover.as_ref()) {
-            let stale = self.cover_tex.as_ref().map(|(id, _)| *id != c.id).unwrap_or(true);
+            let stale = self
+                .cover_tex
+                .as_ref()
+                .map(|(id, _)| *id != c.id)
+                .unwrap_or(true);
             if stale {
                 let img = egui::ColorImage::from_rgba_unmultiplied(
                     [c.w as usize, c.h as usize],
@@ -150,8 +190,47 @@ impl NowPlaying {
         } else {
             self.cover_tex = None;
         }
+        self.apply(snap);
+    }
+
+    /// The clock half of `set`, split out so it can be exercised without an
+    /// egui context.
+    fn apply(&mut self, snap: Option<Snapshot>) {
+        let key = snap.as_ref().map(track_key).unwrap_or_default();
+        match snap.as_ref() {
+            Some(s) => {
+                let rate = if s.rate > 0.0 { s.rate } else { 1.0 };
+                // Where the clock had reached by the instant the player was
+                // read — the only fair comparison against `s.position`.
+                let est = self.estimate(s.at);
+                let moved = match self.reported {
+                    Some(prev) => (s.position - prev).abs() > 0.05,
+                    None => true,
+                };
+                let adopt = self.snap.is_none()          // first snapshot
+                    || key != self.key                   // new track
+                    || (rate - self.rate).abs() > 0.01   // speed changed
+                    || (moved && (s.position - est).abs() > SYNC_TOL) // seek
+                    // The player is ahead of the clock (resume from sleep, or
+                    // a timeline that only ticks now and then): take its word.
+                    || s.position > est + 1.0;
+                self.base = if adopt { s.position } else { est };
+                self.base_at = s.at;
+                self.rate = rate;
+                self.playing = s.playing;
+                self.key = key;
+                self.reported = Some(s.position);
+            }
+            None => {
+                self.base = 0.0;
+                self.base_at = Instant::now();
+                self.rate = 1.0;
+                self.playing = false;
+                self.key.clear();
+                self.reported = None;
+            }
+        }
         self.snap = snap;
-        self.at = Instant::now();
     }
 
     pub fn snap(&self) -> Option<&Snapshot> {
@@ -162,16 +241,11 @@ impl NowPlaying {
         self.cover_tex.as_ref().map(|(_, t)| t)
     }
 
-    /// The position to draw: the sampled value plus the local clock since the
-    /// sample. WinRT is asked once per second, not once per frame.
+    /// The position to draw: the local clock, corrected by the player only
+    /// when it reports something the clock cannot explain by itself.
     pub fn position(&self) -> f64 {
         let Some(s) = &self.snap else { return 0.0 };
-        let mut pos = s.position
-            + if s.playing {
-                self.at.elapsed().as_secs_f64() * s.rate
-            } else {
-                0.0
-            };
+        let mut pos = self.estimate(Instant::now());
         if s.duration > 0.0 {
             pos = pos.min(s.duration);
         }
@@ -187,6 +261,15 @@ impl NowPlaying {
         }
         Some(s.title.clone())
     }
+}
+
+/// Identity of "the same playback". A title/artist/album/duration change is a
+/// new track; the clock restarts from whatever position it reports.
+fn track_key(s: &Snapshot) -> String {
+    format!(
+        "{}\u{1}{}\u{1}{}\u{1}{:.3}",
+        s.title, s.artist, s.album, s.duration
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -355,6 +438,7 @@ fn sample(
     cover_key: &mut String,
     cover: &mut Option<Arc<Cover>>,
 ) -> Option<Snapshot> {
+    let at = Instant::now();
     // A session that cannot answer a synchronous properties read is closing.
     let props = session.TryGetMediaPropertiesAsync().ok()?.join().ok()?;
     let title = props.Title().map(|h| h.to_string()).unwrap_or_default();
@@ -386,7 +470,8 @@ fn sample(
         Err(_) => (false, false, true, false, 1.0),
     };
 
-    // TimeSpan is 100 ns ticks.
+    // TimeSpan is 100 ns ticks. A player may report a non-zero start offset
+    // (audiobooks, some podcasts); both ends are relative to it.
     const TICKS: f64 = 10_000_000.0;
     let (position, duration) = match session.GetTimelineProperties() {
         Ok(t) => {
@@ -394,8 +479,8 @@ fn sample(
             let pos = t.Position().map(|v| v.Duration).unwrap_or(0);
             let end = t.EndTime().map(|v| v.Duration).unwrap_or(0);
             (
-                ((pos - start).max(0) as f64 / TICKS).max(0.0),
-                ((end - start).max(0) as f64 / TICKS).max(0.0),
+                (pos.saturating_sub(start).max(0) as f64 / TICKS).max(0.0),
+                (end.saturating_sub(start).max(0) as f64 / TICKS).max(0.0),
             )
         }
         Err(_) => (0.0, 0.0),
@@ -420,6 +505,7 @@ fn sample(
         position,
         duration,
         rate,
+        at,
         cover,
     })
 }
@@ -459,4 +545,89 @@ fn fnv1a(bytes: &[u8]) -> u64 {
         hash = hash.wrapping_mul(0x0100_0000_01b3);
     }
     hash
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn snap(title: &str, position: f64, playing: bool, at: Instant) -> Snapshot {
+        Snapshot {
+            title: title.to_string(),
+            artist: "artist".into(),
+            album: "album".into(),
+            playing,
+            can_prev: false,
+            can_toggle: true,
+            can_next: false,
+            position,
+            duration: 300.0,
+            rate: 1.0,
+            at,
+            cover: None,
+        }
+    }
+
+    /// The bug this module exists to survive: a player that publishes its
+    /// timeline once and never moves it. The clock must keep running instead
+    /// of being pinned to the stale value every poll.
+    #[test]
+    fn frozen_timeline_keeps_the_clock_running() {
+        let mut np = NowPlaying::new();
+        np.apply(Some(snap("t", 2.3, true, Instant::now() - Duration::from_secs(6))));
+        np.apply(Some(snap("t", 2.3, true, Instant::now() - Duration::from_secs(1))));
+        let p = np.position();
+        assert!((8.0..=9.0).contains(&p), "position {p} should be ~8.3");
+    }
+
+    #[test]
+    fn a_seek_is_adopted() {
+        let mut np = NowPlaying::new();
+        np.apply(Some(snap("t", 10.0, true, Instant::now())));
+        np.apply(Some(snap("t", 120.0, true, Instant::now())));
+        let p = np.position();
+        assert!((119.0..=121.0).contains(&p), "position {p} should be ~120");
+    }
+
+    #[test]
+    fn new_track_rebases() {
+        let mut np = NowPlaying::new();
+        np.apply(Some(snap("one", 200.0, true, Instant::now())));
+        np.apply(Some(snap("two", 0.0, true, Instant::now())));
+        let p = np.position();
+        assert!(p < 1.0, "position {p} should restart at 0");
+    }
+
+    /// Pausing must hold the clock where it was drawn, not snap it back to a
+    /// timeline that stopped updating seconds ago.
+    #[test]
+    fn pause_holds_the_drawn_position() {
+        let mut np = NowPlaying::new();
+        np.apply(Some(snap("t", 30.0, true, Instant::now() - Duration::from_secs(5))));
+        np.apply(Some(snap("t", 30.0, false, Instant::now())));
+        let p = np.position();
+        assert!((34.5..=35.5).contains(&p), "position {p} should hold at ~35");
+        assert!(!np.snap().unwrap().playing);
+    }
+
+    /// Playback speed changes invalidate the extrapolation, so the reported
+    /// position wins once.
+    #[test]
+    fn rate_change_rebases() {
+        let mut np = NowPlaying::new();
+        np.apply(Some(snap("t", 60.0, true, Instant::now())));
+        let mut fast = snap("t", 60.0, true, Instant::now());
+        fast.rate = 2.0;
+        np.apply(Some(fast));
+        assert!((np.rate - 2.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn no_session_clears_the_clock() {
+        let mut np = NowPlaying::new();
+        np.apply(Some(snap("t", 42.0, true, Instant::now())));
+        np.apply(None);
+        assert!(np.position() == 0.0);
+        assert!(np.snap().is_none());
+    }
 }

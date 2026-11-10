@@ -216,9 +216,8 @@ pub fn tint_caption(caption: (u8, u8, u8), text: (u8, u8, u8), dark: bool) {
         return;
     }
     // COLORREF is 0x00BBGGRR, not RGB.
-    let cref = |(r, g, b): (u8, u8, u8)| -> u32 {
-        (r as u32) | ((g as u32) << 8) | ((b as u32) << 16)
-    };
+    let cref =
+        |(r, g, b): (u8, u8, u8)| -> u32 { (r as u32) | ((g as u32) << 8) | ((b as u32) << 16) };
     let cap = cref(caption);
     let txt = cref(text);
     let flag: i32 = i32::from(dark);

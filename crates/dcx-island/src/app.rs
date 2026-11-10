@@ -35,6 +35,7 @@ use winit::platform::windows::EventLoopBuilderExtWindows;
 
 use dcx_island_config::Config;
 
+use crate::ui::compact::Headline;
 use crate::ui::panel::{Action, PanelState, TextureCache};
 use crate::ui::{theme, Tab};
 use crate::{api, clipboard, clock, dispatch, inbox, launcher, library, media, metrics, notify, search, sys, tasks, win};
@@ -1286,32 +1287,35 @@ impl Island {
         // this it showed whatever task was marked "current", all day: a pill
         // permanently displaying "喝水" reads as an unread alert, and the task
         // list is one click away.
-        let (task, flash, flash_t) = match &self.reminder {
+        // The pill's headline has three possible sources, in priority order: a
+        // ringing reminder, the newest live push card, and the track that is
+        // playing. The source is carried alongside the text because it picks the
+        // leading icon — a bell for an alert, a note for music.
+        let (task, headline, flash, flash_t) = match &self.reminder {
             Some((title, at)) => {
                 let t = at.elapsed().as_secs_f32();
-                (Some(title.clone()), flash_envelope(t), t)
+                (
+                    Some(title.clone()),
+                    Headline::Reminder,
+                    flash_envelope(t),
+                    t,
+                )
             }
             None => {
-                // A live push card is the capsule's secondary headline, and a
-                // playing track is the third: the newest unexpired card wins
-                // over the title. Each new card or track pulses once.
-                let task = self
-                    .cards
-                    .latest()
-                    .map(api::capsule_text)
-                    .or_else(|| {
-                        if self.cfg.media.capsule {
-                            self.now_playing.capsule_title()
-                        } else {
-                            None
-                        }
-                    });
+                let (task, headline) = match self.cards.latest().map(api::capsule_text) {
+                    Some(text) => (Some(text), Headline::Card),
+                    None if self.cfg.media.capsule => match self.now_playing.capsule_title() {
+                        Some(title) => (Some(title), Headline::Media),
+                        None => (None, Headline::None),
+                    },
+                    None => (None, Headline::None),
+                };
                 match self.card_flash {
                     Some(at) => {
                         let t = at.elapsed().as_secs_f32();
-                        (task, flash_envelope(t), t)
+                        (task, headline, flash_envelope(t), t)
                     }
-                    None => (task, 0.0, 0.0),
+                    None => (task, headline, 0.0, 0.0),
                 }
             }
         };
@@ -1352,6 +1356,7 @@ impl Island {
                 None
             },
             task,
+            headline,
             unread: if self.cfg.inbox.badge {
                 self.inbox.unread()
             } else {

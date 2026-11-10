@@ -1,0 +1,29 @@
+[package]
+name = "dcx-snip"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "DCX desktop snapshot — Win32 overlay with original vector annotation UI"
+build = "build.rs"
+
+[[bin]]
+name = "dcx-snip"
+path = "src/main.rs"
+
+[dependencies]
+# Only the hand-rolled Win32 layer: this crate must not link eframe/winit.
+# A second event loop in one process fails (see dcx-box history), and the
+# overlay needs full control of its window procedure anyway.
+dcx-win32 = { path = "../dcx-win32" }
+
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+# Anti-aliased vector rasteriser. Draws straight into the DIB section bits, so
+# a frame costs no extra copy (see `surface.rs` for the channel-order note).
+tiny-skia = "0.11"
+
+# Export encoders. `png` is already in the workspace lock via dcx-island;
+# `image` is reused with only its jpeg feature enabled.
+png = "0.18"
+image = { version = "0.25", default-features = false, features = ["jpeg"] }

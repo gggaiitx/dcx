@@ -1,0 +1,810 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DCX — Windows 11 桌面增强平台</title>
+<meta name="description" content="DCX 是一套用 Rust 编写的 Windows 11 桌面增强平台：任务栏主题、桌面收纳盒、文件检索、桌面信息岛、桌面快照。五件事，五个独立进程，宿主常驻托盘。">
+<meta name="author" content="DCX">
+<meta property="og:title" content="DCX — Windows 11 桌面增强平台">
+<meta property="og:description" content="任务栏主题 · 桌面收纳盒 · 文件检索 · 桌面信息岛 · 桌面快照。用 Rust 编写，MIT License。">
+<meta property="og:type" content="website">
+<meta property="og:image" content="assets/img/hero-desktop.webp?v=20261108i">
+<meta name="theme-color" content="#f4f7f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0a1011" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="assets/img/mark.svg" type="image/svg+xml">
+<link rel="icon" href="assets/img/icon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="assets/img/icon-256.png">
+<script>
+  (function () {
+    try {
+      var q = new URLSearchParams(location.search).get("theme");
+      var s = localStorage.getItem("dcx-theme");
+      var t = (q === "light" || q === "dark") ? q : (s === "light" || s === "dark") ? s
+        : (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+      document.documentElement.setAttribute("data-theme", t);
+      document.documentElement.style.colorScheme = t;
+    } catch (e) {
+      document.documentElement.setAttribute("data-theme", "light");
+    }
+  })();
+</script>
+<link rel="stylesheet" href="assets/css/site.css?v=20261108i">
+</head>
+<body>
+<div class="scroll-progress" data-progress aria-hidden="true"></div>
+<a class="skip-link" href="#main">跳到主要内容</a>
+
+<header class="site-header">
+  <div class="header-inner">
+    <a class="brand" href="index.html" aria-label="DCX 首页">
+      <img src="assets/img/mark.svg" alt="" width="28" height="28">
+      <span class="brand-name">DCX</span>
+      <span class="brand-ver">v0.1.3</span>
+    </a>
+    <nav class="site-nav" aria-label="主导航">
+      <a href="#features" class="is-active">功能</a>
+      <a href="docs.html">操作文档</a>
+      <a href="api.html">接入文档</a>
+      <a href="#download">下载</a>
+    </nav>
+    <div class="header-actions">
+      <a class="icon-btn" href="https://github.com/gggaiitx/dcx" target="_blank" rel="noopener" aria-label="GitHub 仓库">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2C6.48 2 2 6.58 2 12.25c0 4.53 2.87 8.37 6.84 9.73.5.1.68-.22.68-.49 0-.24-.01-1.05-.01-1.9-2.78.62-3.37-1.21-3.37-1.21-.45-1.18-1.11-1.49-1.11-1.49-.91-.64.07-.62.07-.62 1 .07 1.53 1.06 1.53 1.06.89 1.57 2.34 1.12 2.91.85.09-.66.35-1.12.63-1.37-2.22-.26-4.56-1.14-4.56-5.07 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.71 0 0 .84-.28 2.75 1.05a9.36 9.36 0 0 1 5 0c1.91-1.33 2.75-1.05 2.75-1.05.55 1.41.2 2.45.1 2.71.64.72 1.03 1.63 1.03 2.75 0 3.94-2.34 4.8-4.57 5.06.36.32.68.94.68 1.9 0 1.37-.01 2.47-.01 2.81 0 .27.18.6.69.49A10.02 10.02 0 0 0 22 12.25C22 6.58 17.52 2 12 2Z"/></svg>
+      </a>
+      <button class="theme-toggle" type="button" data-theme-toggle aria-label="切换主题" aria-pressed="false">
+        <svg class="i-sun" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.6v2.2M12 19.2v2.2M2.6 12h2.2M19.2 12h2.2M5.3 5.3l1.6 1.6M17.1 17.1l1.6 1.6M18.7 5.3l-1.6 1.6M6.9 17.1l-1.6 1.6"/></svg>
+        <svg class="i-moon" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.5 14.3A8.5 8.5 0 1 1 9.7 3.5a7 7 0 0 0 10.8 10.8Z"/></svg>
+      </button>
+      <button class="icon-btn menu-toggle" type="button" data-menu-toggle aria-label="打开导航" aria-expanded="false" aria-controls="mobileNav">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+      </button>
+    </div>
+  </div>
+</header>
+
+<div class="mobile-nav" id="mobileNav" data-mobile-nav>
+  <a href="#features">功能</a>
+  <a href="docs.html">操作文档</a>
+  <a href="api.html">接入文档</a>
+  <a href="#download">下载</a>
+  <a href="https://github.com/gggaiitx/dcx" target="_blank" rel="noopener">GitHub 仓库</a>
+</div>
+
+<main id="main">
+
+  <!-- Hero -->
+  <section class="hero">
+    <div class="hero-grid-bg" aria-hidden="true"></div>
+    <div class="wrap">
+      <div class="hero-top">
+        <div class="hero-copy">
+          <p class="eyebrow"><span class="dot"></span>Windows 11 桌面增强平台 · v0.1.3</p>
+          <h1>把任务栏和桌面，<br><span class="hl">改成你愿意看的样子</span>。</h1>
+          <p class="lede">五个彼此独立的进程：任务栏主题、桌面收纳盒、文件检索、桌面信息岛、桌面快照。宿主常驻托盘，负责注入看门狗、应用生命周期与全局热键——一个应用崩溃，不会带走你的任务栏。</p>
+          <div class="hero-actions">
+            <a class="btn btn-primary" href="#download">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11m0 0 4-4m-4 4-4-4"/><path d="M5 19h14"/></svg>
+              下载 v0.1.3
+            </a>
+            <a class="btn btn-ghost" href="docs.html">阅读操作文档
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h13m-5-5 5 5-5 5"/></svg>
+            </a>
+          </div>
+          <ul class="hero-meta">
+            <li>Windows 11 x64</li>
+            <li>便携包 · 无需安装</li>
+            <li>MIT License</li>
+            <li>Rust 2021</li>
+          </ul>
+        </div>
+
+        <aside class="hotkeys" aria-label="全局热键">
+          <div class="hotkeys-head">
+            <span class="hk-dot" aria-hidden="true"></span>
+            <span>全局热键</span>
+            <span class="hk-note">设置中心可改键</span>
+          </div>
+          <ul>
+            <li>
+              <span class="keys"><kbd>Alt</kbd><i>+</i><kbd>D</kbd></span>
+              <span class="hk-label">桌面收纳盒</span>
+              <span class="hk-idx">01</span>
+            </li>
+            <li>
+              <span class="keys"><kbd>Alt</kbd><i>+</i><kbd>S</kbd></span>
+              <span class="hk-label">文件检索</span>
+              <span class="hk-idx">02</span>
+            </li>
+            <li>
+              <span class="keys"><kbd>Alt</kbd><i>+</i><kbd>I</kbd></span>
+              <span class="hk-label">桌面信息岛</span>
+              <span class="hk-idx">03</span>
+            </li>
+            <li>
+              <span class="keys"><kbd>Alt</kbd><i>+</i><kbd>J</kbd></span>
+              <span class="hk-label">桌面快照</span>
+              <span class="hk-idx">04</span>
+            </li>
+          </ul>
+          <p class="hotkeys-foot">四个热键都由常驻宿主监听；信息岛需先开启，桌面快照按需拉起。</p>
+        </aside>
+      </div>
+
+      <figure class="hero-shot" data-hero-carousel aria-roledescription="轮播" aria-label="DCX 实机界面">
+        <div class="hero-shot-frame">
+          <div class="hero-slide is-active" data-slide="0" data-caption="桌面 · 顶部信息岛 / 底部胶囊 dock">
+            <img src="assets/img/hero-desktop.webp"
+                 srcset="assets/img/hero-desktop-900.webp 900w, assets/img/hero-desktop.webp 1600w"
+                 sizes="(max-width: 900px) calc(100vw - 36px), min(1160px, calc(100vw - 48px))"
+                 width="1600" height="900"
+                 alt="DCX 桌面：顶部信息岛胶囊，底部胶囊 dock"
+                 fetchpriority="high" decoding="async">
+          </div>
+          <div class="hero-slide" aria-hidden="true" data-slide="1" data-caption="桌面收纳盒 · 应用列表视图">
+            <img src="assets/img/hero-box.webp?v=20261108h"
+                 srcset="assets/img/hero-box-900.webp?v=20261108h 900w, assets/img/hero-box.webp?v=20261108h 1600w"
+                 sizes="(max-width: 900px) calc(100vw - 36px), min(1160px, calc(100vw - 48px))"
+                 width="1600" height="900"
+                 alt="桌面收纳盒覆盖在桌面上：搜索框、应用页签与文件列表"
+                 fetchpriority="low" decoding="async">
+          </div>
+          <div class="hero-slide" aria-hidden="true" data-slide="2" data-caption="文件检索 · 名称 / 内容双模式">
+            <img src="assets/img/hero-search.webp"
+                 srcset="assets/img/hero-search-900.webp 900w, assets/img/hero-search.webp 1600w"
+                 sizes="(max-width: 900px) calc(100vw - 36px), min(1160px, calc(100vw - 48px))"
+                 width="1600" height="900"
+                 alt="文件检索窗口覆盖在桌面上：路径选择、文件名与内容模式、七类过滤与结果列表"
+                 fetchpriority="low" decoding="async">
+          </div>
+          <div class="hero-slide" aria-hidden="true" data-slide="3" data-caption="桌面信息岛 · 性能页展开">
+            <img src="assets/img/hero-island.webp"
+                 srcset="assets/img/hero-island-900.webp 900w, assets/img/hero-island.webp 1600w"
+                 sizes="(max-width: 900px) calc(100vw - 36px), min(1160px, calc(100vw - 48px))"
+                 width="1600" height="900"
+                 alt="桌面信息岛展开态：性能页的 CPU、内存、磁盘容量与桌面待整理计数"
+                 fetchpriority="low" decoding="async">
+          </div>
+
+          <div class="hero-slide" aria-hidden="true" data-slide="4" data-caption="桌面快照 · 两行标注工具条与设置页">
+            <img src="assets/img/hero-snip.webp?v=20261110a"
+                 srcset="assets/img/hero-snip-900.webp?v=20261110a 900w, assets/img/hero-snip.webp?v=20261110a 1600w"
+                 sizes="(max-width: 900px) calc(100vw - 36px), min(1160px, calc(100vw - 48px))"
+                 width="1600" height="900"
+                 alt="桌面快照：设置中心的截图与标注页，底部是两行标注工具条"
+                 fetchpriority="low" decoding="async">
+          </div>
+
+          <div class="hero-controls" role="group" aria-label="切换截图">
+            <button class="hero-dot is-active" type="button" data-dot="0" aria-label="桌面" aria-current="true"></button>
+            <button class="hero-dot" type="button" data-dot="1" aria-label="桌面收纳盒"></button>
+            <button class="hero-dot" type="button" data-dot="2" aria-label="文件检索"></button>
+            <button class="hero-dot" type="button" data-dot="3" aria-label="桌面信息岛"></button>
+            <button class="hero-dot" type="button" data-dot="4" aria-label="桌面快照"></button>
+            <button class="hero-play" type="button" data-hero-play aria-label="暂停自动切换">
+              <svg class="i-pause" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
+              <svg class="i-play" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M7 4.5v15l13-7.5z"/></svg>
+            </button>
+          </div>
+        </div>
+        <figcaption class="hero-shot-cap">
+          <span data-hero-caption>桌面 · 顶部信息岛 / 底部胶囊 dock</span>
+          <span>Windows 11 10.0.26200 · 125% DPI</span>
+        </figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <!-- 模块索引 -->
+  <div class="module-bar">
+    <div class="wrap">
+      <a href="#taskbar">
+        <span class="mb-icon">
+          <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><rect x="2.8" y="7" width="18.4" height="10" rx="5"/><path d="M7.2 12h.01M10 12h.01M12.8 12h.01"/></svg>
+        </span>
+        <span class="mb-text"><span class="mb-title">任务栏主题</span><span class="mb-sub">胶囊 / 卡片 · 50–125%</span></span>
+        <svg class="mb-arrow" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h13m-5-5 5 5-5 5"/></svg>
+      </a>
+      <a href="#box">
+        <span class="mb-icon">
+          <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.6 7.6h16.8v10.9a2 2 0 0 1-2 2H5.6a2 2 0 0 1-2-2Z"/><path d="M3.6 7.6 5.7 4h12.6l2.1 3.6"/><path d="M9.6 11.6h4.8"/></svg>
+        </span>
+        <span class="mb-text"><span class="mb-title">桌面收纳盒</span><span class="mb-sub">物理移动 · 虚拟分类</span></span>
+        <svg class="mb-arrow" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h13m-5-5 5 5-5 5"/></svg>
+      </a>
+      <a href="#search">
+        <span class="mb-icon">
+          <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6.2"/><path d="m15.7 15.7 4 4"/></svg>
+        </span>
+        <span class="mb-text"><span class="mb-title">文件检索</span><span class="mb-sub">名称与内容 · Alt+S</span></span>
+        <svg class="mb-arrow" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h13m-5-5 5 5-5 5"/></svg>
+      </a>
+      <a href="#island">
+        <span class="mb-icon">
+          <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><rect x="2.8" y="8" width="18.4" height="8" rx="4"/><circle cx="7.2" cy="12" r="1.1" fill="currentColor" stroke="none"/><path d="M11 12h6"/></svg>
+        </span>
+        <span class="mb-text"><span class="mb-title">桌面信息岛</span><span class="mb-sub">顶部胶囊 · 六个页签</span></span>
+        <svg class="mb-arrow" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h13m-5-5 5 5-5 5"/></svg>
+      </a>
+      <a href="#snip">
+        <span class="mb-icon">
+          <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2" stroke-dasharray="3 2.5"/><path d="m7.5 15 3.5-4 2.5 2.5 3-4"/></svg>
+        </span>
+        <span class="mb-text"><span class="mb-title">桌面快照</span><span class="mb-sub">框选标注 · Alt+J</span></span>
+        <svg class="mb-arrow" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h13m-5-5 5 5-5 5"/></svg>
+      </a>
+    </div>
+  </div>
+
+  <!-- 功能总览 -->
+  <section class="section" id="features">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <p class="kicker">功能 / 模块</p>
+        <h2>五件事，五个进程</h2>
+        <p class="lede">平台只做平台该做的事：注入、看门狗、托盘、全局热键、统一设置中心。功能留在各自进程里，所以它们可以单独重启、单独关闭，也可以被下一个应用替换。</p>
+      </div>
+
+      <div class="cards">
+        <article class="card reveal">
+          <div class="card-top">
+            <span class="card-icon">
+              <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" aria-hidden="true"><rect x="2.8" y="7" width="18.4" height="10" rx="5"/><path d="M7.2 12h.01M10 12h.01M12.8 12h.01"/></svg>
+            </span>
+            <span class="card-num">01</span>
+          </div>
+          <h3>任务栏主题</h3>
+          <p>把 Explorer 的任务栏换成胶囊或卡片，图标缩放、间距与悬停效果都能连续调；改完约 1 秒热重载，不用重启 Explorer。</p>
+          <ul class="tag-list">
+            <li>胶囊 / 卡片</li><li>图标 50–125%</li><li>间距 −6…+6 px</li><li>Dock 悬停</li>
+          </ul>
+          <a class="card-link" href="#taskbar">查看细节
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h13m-5-5 5 5-5 5"/></svg>
+          </a>
+        </article>
+
+        <article class="card reveal">
+          <div class="card-top">
+            <span class="card-icon">
+              <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.6 7.6h16.8v10.9a2 2 0 0 1-2 2H5.6a2 2 0 0 1-2-2Z"/><path d="M3.6 7.6 5.7 4h12.6l2.1 3.6"/><path d="M9.6 11.6h4.8"/></svg>
+            </span>
+            <span class="card-num">02</span>
+          </div>
+          <h3>桌面收纳盒</h3>
+          <p>桌面仍由 Explorer 原生管理。收纳 = 把文件物理移进独立收纳库，分类只是库内的虚拟元数据；拖回桌面即恢复，文件不会被删除。</p>
+          <ul class="tag-list">
+            <li>物理移动</li><li>自动分类</li><li>库路径迁移</li><li>Alt+D</li>
+          </ul>
+          <a class="card-link" href="#box">查看细节
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h13m-5-5 5 5-5 5"/></svg>
+          </a>
+        </article>
+
+        <article class="card reveal">
+          <div class="card-top">
+            <span class="card-icon">
+              <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6.2"/><path d="m15.7 15.7 4 4"/></svg>
+            </span>
+            <span class="card-num">03</span>
+          </div>
+          <h3>文件检索</h3>
+          <p>默认不常驻、不预建索引。按下 Alt+S 才拉起进程，在后台建立名称索引，结果边建边出；关掉窗口即释放。</p>
+          <ul class="tag-list">
+            <li>文件名 / 内容</li><li>通配符</li><li>ext: path: regex:</li><li>Alt+S</li>
+          </ul>
+          <a class="card-link" href="#search">查看细节
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h13m-5-5 5 5-5 5"/></svg>
+          </a>
+        </article>
+
+        <article class="card reveal">
+          <div class="card-top">
+            <span class="card-icon">
+              <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" aria-hidden="true"><rect x="2.8" y="8" width="18.4" height="8" rx="4"/><circle cx="7.2" cy="12" r="1.1" fill="currentColor" stroke="none"/><path d="M11 12h6"/></svg>
+            </span>
+            <span class="card-num">04</span>
+          </div>
+          <h3>桌面信息岛</h3>
+          <p>屏幕顶部的常驻胶囊：时间、性能、任务、剪贴板、消息与动态。到点提醒只闪一下，打开面板的时机留给你。</p>
+          <ul class="tag-list">
+            <li>六个页签</li><li>到点提醒</li><li>通知聚合</li><li>本地推送 API</li>
+          </ul>
+          <a class="card-link" href="#island">查看细节
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h13m-5-5 5 5-5 5"/></svg>
+          </a>
+        </article>
+
+        <article class="card reveal">
+          <div class="card-top">
+            <span class="card-icon">
+              <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2" stroke-dasharray="3 2.5"/><path d="m7.5 15 3.5-4 2.5 2.5 3-4"/></svg>
+            </span>
+            <span class="card-num">05</span>
+          </div>
+          <h3>桌面快照</h3>
+          <p>Alt+J 冻结整屏：框选后画矢量标注、滚动拼接长截图，Enter 直接复制；空闲自动退出，不占常驻内存。</p>
+          <ul class="tag-list">
+            <li>六种标注</li><li>两行工具条</li><li>长截图拼接</li><li>Alt+J</li>
+          </ul>
+          <a class="card-link" href="#snip">查看细节
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h13m-5-5 5 5-5 5"/></svg>
+          </a>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- 任务栏 -->
+  <section class="section" id="taskbar">
+    <div class="wrap">
+      <div class="module">
+        <div class="module-text">
+          <p class="module-label"><b>01</b><i></i>TASKBAR</p>
+          <h2>任务栏先变成你想要的样子</h2>
+          <p><code class="code-inline">dcx_engine.dll</code> 注入 <code class="code-inline">explorer.exe</code>，把主题规则写进任务栏 XAML。设置由宿主写进 <code class="code-inline">settings.toml</code>，引擎每秒轮询、按修改时间重建规则——没有「保存」按钮，也不需要重启 Explorer。</p>
+          <ul class="facts">
+            <li><span class="fi"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4 4 10-10"/></svg></span><span>两种形态：<strong>胶囊</strong>（两端大圆角）与<strong>卡片</strong>（小圆角），切换即时生效。</span></li>
+            <li><span class="fi"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4 4 10-10"/></svg></span><span>图标缩放 <strong>50–125%</strong>、间距 <strong>−6…+6 px</strong>，连续可调。</span></li>
+            <li><span class="fi"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4 4 10-10"/></svg></span><span>悬停可选 <strong>Background</strong>（只高亮）或 <strong>Dock</strong>（按距离放大并推开相邻图标）。</span></li>
+            <li><span class="fi"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4 4 10-10"/></svg></span><span>任务栏高度 <strong>30–44 DIP</strong>，托盘与 dock 同步伸缩。</span></li>
+            <li><span class="fi"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4 4 10-10"/></svg></span><span>只作用于主任务栏；Windows 大版本更新后可能需要重新核对元素路径。</span></li>
+          </ul>
+          <a class="btn btn-ghost btn-sm" href="docs.html#taskbar">任务栏设置详解
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h13m-5-5 5 5-5 5"/></svg>
+          </a>
+        </div>
+
+        <div class="module-media">
+          <div class="demo" data-dock-demo>
+            <div class="demo-stage">
+              <div class="dock" data-shape="capsule" data-hover="dock" style="--demo-scale:1;--demo-gap:0px" aria-hidden="true">
+                <span class="tile t1"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="3" y="3" width="8" height="8" rx="1.4"/><rect x="13" y="3" width="8" height="8" rx="1.4"/><rect x="3" y="13" width="8" height="8" rx="1.4"/><rect x="13" y="13" width="8" height="8" rx="1.4"/></svg></span>
+                <span class="tile t2"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 6h16v12H4z"/><path d="m4 7 8 6 8-6"/></svg></span>
+                <span class="tile t3"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M5 4h9l5 5v11H5z"/><path d="M14 4v5h5"/></svg></span>
+                <span class="tile t4"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M4 12h16M12 4c2.4 2.2 3.6 5 3.6 8s-1.2 5.8-3.6 8c-2.4-2.2-3.6-5-3.6-8S9.6 6.2 12 4Z"/></svg></span>
+                <span class="tile t5"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 18V8l8-4 8 4v10"/><path d="M9 18v-5h6v5"/></svg></span>
+                <span class="tile t6"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M5 5h14v9H9l-4 4z"/></svg></span>
+                <span class="tile t7"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M6 4h12v16l-6-3.5L6 20z"/></svg></span>
+                <span class="tile t8"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/></svg></span>
+                <span class="demo-tray">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 9v6h3l5 4V5L7 9z"/><path d="M16 9a4 4 0 0 1 0 6"/></svg>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 7h16v10H4z"/><path d="M8 11h2"/></svg>
+                  <span>11:34</span>
+                </span>
+              </div>
+            </div>
+            <div class="demo-controls">
+              <div class="demo-row">
+                <label>形状</label>
+                <div class="segmented" role="group" aria-label="任务栏形状">
+                  <button type="button" data-shape="capsule" aria-pressed="true">胶囊</button>
+                  <button type="button" data-shape="card" aria-pressed="false">卡片</button>
+                </div>
+              </div>
+              <div class="demo-row">
+                <label for="demoScale">图标缩放</label>
+                <input id="demoScale" type="range" min="50" max="125" step="5" value="100">
+                <output data-out-scale for="demoScale">100%</output>
+              </div>
+              <div class="demo-row">
+                <label for="demoGap">图标间距</label>
+                <input id="demoGap" type="range" min="-6" max="6" step="1" value="0">
+                <output data-out-gap for="demoGap">0 px</output>
+              </div>
+              <div class="demo-row">
+                <label>悬停</label>
+                <div class="segmented" role="group" aria-label="悬停效果">
+                  <button type="button" data-hover="background" aria-pressed="false">高亮</button>
+                  <button type="button" data-hover="dock" aria-pressed="true">Dock</button>
+                </div>
+              </div>
+            </div>
+            <p class="demo-hint">示意图：只演示 DCX 暴露的形状、缩放、间距与悬停参数，不是系统任务栏截图。</p>
+          </div>
+          <figure class="shot shot-strip">
+            <img src="assets/img/dock.webp" width="1294" height="74" loading="lazy" decoding="async" alt="实机任务栏胶囊 dock 与右侧托盘细节">
+          </figure>
+          <p class="shot-cap">
+            <span>实机 · 胶囊 dock 与托盘</span>
+            <span>1294 × 74 裁切</span>
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 收纳盒 -->
+  <section class="section" id="box">
+    <div class="wrap">
+      <div class="module flip">
+        <div class="module-text">
+          <p class="module-label"><b>02</b><i></i>DESKTOP BOX</p>
+          <h2>收纳是移动文件，<br>不是藏起图标</h2>
+          <p>桌面上的文件仍由 Explorer 原生显示。把文件收进盒子时，它会被<strong>物理移动</strong>到收纳库（默认 <code class="code-inline">文档\dcx收纳</code>），桌面图标随之消失，文件本身不会删除；拖回桌面即恢复原状。</p>
+
+          
+
+          <ul class="facts">
+            <li><span class="fi"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4 4 10-10"/></svg></span><span>分类是库内的<strong>虚拟元数据</strong>：扩展名规则自动归类，手动拖拽写入 <code class="code-inline">organizer.toml</code> 的 overrides。</span></li>
+            <li><span class="fi"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4 4 10-10"/></svg></span><span>库路径可改；迁移已有文件时会保留手动分类。</span></li>
+            <li><span class="fi"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4 4 10-10"/></svg></span><span>列表 / 网格、排序、搜索、文件夹展开、拖放、右键菜单、新建文件夹、重命名、回收站删除。</span></li>
+            <li><span class="fi"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4 4 10-10"/></svg></span><span>底部「收纳」按钮：<strong>单击</strong>复制库路径，<strong>双击</strong>打开库。</span></li>
+          </ul>
+          <a class="btn btn-ghost btn-sm" href="docs.html#box">收纳盒使用手册
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h13m-5-5 5 5-5 5"/></svg>
+          </a>
+        </div>
+
+        <div class="module-media">
+          <figure class="shot">
+            <img src="assets/img/box.webp?v=20261108i" width="1200" height="900" loading="lazy" decoding="async" alt="桌面收纳盒特写：搜索框、应用页签与图标网格">
+          </figure>
+          <p class="shot-cap">
+            <span>收纳盒 · 应用网格视图</span>
+            <span>Alt+D 唤出</span>
+          </p>
+        </div>
+      </div>
+      <div class="flow flow-wide" aria-label="收纳流程">
+            <div class="flow-node">
+              <strong>桌面</strong>
+              <span>Explorer 原生显示</span>
+            </div>
+            <svg class="flow-arrow" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h13m-5-5 5 5-5 5"/></svg>
+            <div class="flow-node accent">
+              <strong>收纳库</strong>
+              <span>普通目录，可换盘</span>
+            </div>
+            <svg class="flow-arrow" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h13m-5-5 5 5-5 5"/></svg>
+            <div class="flow-node">
+              <strong>分类视图</strong>
+              <span>规则 + 手动覆盖</span>
+            </div>
+          
+      </div>
+    </div>
+  </section>
+
+  <!-- 文件检索 -->
+  <section class="section" id="search">
+    <div class="wrap">
+      <div class="module">
+        <div class="module-text">
+          <p class="module-label"><b>03</b><i></i>SEARCH</p>
+          <h2>要找的是文件，<br>不是「最近使用」</h2>
+          <p>独立进程 <code class="code-inline">dcx-search.exe</code>，默认关闭：不随平台自启、不常驻、不预建索引。第一次按 <kbd>Alt</kbd> + <kbd>S</kbd> 才拉起，索引在后台线程建立，结果边建边出；关掉窗口进程就退出。</p>
+          <ul class="facts">
+            <li><span class="fi"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4 4 10-10"/></svg></span><span>范围：整个电脑或自定义文件夹，可配置排除规则。</span></li>
+            <li><span class="fi"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4 4 10-10"/></svg></span><span>两种模式：<strong>文件名</strong>走内存索引，<strong>内容</strong>在候选集上流式扫描。</span></li>
+            <li><span class="fi"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4 4 10-10"/></svg></span><span>语法：<code class="code-inline">*</code> <code class="code-inline">?</code> 通配符、空格表示 AND、<code class="code-inline">ext:</code> / <code class="code-inline">path:</code> / <code class="code-inline">regex:</code> 前缀。</span></li>
+            <li><span class="fi"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4 4 10-10"/></svg></span><span>结果含名称、路径、大小、修改时间；截断的名称与路径悬停可看全文。</span></li>
+            <li><span class="fi"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4 4 10-10"/></svg></span><span>四个热键都在宿主里监听：检索进程没启动也能唤起。</span></li>
+          </ul>
+          <a class="btn btn-ghost btn-sm" href="docs.html#search">检索语法与设置
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h13m-5-5 5 5-5 5"/></svg>
+          </a>
+        </div>
+
+        <div class="module-media">
+          <figure class="shot">
+            <img src="assets/img/search.webp?v=20261108i" width="1200" height="900" loading="lazy" decoding="async" alt="文件检索特写：路径选择、文件名与内容模式、七类过滤与结果列表">
+          </figure>
+          <p class="shot-cap">
+            <span>文件检索 · 名称 / 内容双模式</span>
+            <span>此电脑 · 7 类快捷过滤</span>
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 信息岛 -->
+  <section class="section" id="island">
+    <div class="wrap">
+      <div class="module flip">
+        <div class="module-text">
+          <p class="module-label"><b>04</b><i></i>ISLAND</p>
+          <h2>信息在顶部，<br>桌面留给你</h2>
+          <p>独立进程 <code class="code-inline">dcx-island.exe</code>，默认关闭。开启后屏幕顶部居中显示常驻胶囊，<strong>不占任务栏槽位</strong>；点它或按 <kbd>Alt</kbd> + <kbd>I</kbd> 展开成同一张卡的面板——胶囊那一行就是面板的标题栏。</p>
+          <ul class="facts">
+            <li><span class="fi"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4 4 10-10"/></svg></span><span>紧凑态：时间、日期、性能、未读角标；播放媒体时显示曲名。</span></li>
+            <li><span class="fi"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4 4 10-10"/></svg></span><span>到点提醒：铃铛摆动 + 标题轻摆 + 底色脉冲 + 一声提示音，持续 <strong>12 秒</strong>，不自动弹面板。</span></li>
+            <li><span class="fi"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4 4 10-10"/></svg></span><span>六个页签：任务、剪贴板、消息、性能、动态、搜索。</span></li>
+            <li><span class="fi"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4 4 10-10"/></svg></span><span>消息渠道：微信、企业微信、QQ、邮箱、系统通知；<strong>QQ / 微信个人号没有官方出站接口，不支持发送</strong>。</span></li>
+            <li><span class="fi"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4 4 10-10"/></svg></span><span>推送 API：<code class="code-inline">127.0.0.1</code> + Bearer 令牌，脚本可把卡片推到「动态」页。</span></li>
+          </ul>
+          <a class="btn btn-ghost btn-sm" href="api.html">查看接入文档
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h13m-5-5 5 5-5 5"/></svg>
+          </a>
+        </div>
+
+        <div class="module-media">
+          <figure class="shot">
+            <img src="assets/img/island.webp?v=20261108i" width="1200" height="1200" loading="lazy" decoding="async" alt="桌面信息岛性能页特写：CPU、内存、磁盘容量与桌面待整理计数">
+          </figure>
+          <p class="shot-cap">
+            <span>信息岛 · 性能页展开</span>
+            <span>顶部居中 · 不占任务栏槽位</span>
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+    <!-- 桌面快照 -->
+  <section class="section" id="snip">
+    <div class="wrap">
+      <div class="module">
+        <div class="module-text">
+          <p class="module-label"><b>05</b><i></i>SNIP</p>
+          <h2>截一帧，<br>标完就走</h2>
+          <p>独立进程 <code class="code-inline">dcx-snip.exe</code>，默认不常驻：<kbd>Alt</kbd> + <kbd>J</kbd> 由宿主按需拉起，冻结整屏后框选标注，<kbd>Enter</kbd> 直接复制，空闲自动退出。</p>
+          <ul class="facts">
+            <li><span class="fi"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4 4 10-10"/></svg></span><span>覆盖层是<strong>裸 Win32 窗口 + tiny-skia 自绘</strong>，不链接 eframe / winit。</span></li>
+            <li><span class="fi"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4 4 10-10"/></svg></span><span>贴合选区底边的<strong>两行工具条</strong>：上排工具与输出，下排属性（10 色色板、色轮取色、线宽、字体…）。</span></li>
+            <li><span class="fi"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4 4 10-10"/></svg></span><span>矩形、箭头、文本、荧光笔、模糊、聚光与序号标记都是<strong>矢量对象</strong>，可二次编辑、100 步撤销。</span></li>
+            <li><span class="fi"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12.5 4 4 10-10"/></svg></span><span>滚动拼接<strong>长截图</strong>、无级圆角、自定义保存目录；复制同时写入 CF_DIB 与 PNG。</span></li>
+          </ul>
+          <a class="btn btn-ghost btn-sm" href="docs.html#snip">截图与标注使用手册
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h13m-5-5 5 5-5 5"/></svg>
+          </a>
+        </div>
+
+        <div class="module-media">
+          <figure class="shot">
+            <img src="assets/img/snip.webp?v=20261110a" width="1200" height="852" loading="lazy" decoding="async" alt="桌面快照：设置中心的截图与标注页与底部两行标注工具条">
+          </figure>
+          <p class="shot-cap">
+            <span>截图与标注 · 两行工具条</span>
+            <span>Alt+J 唤出 · 10 色色板</span>
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+<!-- 架构 -->
+  <section class="section" id="architecture">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <p class="kicker">架构 / PROCESS</p>
+        <h2>文件即 IPC</h2>
+        <p class="lede">宿主、引擎与应用之间没有共享内存、没有私有管道，只有 <code class="code-inline">%LOCALAPPDATA%\dcx\</code> 下的 TOML / JSON。任何一方崩了，其它进程都能靠文件状态重新对齐。桌面快照与文件检索同为宿主按需拉起的独立进程，下图以检索代表这一类。</p>
+      </div>
+
+      <div class="arch reveal">
+        <svg viewBox="0 0 960 400" role="img" aria-labelledby="archTitle archDesc">
+          <title id="archTitle">DCX 进程与配置架构</title>
+          <desc id="archDesc">dcx-host 通过注入看门狗管理 explorer 中的 dcx_engine，通过启动与监控管理 box、search、island 三个独立应用，所有进程读写同一组配置文件。</desc>
+          <defs>
+            <marker id="arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path class="dg-head" d="M0 0 10 5 0 10Z"/>
+            </marker>
+          </defs>
+
+          <!-- host -->
+          <rect class="dg-box dg-box-accent" x="60" y="36" width="840" height="84" rx="14"/>
+          <text class="dg-title" x="84" y="68">dcx-host.exe</text>
+          <text class="dg-sub" x="84" y="90">托盘 · 唯一设置中心 · 注入看门狗 · 应用生命周期 · 全局热键</text>
+          <text class="dg-sub" x="876" y="68" text-anchor="end">唯一常驻进程</text>
+
+          <!-- 连接线 -->
+          <path class="dg-arrow" d="M157.5 120V136"/>
+          <path class="dg-arrow" d="M157.5 172V186" marker-end="url(#arw)"/>
+          <path class="dg-arrow" d="M372.5 120V136"/>
+          <path class="dg-arrow" d="M372.5 172V186" marker-end="url(#arw)"/>
+          <path class="dg-arrow" d="M587.5 120V136"/>
+          <path class="dg-arrow" d="M587.5 172V186" marker-end="url(#arw)"/>
+          <path class="dg-arrow" d="M802.5 120V136"/>
+          <path class="dg-arrow" d="M802.5 172V186" marker-end="url(#arw)"/>
+
+          <text class="dg-label" x="157.5" y="158" text-anchor="middle">注入 / 看门狗</text>
+          <text class="dg-label" x="372.5" y="158" text-anchor="middle">启动 / 监控</text>
+          <text class="dg-label" x="587.5" y="158" text-anchor="middle">按需拉起</text>
+          <text class="dg-label" x="802.5" y="158" text-anchor="middle">启动 / 监控</text>
+
+          <!-- 四个代表性应用（桌面快照同为按需拉起） -->
+          <rect class="dg-box" x="60" y="188" width="195" height="86" rx="11"/>
+          <text class="dg-title" x="76" y="216">explorer.exe</text>
+          <text class="dg-sub" x="76" y="236">dcx_engine.dll</text>
+          <text class="dg-sub" x="76" y="252">任务栏 XAML 主题</text>
+
+          <rect class="dg-box" x="275" y="188" width="195" height="86" rx="11"/>
+          <text class="dg-title" x="291" y="216">dcx-box.exe</text>
+          <text class="dg-sub" x="291" y="236">桌面收纳盒</text>
+          <text class="dg-sub" x="291" y="252">Alt+D</text>
+
+          <rect class="dg-box" x="490" y="188" width="195" height="86" rx="11"/>
+          <text class="dg-title" x="506" y="216">dcx-search.exe</text>
+          <text class="dg-sub" x="506" y="236">文件检索 · 默认关闭</text>
+          <text class="dg-sub" x="506" y="252">按需启动，关窗即退出</text>
+
+          <rect class="dg-box" x="705" y="188" width="195" height="86" rx="11"/>
+          <text class="dg-title" x="721" y="216">dcx-island.exe</text>
+          <text class="dg-sub" x="721" y="236">桌面信息岛 · 默认关闭</text>
+          <text class="dg-sub" x="721" y="252">顶部胶囊 + 面板</text>
+
+          <!-- 配置文件总线 -->
+          <path class="dg-bus" d="M157.5 274V300M372.5 274V300M587.5 274V300M802.5 274V300"/>
+          <path class="dg-bus" d="M60 300H900"/>
+          <path class="dg-bus" d="M480 300V318"/>
+          <text class="dg-label" x="60" y="292">文件即 IPC · 读写</text>
+          <text class="dg-label" x="900" y="292" text-anchor="end">TOML / JSON</text>
+
+          <rect class="dg-box" x="60" y="320" width="840" height="58" rx="10" stroke-dasharray="5 4"/>
+          <text class="dg-title" x="480" y="344" text-anchor="middle">%LOCALAPPDATA%\dcx\</text>
+          <text class="dg-sub" x="480" y="364" text-anchor="middle">settings.toml · organizer.toml · search.toml · island.toml · apps.toml · snip.toml</text>
+        </svg>
+      </div>
+      <div class="arch-legend">
+        <span><i></i>注入 / 启动 / 热键</span>
+        <span><i class="dashed"></i>配置读写（原子替换 + 跨进程互斥）</span>
+        <span>应用必须与 <code class="code-inline">dcx-host.exe</code> 同目录</span>
+      </div>
+
+      <div class="limits" style="margin-top:26px">
+        <div class="limit reveal">
+          <h3>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></svg>
+            进程隔离
+          </h3>
+          <p>宿主负责注入与看门狗，收纳盒、检索、信息岛与桌面快照都是独立 exe。一个应用崩溃不会影响任务栏主题和设置中心。</p>
+        </div>
+        <div class="limit reveal">
+          <h3>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h6l2 2h8v10H4z"/></svg>
+            文件即 IPC
+          </h3>
+          <p>六个 TOML 与两个 JSON 都遵循同一套写入规则：按全路径派生的命名互斥体保护「读—改—写」，再原子替换。</p>
+        </div>
+        <div class="limit reveal">
+          <h3>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+            可扩展应用
+          </h3>
+          <p>新增独立应用 = 新增 crate + 在 <code class="code-inline">apps.rs</code> 注册一条 <code class="code-inline">AppEntry</code>，不需要改设置窗口的导航结构。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 下载 -->
+  <section class="section" id="download">
+    <div class="wrap">
+      <div class="download-card reveal">
+        <div>
+          <p class="kicker" style="margin-bottom:10px">下载 / INSTALL</p>
+          <h2>下载 DCX <span class="ver">v0.1.3</span></h2>
+          <p class="lede">便携包，解压即用。可从官网直链或 GitHub Releases 下载；配置与索引全部写在 <code class="code-inline">%LOCALAPPDATA%\dcx\</code>，不写系统目录。</p>
+          <div class="hero-actions" style="margin-top:22px">
+            <a class="btn btn-primary" href="assets/dist/dcx-dist.7z" download>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11m0 0 4-4m-4 4-4-4"/><path d="M5 19h14"/></svg>
+              官网下载
+            </a>
+            <a class="btn btn-ghost" href="https://github.com/gggaiitx/dcx/releases/latest" target="_blank" rel="noopener">GitHub Releases</a>
+          </div>
+          <ul class="dl-files">
+            <li>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/><path d="M10 9h2M10 12h2M10 15h2"/></svg>
+              dcx-dist.7z
+              <span class="sz">官网直链</span>
+            </li>
+            <li>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/></svg>
+              DCX-v0.1.3-win64.zip
+              <span class="sz">GitHub</span>
+            </li>
+            <li>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/><path d="M9 13h6M9 17h4"/></svg>
+              SHA256SUMS.txt
+              <span class="sz">二进制校验和</span>
+            </li>
+          </ul>
+          
+        </div>
+
+        <div>
+          <ol class="steps">
+            <li><strong>解压整个 DCX 文件夹</strong>到任意位置。不要只取出 exe：宿主按同目录查找 <code>dcx-box.exe</code>、<code>dcx-search.exe</code>、<code>dcx-island.exe</code>、<code>dcx-snip.exe</code>、<code>dcx_engine.dll</code> 与 <code>wh_injector.exe</code>。</li>
+            <li>运行 <code>start-dcx.bat</code>：只留托盘，不弹设置窗口；或运行 <code>dcx-host.exe</code>，默认带设置窗口启动。</li>
+            <li>首次运行可能被 SmartScreen 提示（构建未签名），选择「更多信息 → 仍要运行」。</li>
+            <li>系统要求：<strong>Windows 11 x64</strong>（任务栏样式）。其它独立功能在 Windows 10 及更早版本同样可用：平台会识别系统版本，自动停用任务栏样式页并跳过引擎注入。不需要安装器；设置与索引写入 <code>%LOCALAPPDATA%\dcx\</code>。</li>
+          </ol>
+        </div>
+        <div class="callout dl-note">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+            <p>如果下载的是 <code class="code-inline">DCX-v0.1.3-win64.zip</code>，可用 <code class="code-inline">Get-FileHash .\DCX-v0.1.3-win64.zip -Algorithm SHA256</code> 与 <code class="code-inline">SHA256SUMS.txt</code> 对照。</p>
+          </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 边界 -->
+  <section class="section" id="limits">
+    <div class="wrap">
+      <div class="section-head reveal">
+        <p class="kicker">边界 / LIMITS</p>
+        <h2>它不做什么</h2>
+        <p class="lede">把边界写在前面，比事后解释便宜。以下都是当前版本的已知限制，不是待办清单。</p>
+      </div>
+      <div class="limits">
+        <div class="limit reveal">
+          <h3><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4 3 20h18z"/><path d="M12 10v4M12 17h.01"/></svg>只匹配当前视觉树</h3>
+          <p>引擎针对当前 Windows 11 任务栏 XAML 实现，系统大版本更新后可能需要重新核对元素路径。</p>
+        </div>
+        <div class="limit reveal">
+          <h3><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4 3 20h18z"/><path d="M12 10v4M12 17h.01"/></svg>不要卸载引擎 DLL</h3>
+          <p>不要对 <code class="code-inline">dcx_engine.dll</code> 调用 <code class="code-inline">FreeLibrary</code>。唯一受支持的卸载方式是重启 Explorer——「恢复任务栏」做的就是这件事。</p>
+        </div>
+        <div class="limit reveal">
+          <h3><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4 3 20h18z"/><path d="M12 10v4M12 17h.01"/></svg>只处理主任务栏</h3>
+          <p>多任务栏与第三方任务栏壳未适配；任务栏图标放大受 dock 高度裁剪，属于当前实现的视觉边界。</p>
+        </div>
+        <div class="limit reveal">
+          <h3><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4 3 20h18z"/><path d="M12 10v4M12 17h.01"/></svg>构建未签名</h3>
+          <p>SmartScreen / 杀毒软件可能提示；请只从本官网的下载页或本仓库的 Releases 下载，并用 SHA256SUMS.txt 校验。</p>
+        </div>
+        <div class="limit reveal">
+          <h3><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4 3 20h18z"/><path d="M12 10v4M12 17h.01"/></svg>没有安装器</h3>
+          <p>DCX 是便携应用：换目录直接搬，卸载即删除目录；配置与索引留在 <code class="code-inline">%LOCALAPPDATA%\dcx\</code>。</p>
+        </div>
+        <div class="limit reveal">
+          <h3><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4 3 20h18z"/><path d="M12 10v4M12 17h.01"/></svg>个人号不发消息</h3>
+          <p>QQ / 微信个人号没有官方出站接口。信息岛只做入站聚合；出站仅支持企业微信群机器人与 SMTP。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <div class="footer-grid">
+      <div class="footer-brand">
+        <a class="brand" href="index.html" aria-label="DCX 首页">
+          <img src="assets/img/mark.svg" alt="" width="26" height="26">
+          <span class="brand-name">DCX</span>
+        </a>
+        <p>Windows 11 桌面增强平台。任务栏主题、桌面收纳盒、文件检索、桌面信息岛、桌面快照，五个进程，一个托盘。</p>
+        <span class="pill">v0.1.3 · Windows 11 x64</span>
+      </div>
+      <div class="footer-col">
+        <h3>产品</h3>
+        <ul>
+          <li><a href="#features">功能总览</a></li>
+          <li><a href="#architecture">进程架构</a></li>
+          <li><a href="#download">下载安装</a></li>
+          <li><a href="#limits">已知限制</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h3>文档</h3>
+        <ul>
+          <li><a href="docs.html">操作文档</a></li>
+          <li><a href="api.html">接入文档</a></li>
+          <li><a href="docs.html#config">配置文件</a></li>
+          <li><a href="docs.html#troubleshoot">故障排查</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h3>项目</h3>
+        <ul>
+          <li><a href="https://github.com/gggaiitx/dcx" target="_blank" rel="noopener">GitHub 仓库</a></li>
+          <li><a href="https://github.com/gggaiitx/dcx/releases/latest" target="_blank" rel="noopener">Releases</a></li>
+          <li><a href="https://github.com/gggaiitx/dcx/blob/main/LICENSE" target="_blank" rel="noopener">MIT License</a></li>
+          <li><a href="https://github.com/gggaiitx/dcx/issues" target="_blank" rel="noopener">Issue / PR</a></li>
+        </ul>
+      </div>
+    </div>
+    <span class="footer-mark" aria-hidden="true">DCX</span>
+    <div class="footer-bottom">
+      <span>© <span data-year>2026</span> DCX · MIT License · 用 Rust 编写</span>
+      <span>静态页面 · 无追踪脚本 <span class="dot-sep">·</span> 截图取自 Windows 11 实机</span>
+    </div>
+  </div>
+</footer>
+
+<script src="assets/js/site.js?v=20261108i" defer></script>
+</body>
+</html>

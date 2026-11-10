@@ -13,6 +13,12 @@ use core::ffi::c_void;
 /// double as IPC between the DCX processes.
 pub mod config_file;
 
+/// 截图标注与设置中心共用的 CJK 字族表（`lfFaceName` ↔ 显示名）。
+pub mod font_catalog;
+
+/// 操作系统版本识别与「任务栏样式」能力判定（Win11 XAML 任务栏）。
+pub mod platform;
+
 pub type BOOL = i32;
 pub type DWORD = u32;
 pub type UINT = u32;
@@ -635,6 +641,9 @@ extern "system" {
 #[link(name = "kernel32")]
 extern "system" {
     pub fn GetModuleHandleW(name: *const u16) -> HINSTANCE;
+    /// `FARPROC` as an integer; callers transmute it to the exact signature.
+    /// Used for `RtlGetVersion`, which has no import library in the plain SDK.
+    pub fn GetProcAddress(module: HINSTANCE, proc_name: *const u8) -> usize;
     pub fn GetCurrentProcessId() -> DWORD;
     pub fn Sleep(ms: DWORD);
     pub fn GetTickCount64() -> u64;
@@ -729,7 +738,14 @@ pub fn apps_use_light_theme() -> bool {
     unsafe {
         let path = wide("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize");
         let mut key: isize = 0;
-        if RegOpenKeyExW(HKEY_CURRENT_USER, path.as_ptr(), 0, KEY_QUERY_VALUE, &mut key) != 0 {
+        if RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            path.as_ptr(),
+            0,
+            KEY_QUERY_VALUE,
+            &mut key,
+        ) != 0
+        {
             return true;
         }
         let mut value: u32 = 1;
@@ -760,7 +776,14 @@ pub fn reg_read_string(path: &str, name: &str) -> Option<String> {
     unsafe {
         let sub = wide(path);
         let mut key: isize = 0;
-        if RegOpenKeyExW(HKEY_CURRENT_USER, sub.as_ptr(), 0, KEY_QUERY_VALUE, &mut key) != 0 {
+        if RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            sub.as_ptr(),
+            0,
+            KEY_QUERY_VALUE,
+            &mut key,
+        ) != 0
+        {
             return None;
         }
 
@@ -840,7 +863,11 @@ pub fn reg_write_string(path: &str, name: &str, value: &str) -> Result<(), i32> 
             bytes,
         );
         RegCloseKey(key);
-        if rc == 0 { Ok(()) } else { Err(rc) }
+        if rc == 0 {
+            Ok(())
+        } else {
+            Err(rc)
+        }
     }
 }
 
@@ -849,7 +876,14 @@ pub fn reg_read_u32(path: &str, name: &str) -> Option<u32> {
     unsafe {
         let sub = wide(path);
         let mut key: isize = 0;
-        if RegOpenKeyExW(HKEY_CURRENT_USER, sub.as_ptr(), 0, KEY_QUERY_VALUE, &mut key) != 0 {
+        if RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            sub.as_ptr(),
+            0,
+            KEY_QUERY_VALUE,
+            &mut key,
+        ) != 0
+        {
             return None;
         }
         let value = wide(name);
@@ -923,8 +957,7 @@ pub fn reg_write_u32(path: &str, name: &str, value: u32) -> Result<(), i32> {
 // registry value keeps Explorer's own menu in sync.
 // ---------------------------------------------------------------------------
 
-const EXPLORER_ADVANCED_KEY: &str =
-    r"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced";
+const EXPLORER_ADVANCED_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced";
 const WM_COMMAND: u32 = 0x0111;
 const TOGGLE_DESKTOP_ICONS: usize = 0x7402;
 const WM_SETTINGCHANGE: u32 = 0x001A;
@@ -1028,8 +1061,12 @@ pub fn desktop_icons_hidden() -> Option<bool> {
 }
 
 fn write_hide_icons(hidden: bool) -> Result<(), String> {
-    reg_write_u32(EXPLORER_ADVANCED_KEY, "HideIcons", if hidden { 1 } else { 0 })
-        .map_err(|e| format!("写入 HideIcons 失败：{e}"))
+    reg_write_u32(
+        EXPLORER_ADVANCED_KEY,
+        "HideIcons",
+        if hidden { 1 } else { 0 },
+    )
+    .map_err(|e| format!("写入 HideIcons 失败：{e}"))
 }
 
 fn notify_shell_icons_changed() {
@@ -1172,7 +1209,10 @@ pub fn wide(s: &str) -> Vec<u16> {
 /// path than the one the user selected.
 pub fn wide_path(p: &std::path::Path) -> Vec<u16> {
     use std::os::windows::ffi::OsStrExt;
-    p.as_os_str().encode_wide().chain(core::iter::once(0)).collect()
+    p.as_os_str()
+        .encode_wide()
+        .chain(core::iter::once(0))
+        .collect()
 }
 
 pub fn rect_w(rc: &RECT) -> i32 {

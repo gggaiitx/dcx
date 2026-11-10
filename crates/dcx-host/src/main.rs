@@ -63,11 +63,7 @@ pub(crate) static QUIT: std::sync::atomic::AtomicBool = std::sync::atomic::Atomi
 /// into `%LOCALAPPDATA%\dcx\panic.log` so a silent exit is still explainable.
 fn install_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
-        let text = format!(
-            "{} [dcx-host] PANIC: {}",
-            boot::stamp_now(),
-            info
-        );
+        let text = format!("{} [dcx-host] PANIC: {}", boot::stamp_now(), info);
         eprintln!("{text}");
         let mut path = boot::log_path();
         path.set_file_name("panic.log");
@@ -134,10 +130,24 @@ fn main() {
         _ => None,
     };
 
+    let style_ok = dcx_win32::platform::taskbar_style_supported();
+    println!("platform : {}", dcx_win32::platform::describe());
+    println!(
+        "  taskbar style: {}",
+        if style_ok {
+            "enabled (XAML taskbar)"
+        } else {
+            "DISABLED — no XAML taskbar on this OS; injection watchdog skipped"
+        }
+    );
+    if !style_ok {
+        println!("  reason : {}", dcx_win32::platform::reason());
+    }
+
     println!("DCX desktop enhancement host");
     println!("  corners  : uniform window corners");
-    println!("  settings : taskbar shape / icon size / spacing (tray UI)");
-    println!("  engine   : auto-injected into Explorer.exe");
+    println!("  settings : one window for the platform and every standalone app");
+    println!("  engine   : auto-injected into Explorer.exe (Win11 only)");
 
     match selftest_ms {
         Some(ms) => {

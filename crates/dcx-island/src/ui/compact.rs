@@ -11,6 +11,22 @@ use egui::{Align2, Color32, FontId, Pos2, Rect, Stroke, Vec2};
 use super::theme::Palette;
 use super::widgets::{self, Glyph};
 
+/// What the headline text beside the clock *is*. It only picks the leading
+/// icon, but that icon is the whole message: a bell in front of a song title
+/// reads as "an unread notification about music", and the same bell in front of
+/// a reminder is exactly right.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Headline {
+    /// Nothing to show; the text is empty and no icon is drawn.
+    None,
+    /// A reminder fired for a task.
+    Reminder,
+    /// A push card from the local API.
+    Card,
+    /// The track that is playing.
+    Media,
+}
+
 pub struct CapsuleState {
     pub time: String,
     pub weekday: String,
@@ -18,11 +34,13 @@ pub struct CapsuleState {
     pub mem: Option<f32>,
     /// Down/up rate in bytes per second, already summed for display.
     pub net: Option<(f64, f64)>,
-    /// Only ever filled by a running reminder. The capsule used to show the
-    /// task marked "current" all day, which made an idle island read as a
-    /// notification that never went away; the task list is one click away in
-    /// the panel, and the capsule is for the time.
+    /// Only ever filled by a running reminder, a live push card, or a playing
+    /// track. The capsule used to show the task marked "current" all day, which
+    /// made an idle island read as a notification that never went away; the task
+    /// list is one click away in the panel, and the capsule is for the time.
     pub task: Option<String>,
+    /// What `task` came from — decides the icon in front of it.
+    pub headline: Headline,
     pub unread: usize,
     pub hovered: bool,
     pub open: bool,
@@ -331,33 +349,40 @@ pub fn draw(
         }
     }
 
-    // -- current task (reminders only) --------------------------------------
+    // -- current task / card / track ----------------------------------------
     if let Some(task) = &st.task {
         let avail = (right - left).max(0.0);
         if avail > 40.0 {
-            // Motion, not colour, is what says "ringing": the bell swings twice
-            // per breath and settles. The amplitude is deliberately large — at
-            // 2.4 px it read as a rendering wobble rather than as an alert, and
-            // the capsule no longer has a ring to fall back on.
+            // The leading mark has to name the kind of headline: a bell means
+            // "something wants your attention", a note means "this is what is
+            // playing". Both used to get the bell, so a song title sat behind
+            // an alert icon and the row read as an unread notification.
+            let (icon, icon_size) = match st.headline {
+                Headline::Media => (Glyph::Note, 12.5),
+                _ => (Glyph::Bell, 11.5),
+            };
+            // Motion is reserved for alerts. A note that shakes says the music
+            // is broken; only the bell swings, and only while it is ringing.
+            let ringing = flash > 0.01 && st.headline != Headline::Media;
             let phase = (st.flash_t / 0.85).fract();
-            let swing = if flash > 0.01 {
+            let swing = if ringing {
                 4.8 * flash
                     * (-4.5 * phase).exp()
                     * (phase * std::f32::consts::TAU * 2.0).sin()
             } else {
                 0.0
             };
-            let bell_c = Pos2::new(left + 6.0 + swing, mid_y);
-            if flash > 0.01 {
+            let icon_c = Pos2::new(left + 6.0 + swing, mid_y);
+            if ringing {
                 // Halo behind the bell instead of a wash over the whole pill:
                 // lighting one end says where the alert comes from without
                 // tinting the clock and the text beside it.
                 for (r, a) in [(12.0_f32, 0.08_f32), (8.5, 0.11), (5.5, 0.16)] {
                     ui.painter()
-                        .circle_filled(bell_c, r, with_alpha(p.accent, a * flash));
+                        .circle_filled(icon_c, r, with_alpha(p.accent, a * flash));
                 }
             }
-            widgets::glyph(ui, bell_c, 11.5, Glyph::Bell, p.accent);
+            widgets::glyph(ui, icon_c, icon_size, icon, p.accent);
             let text_left = left + 16.0;
             // The title sways a little with the bell, so the movement reads as
             // the whole alert shaking instead of one small icon twitching.

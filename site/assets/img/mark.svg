@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="DCX">
+  <defs>
+    <linearGradient id="tile" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="256" y2="256">
+      <stop offset="0" stop-color="#1F9490"/>
+      <stop offset=".5" stop-color="#0A6E72"/>
+      <stop offset="1" stop-color="#04363F"/>
+    </linearGradient>
+    <radialGradient id="bloom" gradientUnits="userSpaceOnUse" cx="76.8" cy="56.32" r="220.16">
+      <stop offset="0" stop-color="#9CF6E6" stop-opacity=".38"/>
+      <stop offset="1" stop-color="#9CF6E6" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="depth" gradientUnits="userSpaceOnUse" x1="0" y1="13.31" x2="0" y2="242.69">
+      <stop offset=".55" stop-color="#000" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000" stop-opacity=".30"/>
+    </linearGradient>
+    <linearGradient id="tubeA" gradientUnits="userSpaceOnUse"
+        x1="179.2" y1="179.2"
+        x2="76.8" y2="76.8">
+      <stop offset="0" stop-color="#F3F5FC"/>
+      <stop offset=".55" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#FFFFFF"/>
+    </linearGradient>
+    <linearGradient id="tubeB" gradientUnits="userSpaceOnUse"
+        x1="179.2" y1="76.8"
+        x2="76.8" y2="179.2">
+      <stop offset="0" stop-color="#F3F5FC"/>
+      <stop offset=".55" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#FFFFFF"/>
+    </linearGradient>
+    <mask id="weave">
+      <rect width="256" height="256" fill="#fff"/>
+      <circle cx="128" cy="128" r="42.46" fill="#000"/>
+    </mask>
+    <filter id="msoft" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="10.32"/>
+    </filter>
+  </defs>
+  <clipPath id="tclip"><rect x="13.31" y="13.31" width="229.38" height="229.38" rx="52.3"/></clipPath>
+  <g clip-path="url(#tclip)">
+    <rect x="13.31" y="13.31" width="229.38" height="229.38" rx="52.3" fill="url(#tile)"/>
+    <rect x="13.31" y="13.31" width="229.38" height="229.38" rx="52.3" fill="url(#bloom)"/>
+    <rect x="13.31" y="13.31" width="229.38" height="229.38" rx="52.3" fill="url(#depth)"/>
+  </g>
+  <g filter="url(#msoft)" opacity=".20" transform="translate(0 3.97)">    <g transform="rotate(45 128 128)"><rect x="56.89" y="108.16" width="142.21" height="39.68" rx="19.84" fill="#100C24"/></g>
+    <g mask="url(#weave)" transform="rotate(-45 128 128)"><rect x="56.89" y="108.16" width="142.21" height="39.68" rx="19.84" fill="#100C24"/></g>
+</g>
+    <g mask="url(#weave)" transform="rotate(-45 128 128)"><rect x="56.89" y="108.16" width="142.21" height="39.68" rx="19.84" fill="url(#tubeB)"/></g>
+    <g transform="rotate(45 128 128)"><rect x="56.89" y="108.16" width="142.21" height="39.68" rx="19.84" fill="url(#tubeA)"/></g>
+</svg>

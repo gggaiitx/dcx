@@ -13,6 +13,7 @@
 //! 配置同样是「文件即 IPC」：设置窗口写 `apps.toml`，本模块读；应用本身
 //! 读自己的配置文件（收纳盒读 `organizer.toml`），两者不互相调用。
 
+use dcx_win32::config_file;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -20,7 +21,6 @@ use std::process::{Child, Command};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use dcx_win32::config_file;
 
 /// 一个独立应用在平台里的登记信息。
 pub struct AppEntry {
@@ -59,6 +59,19 @@ static REGISTRY: &[AppEntry] = &[
         // 必须与 dcx-search/src/app.rs::WIN_TITLE 逐字一致。
         window_title: "文件检索",
         description: "全盘文件名与内容检索，由全局热键唤起",
+        default_on: false,
+    },
+    AppEntry {
+        id: "snip",
+        name: "桌面快照",
+        exe: "dcx-snip.exe",
+        // Must match dcx-snip/src/app.rs::WIN_TITLE byte for byte: the host
+        // finds a hand-started instance by this title and stops it with
+        // WM_CLOSE. A message-only window would be invisible to FindWindowW.
+        window_title: "桌面快照",
+        description: "冻结画面框选、矢量标注、序号标记与滚动拼接长截图",
+        // Same policy as search / island: no resident process, no idle memory.
+        // The global hotkey launches it on demand and it exits when idle.
         default_on: false,
     },
     AppEntry {
@@ -157,12 +170,8 @@ pub fn is_enabled(id: &str) -> bool {
 /// 设置中心的开关：写文件 + 立刻起／停进程，不要求重启平台。
 pub fn set_enabled(id: &str, on: bool) -> Result<(), String> {
     let mut cfg = load();
-    cfg.apps.insert(
-        id.to_owned(),
-        AppState {
-            enabled: Some(on),
-        },
-    );
+    cfg.apps
+        .insert(id.to_owned(), AppState { enabled: Some(on) });
     save(&cfg)?;
     if on {
         launch(id).map_err(|e| format!("启动应用失败：{e}"))?;
@@ -201,14 +210,14 @@ fn close_window(title: &str) {
 pub fn is_running(id: &str) -> bool {
     if let Ok(mut children) = CHILDREN.lock() {
         // `try_wait` needs &mut Child, so `retain_mut` (not `retain`).
-        children.retain_mut(|c| {
-            c.id != id || matches!(c.child.try_wait(), Ok(None) | Err(_))
-        });
+        children.retain_mut(|c| c.id != id || matches!(c.child.try_wait(), Ok(None) | Err(_)));
         if children.iter().any(|c| c.id == id) {
             return true;
         }
     }
-    find(id).map(|e| window(e.window_title) != 0).unwrap_or(false)
+    find(id)
+        .map(|e| window(e.window_title) != 0)
+        .unwrap_or(false)
 }
 
 fn exe_path(entry: &AppEntry) -> Result<PathBuf, String> {
@@ -231,7 +240,17 @@ pub fn launch(id: &str) -> Result<(), String> {
     if is_running(id) {
         return Ok(());
     }
-    let child = Command::new(exe_path(entry)?)
+    let mut cmd = Command::new(exe_path(entry)?);
+    // The snapshot app shows its overlay the moment it starts. Every
+    // host-initiated start (boot, watchdog, settings toggle) is about
+    // residency, not a shot: a real request arrives through `snip_show`.
+    // Without this a reboot — or a crash-restart — popped a full-screen
+    // overlay on its own, and the hotkey's follow-up marker cancelled the
+    // shot it had just opened.
+    if id == "snip" {
+        cmd.arg("--no-shot");
+    }
+    let child = cmd
         .spawn()
         .map_err(|e| format!("无法启动 {}：{e}", entry.exe))?;
     if let Ok(mut children) = CHILDREN.lock() {

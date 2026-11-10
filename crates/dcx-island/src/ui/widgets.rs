@@ -246,6 +246,8 @@ pub enum Glyph {
     Collect,
     /// Magnifier — the search tab.
     Search,
+    /// Eighth note — what is playing, and the cover's stand-in.
+    Note,
 }
 
 pub fn glyph(ui: &Ui, center: Pos2, size: f32, which: Glyph, color: Color32) {
@@ -542,6 +544,26 @@ fn draw_glyph(
                 c + Vec2::new(s * 0.3, s * 0.3),
                 c + Vec2::new(s * 0.85, s * 0.85),
             );
+        }
+        Glyph::Note => {
+            // Filled head + straight stem + one flag. An outlined head at 11 pt
+            // collapses into a dot, and a two-note beam turns into a smudge; a
+            // single eighth note keeps its silhouette at capsule size.
+            let head = c + Vec2::new(-s * 0.3, s * 0.5);
+            p.add(Shape::circle_filled(head, s * 0.34, color));
+            let stem_x = head.x + s * 0.34;
+            line(
+                Pos2::new(stem_x, head.y),
+                Pos2::new(stem_x, c.y - s * 0.88),
+            );
+            p.add(Shape::line(
+                vec![
+                    Pos2::new(stem_x, c.y - s * 0.88),
+                    Pos2::new(stem_x + s * 0.52, c.y - s * 0.54),
+                    Pos2::new(stem_x + s * 0.44, c.y - s * 0.06),
+                ],
+                stroke,
+            ));
         }
     }
 }

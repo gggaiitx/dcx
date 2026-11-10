@@ -104,7 +104,10 @@ mod tests {
         // 否则登录瞬间会弹设置窗口。
         let cmd = command().expect("current_exe");
         assert!(cmd.starts_with('"'), "命令行要以引号开头: {cmd}");
-        assert!(cmd.contains(&format!("\"{ARGS}")), "要带 --no-settings: {cmd}");
+        assert!(
+            cmd.contains(&format!("\"{ARGS}")),
+            "要带 --no-settings: {cmd}"
+        );
     }
 
     #[test]
@@ -112,7 +115,9 @@ mod tests {
         let ours = command().expect("current_exe");
         assert!(points_at_us(&ours));
         assert!(points_at_us(&ours.to_uppercase()), "Windows 路径不分大小写");
-        assert!(!points_at_us(r#""C:\Somewhere\Else\dcx-host.exe" --no-settings"#));
+        assert!(!points_at_us(
+            r#""C:\Somewhere\Else\dcx-host.exe" --no-settings"#
+        ));
         // Our path only appearing *inside* the command (as an argument, not as
         // the executable) must not read as "enabled": the old substring test
         // said ON while nothing started at logon.

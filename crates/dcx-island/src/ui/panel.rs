@@ -254,7 +254,7 @@ fn draw_media_row(
         }
         None => {
             widgets::round_rect(ui, cov, 6.0, with_alpha(p.surface, 0.9), Stroke::NONE);
-            widgets::glyph(ui, cov.center(), 14.0, Glyph::Pulse, p.text_faint);
+            widgets::glyph(ui, cov.center(), 14.0, Glyph::Note, p.text_faint);
         }
     }
 
@@ -369,7 +369,11 @@ fn draw_media_row(
 
 fn fmt_time(secs: f64) -> String {
     let s = secs.max(0.0) as u64;
-    format!("{}:{:02}", s / 60, s % 60)
+    if s >= 3600 {
+        format!("{}:{:02}:{:02}", s / 3600, (s % 3600) / 60, s % 60)
+    } else {
+        format!("{}:{:02}", s / 60, s % 60)
+    }
 }
 
 /// Snapshot age in words: "刚刚" / "12 分钟前" / "3 小时前" / "2 天前".

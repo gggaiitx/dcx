@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>操作文档 — DCX</title>
+<meta name="description" content="DCX 操作文档：安装与启动、托盘与设置中心、任务栏主题、桌面收纳盒、文件检索、桌面信息岛、快捷键、配置文件与故障排查。">
+<meta property="og:title" content="DCX 操作文档">
+<meta property="og:description" content="从解压到恢复任务栏：五个模块的日常操作、配置文件与故障排查。">
+<meta name="theme-color" content="#f4f7f7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0a1011" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="assets/img/mark.svg" type="image/svg+xml">
+<link rel="icon" href="assets/img/icon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="assets/img/icon-256.png">
+<script>
+  (function () {
+    try {
+      var q = new URLSearchParams(location.search).get("theme");
+      var s = localStorage.getItem("dcx-theme");
+      var t = (q === "light" || q === "dark") ? q : (s === "light" || s === "dark") ? s
+        : (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+      document.documentElement.setAttribute("data-theme", t);
+      document.documentElement.style.colorScheme = t;
+    } catch (e) {
+      document.documentElement.setAttribute("data-theme", "light");
+    }
+  })();
+</script>
+<link rel="stylesheet" href="assets/css/site.css?v=20261108i">
+</head>
+<body>
+<div class="scroll-progress" data-progress aria-hidden="true"></div>
+<a class="skip-link" href="#main">跳到主要内容</a>
+
+<header class="site-header">
+  <div class="header-inner">
+    <a class="brand" href="index.html" aria-label="DCX 首页">
+      <img src="assets/img/mark.svg" alt="" width="28" height="28">
+      <span class="brand-name">DCX</span>
+      <span class="brand-ver">v0.1.3</span>
+    </a>
+    <nav class="site-nav" aria-label="主导航">
+      <a href="index.html#features">功能</a>
+      <a href="docs.html" class="is-active" aria-current="page">操作文档</a>
+      <a href="api.html">接入文档</a>
+      <a href="index.html#download">下载</a>
+    </nav>
+    <div class="header-actions">
+      <a class="icon-btn" href="https://github.com/gggaiitx/dcx" target="_blank" rel="noopener" aria-label="GitHub 仓库">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2C6.48 2 2 6.58 2 12.25c0 4.53 2.87 8.37 6.84 9.73.5.1.68-.22.68-.49 0-.24-.01-1.05-.01-1.9-2.78.62-3.37-1.21-3.37-1.21-.45-1.18-1.11-1.49-1.11-1.49-.91-.64.07-.62.07-.62 1 .07 1.53 1.06 1.53 1.06.89 1.57 2.34 1.12 2.91.85.09-.66.35-1.12.63-1.37-2.22-.26-4.56-1.14-4.56-5.07 0-1.12.39-2.03 1.03-2.75-.1-.26-.45-1.3.1-2.71 0 0 .84-.28 2.75 1.05a9.36 9.36 0 0 1 5 0c1.91-1.33 2.75-1.05 2.75-1.05.55 1.41.2 2.45.1 2.71.64.72 1.03 1.63 1.03 2.75 0 3.94-2.34 4.8-4.57 5.06.36.32.68.94.68 1.9 0 1.37-.01 2.47-.01 2.81 0 .27.18.6.69.49A10.02 10.02 0 0 0 22 12.25C22 6.58 17.52 2 12 2Z"/></svg>
+      </a>
+      <button class="theme-toggle" type="button" data-theme-toggle aria-label="切换主题" aria-pressed="false">
+        <svg class="i-sun" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.6v2.2M12 19.2v2.2M2.6 12h2.2M19.2 12h2.2M5.3 5.3l1.6 1.6M17.1 17.1l1.6 1.6M18.7 5.3l-1.6 1.6M6.9 17.1l-1.6 1.6"/></svg>
+        <svg class="i-moon" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.5 14.3A8.5 8.5 0 1 1 9.7 3.5a7 7 0 0 0 10.8 10.8Z"/></svg>
+      </button>
+      <button class="icon-btn menu-toggle" type="button" data-menu-toggle aria-label="打开导航" aria-expanded="false" aria-controls="mobileNav">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+      </button>
+    </div>
+  </div>
+</header>
+
+<div class="mobile-nav" id="mobileNav" data-mobile-nav>
+  <a href="index.html#features">功能</a>
+  <a href="docs.html" class="is-active">操作文档</a>
+  <a href="api.html">接入文档</a>
+  <a href="index.html#download">下载</a>
+  <a href="https://github.com/gggaiitx/dcx" target="_blank" rel="noopener">GitHub 仓库</a>
+</div>
+
+<main id="main">
+  <div class="doc-hero">
+    <div class="wrap">
+      <nav class="breadcrumb" aria-label="面包屑">
+        <a href="index.html">首页</a>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>
+        <span>操作文档</span>
+      </nav>
+      <h1>操作文档</h1>
+      <p class="lede">从解压到恢复任务栏：安装与启动、五个模块的日常操作、配置文件与故障排查。对应 DCX v0.1.3，Windows 11 x64。</p>
+      <div class="doc-meta">
+        <span class="pill pill-accent">v0.1.3</span>
+        <span class="pill">Windows 11 x64</span>
+        <span class="pill">无需安装</span>
+        <span class="pill">约 15 分钟</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="wrap doc-shell">
+    <aside class="doc-side" aria-label="文档目录">
+      <button class="side-toggle" type="button" data-side-toggle aria-expanded="true">
+        <span>本页目录</span>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+      </button>
+      <div class="side-body">
+      <div class="side-group">
+        <p class="side-title">开始</p>
+        <nav class="side-nav">
+          <a href="#install">安装与启动</a>
+          <a href="#settings">托盘与设置中心</a>
+        </nav>
+      </div>
+      <div class="side-group">
+        <h3>模块</h3>
+        <nav class="side-nav">
+          <a href="#taskbar">任务栏主题</a>
+          <a href="#box">桌面收纳盒</a>
+          <a href="#search">文件检索</a>
+          <a href="#island">桌面信息岛</a>
+          <a href="#snip">桌面快照</a>
+        </nav>
+      </div>
+      <div class="side-group">
+        <h3>参考</h3>
+        <nav class="side-nav">
+          <a href="#hotkeys">快捷键</a>
+          <a href="#config">配置文件</a>
+          <a href="#troubleshoot">故障排查</a>
+          <a href="#uninstall">卸载与恢复</a>
+        </nav>
+      </div>
+      </div>
+      <p class="side-foot">最后更新 2026-11-10<br>对应 DCX v0.1.3</p>
+    </aside>
+
+    <div class="doc-main">
+
+      <!-- 01 安装 -->
+      <section class="doc-section" id="install">
+        <h2><span class="num">01</span>安装与启动<a class="anchor" href="#install" aria-label="链接到本节">#</a></h2>
+        <p>DCX 是便携应用：从 <a href="index.html#download">官网下载页</a> 或 <a href="https://github.com/gggaiitx/dcx/releases/latest" target="_blank" rel="noopener">GitHub Releases</a> 获取压缩包，解压、运行，没有安装器，也不需要写入系统目录。设置与索引全部保存在 <code class="code-inline">%LOCALAPPDATA%\dcx\</code>。</p>
+
+        <div class="callout">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+          <p>请解压<strong>整个 DCX 文件夹</strong>，不要只取出 exe。宿主按自身所在目录查找五个 exe、<code class="code-inline">dcx_engine.dll</code> 与 <code class="code-inline">wh_injector.exe</code>，缺一个就会出现「已停止」或注入失败。</p>
+        </div>
+
+        <h3>启动方式</h3>
+        <div class="table-wrap">
+          <table class="tbl">
+            <thead><tr><th>方式</th><th>行为</th><th>适用场景</th></tr></thead>
+            <tbody>
+              <tr><td><code>start-dcx.bat</code></td><td>只留托盘，不弹设置窗口</td><td>日常使用、开机自启</td></tr>
+              <tr><td><code>dcx-host.exe</code></td><td>默认带设置窗口启动</td><td>第一次配置</td></tr>
+              <tr><td><code>dcx-host.exe --no-settings</code></td><td>不带设置窗口（自启项就是这条）</td><td>登录后静默运行</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>分发包内容</h3>
+        <div class="table-wrap">
+          <table class="tbl">
+            <thead><tr><th>文件</th><th>作用</th></tr></thead>
+            <tbody>
+              <tr><td><code>dcx-host.exe</code></td><td>平台：托盘、注入看门狗、应用生命周期、全局热键、唯一设置中心</td></tr>
+              <tr><td><code>dcx-box.exe</code></td><td>桌面收纳盒（独立进程）</td></tr>
+              <tr><td><code>dcx-search.exe</code></td><td>文件检索（默认关闭，热键按需拉起）</td></tr>
+              <tr><td><code>dcx-island.exe</code></td><td>桌面信息岛（默认关闭，设置中心开启）</td></tr>
+              <tr><td><code>dcx-snip.exe</code></td><td>桌面快照（默认关闭，热键按需拉起）</td></tr>
+              <tr><td><code>dcx_engine.dll</code></td><td>注入 Explorer 的任务栏主题引擎</td></tr>
+              <tr><td><code>wh_injector.exe</code></td><td>外部注入器，宿主启动时调用</td></tr>
+              <tr><td><code>stop-dcx.bat</code> / <code>stop-dcx-all.bat</code></td><td>停止全部 DCX 进程；后者用于替换二进制前释放占用</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>首次运行</h3>
+        <p>首次运行可能被 SmartScreen 提示，因为构建与发布包都没有签名。选择「更多信息 → 仍要运行」即可。请只从官网下载页或本仓库的 Releases 下载，并用 <code class="code-inline">SHA256SUMS.txt</code> 校验：</p>
+        <div class="code" data-lang="PowerShell">
+<pre>Get-FileHash .\DCX-v0.1.3-win64.zip -Algorithm SHA256</pre>
+        </div>
+        <p>系统要求是 <strong>Windows 11 x64</strong>（任务栏样式）。其它独立功能在 Windows 10 及更早版本同样可用：平台启动时识别版本，非 Win11 会停用整个任务栏样式页、跳过引擎注入与轮询。32 位进程不会加载 64 位引擎，但任务栏本身是 64 位 Explorer，不受影响。</p>
+      </section>
+
+      <!-- 02 设置中心 -->
+      <section class="doc-section" id="settings">
+        <h2><span class="num">02</span>托盘与设置中心<a class="anchor" href="#settings">#</a></h2>
+        <p>宿主启动后会在通知区放一个图标。<strong>左键单击</strong>打开设置窗口，<strong>右键</strong>才弹菜单（设置 / 桌面整理 / 退出并恢复任务栏 / 退出）。设置窗口已经打开时，再次左键只会把它提到前台，不会开第二个。</p>
+
+        <h3>设置中心结构</h3>
+        <p>左侧导航固定六项，右侧是页标题与卡片。所有改动<strong>改完即生效</strong>：防抖 220 ms 后原子写入，引擎约 1 秒内热重载，没有「保存」按钮。</p>
+        <div class="table-wrap">
+          <table class="tbl">
+            <thead><tr><th>页面</th><th>内容</th></tr></thead>
+            <tbody>
+              <tr><td>任务栏样式</td><td>外观（形状、缩放、间距、悬停）、尺寸、行为（自动隐藏、开机自启）</td></tr>
+              <tr><td>桌面整理</td><td>收纳盒启停与热键、收纳库目录、分类规则；顶部是「独立应用」状态清单</td></tr>
+              <tr><td>文件检索</td><td>常驻开关、热键、检索范围、内容检索策略</td></tr>
+              <tr><td>桌面信息岛</td><td>唯一启停开关、时钟与性能、任务与剪贴板、通知渠道、出站凭据、能力边界</td></tr>
+              <tr><td>截图与标注</td><td>启停与热键、标注默认值、保存目录与输出格式、截图圆角</td></tr>
+              <tr><td>关于</td><td>运行状态、平台行为、恢复并退出</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>状态行</h3>
+        <p>窗口底部如实显示三种状态：</p>
+        <ul>
+          <li><strong>已写入 · 引擎约 1 秒内重载</strong> —— 引擎已注入，改动会生效。</li>
+          <li><strong>已写入配置 · 引擎未注入</strong> —— 文件写成功，但任务栏还没被接管；点「重新应用」补注入。</li>
+          <li><strong>失败原因</strong> —— 写入失败或注入失败，最常见的是宿主目录里没有 <code class="code-inline">wh_injector.exe</code>。</li>
+        </ul>
+
+        <h3>关闭窗口 ≠ 退出程序</h3>
+        <p>点右上角 <strong>×</strong> 只关闭设置窗口：宿主、托盘、看门狗与已注入的引擎都还在，任务栏保持当前外观。要真正退出并恢复任务栏，用托盘菜单的「退出并恢复任务栏」，或设置 → 关于 → 退出。</p>
+        <div class="callout warn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4 3 20h18z"/><path d="M12 10v4M12 17h.01"/></svg>
+          <p>设置窗口里的恢复按钮是<strong>行内二次确认</strong>：点一次变红为「确认恢复」，5 秒内再点才执行。执行时会结束并重启 <code class="code-inline">explorer.exe</code>，这是唯一能让任务栏外观回到系统默认的方式。</p>
+        </div>
+      </section>
+
+      <!-- 03 任务栏 -->
+      <section class="doc-section" id="taskbar">
+        <h2><span class="num">03</span>任务栏主题<a class="anchor" href="#taskbar" aria-label="链接到本节">#</a></h2>
+        <p><code class="code-inline">dcx_engine.dll</code> 注入 <code class="code-inline">explorer.exe</code>，把主题规则写进任务栏 XAML。设置中心写 <code class="code-inline">settings.toml</code>，引擎每秒轮询修改时间并重建规则——不需要重启 Explorer。</p>
+
+        <h3>可调项</h3>
+        <div class="table-wrap">
+          <table class="tbl">
+            <thead><tr><th>设置</th><th>取值</th><th>效果</th></tr></thead>
+            <tbody>
+              <tr><td>形状</td><td>胶囊 / 卡片</td><td>胶囊两端大圆角；卡片为小圆角矩形。切换即时生效</td></tr>
+              <tr><td>图标缩放</td><td>50–125%</td><td>只改渲染缩放，不隐含任务栏高度</td></tr>
+              <tr><td>图标间距</td><td>−6…+6 px</td><td>每个任务按钮的左右外边距；负数收紧</td></tr>
+              <tr><td>悬停</td><td>Background / Dock</td><td>只高亮，或按距离放大并推开相邻图标</td></tr>
+              <tr><td>任务栏高度</td><td>30–44 DIP</td><td>整条任务栏（dock + 托盘）同步伸缩，不做裁剪</td></tr>
+              <tr><td>自动隐藏</td><td>开 / 关</td><td>走 shell 自身的 <code>SHAppBarMessage</code>，不是 <code>settings.toml</code> 键</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>为什么改了没反应</h3>
+        <ol>
+          <li>看设置窗口底部状态行：如果是「引擎未注入」，点「重新应用」。它会先重写 <code class="code-inline">settings.toml</code>（内容没变也会刷新修改时间），再跑一次注入扫描。</li>
+          <li>确认 <code class="code-inline">wh_injector.exe</code> 与 <code class="code-inline">dcx_engine.dll</code> 都在 <code class="code-inline">dcx-host.exe</code> 同目录；开发环境可用 <code class="code-inline">DCX_INJECTOR</code> / <code class="code-inline">DCX_ENGINE_DLL</code> 指到别处。</li>
+          <li>Explorer 重启后主题会丢，这是正常的——宿主看门狗会在约 5 秒内重新注入。</li>
+        </ol>
+
+        <div class="callout">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+          <p>删除或重置 <code class="code-inline">settings.toml</code> <strong>不会</strong>把任务栏恢复成系统默认：缺省值本身也是一套主题参数。要恢复外观只能用「退出并恢复任务栏」。</p>
+        </div>
+
+        <p>引擎只处理主任务栏。多任务栏与第三方任务栏壳没有适配；Windows 大版本更新后，XAML 视觉树可能变化，需要重新核对元素路径。</p>
+      </section>
+
+      <!-- 04 收纳盒 -->
+      <section class="doc-section" id="box">
+        <h2><span class="num">04</span>桌面收纳盒<a class="anchor" href="#box" aria-label="链接到本节">#</a></h2>
+        <p>收纳是<strong>物理移动文件</strong>，不是隐藏图标。桌面仍由 Explorer 原生管理；文件被收进盒子时，它从桌面移到收纳库（默认 <code class="code-inline">文档\dcx收纳</code>），桌面图标随之消失，文件本身不删除。</p>
+
+        <h3>打开与收起</h3>
+        <ul>
+          <li>全局热键 <kbd>Alt</kbd> + <kbd>D</kbd> 唤出 / 收起。热键可在「设置 → 桌面整理」修改或关闭。</li>
+          <li>任务栏上的收纳盒按钮是独立窗口，点一下打开弹层。</li>
+          <li>底部的「收纳」按钮：<strong>单击</strong>复制收纳库路径，<strong>双击</strong>打开收纳库文件夹。</li>
+        </ul>
+
+        <h3>收纳与放回</h3>
+        <ol>
+          <li>把桌面文件拖进盒子窗口，或拖到信息岛胶囊上，文件会被移动到收纳库。</li>
+          <li>在盒子里把文件拖回桌面，即恢复到桌面根目录。</li>
+          <li>整个过程不修改文件属性，也不绘制桌面层；没有「幽灵图标」需要额外清理。</li>
+        </ol>
+
+        <h3>分类</h3>
+        <p>分类是收纳库内的<strong>虚拟元数据</strong>，不改变文件内容：</p>
+        <ul>
+          <li>扩展名规则自动归类为文档、图片、压缩包、媒体、应用、其他。</li>
+          <li>手动拖拽或右键菜单可以覆盖自动分类，结果写入 <code class="code-inline">organizer.toml</code> 的 <code class="code-inline">overrides</code>。</li>
+          <li>支持列表 / 网格视图、排序、搜索、文件夹展开、拖放、右键菜单、新建文件夹、重命名与回收站删除。</li>
+        </ul>
+
+        <h3>更换收纳库目录</h3>
+        <p>「设置 → 桌面整理 → 收纳库目录 → 更改…」。确认后会迁移已有文件并重建根目录，<strong>手动分类记录会跟随迁移</strong>。收纳库是普通目录，可以放到其他磁盘。</p>
+
+        <div class="callout warn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4 3 20h18z"/><path d="M12 10v4M12 17h.01"/></svg>
+          <p>收纳库里的文件就是你的原文件。删除收纳库目录等同于删除这些文件；「回收站删除」才会进回收站。</p>
+        </div>
+      </section>
+
+      <!-- 05 文件检索 -->
+      <section class="doc-section" id="search">
+        <h2><span class="num">05</span>文件检索<a class="anchor" href="#search" aria-label="链接到本节">#</a></h2>
+        <p>独立进程 <code class="code-inline">dcx-search.exe</code>，默认关闭：不随平台自启、不常驻、不预建索引。按 <kbd>Alt</kbd> + <kbd>S</kbd> 时宿主才拉起它，索引在后台建立，结果边建边出；关闭窗口进程即退出。</p>
+
+        <h3>三种状态</h3>
+        <div class="table-wrap">
+          <table class="tbl">
+            <thead><tr><th>状态</th><th>进程</th><th>热键</th></tr></thead>
+            <tbody>
+              <tr><td>默认（休眠）</td><td>无</td><td>仍然有效，按下才启动</td></tr>
+              <tr><td>按需</td><td>窗口打开期间存在，索引在后台建</td><td>唤起 / 收起</td></tr>
+              <tr><td>常驻</td><td>在设置页开启「启用文件检索（常驻）」后随平台启动</td><td>只前置窗口</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>界面</h3>
+        <ul>
+          <li><strong>路径</strong>：桌面、此电脑、各固定卷；「自定义路径」需要写进 <code class="code-inline">search.toml</code> 的 <code class="code-inline">scope.custom_roots</code>，重启后出现在下拉里。</li>
+          <li><strong>模式</strong>：文件名（内存索引）或内容（在候选集上流式扫描）。切换不会重建索引。</li>
+          <li><strong>分类</strong>：文件、图片、压缩包、应用程序、视频、音频、其他，与模式正交。</li>
+          <li><strong>结果</strong>：名称、路径、大小、修改时间；名称或路径被截断时，悬停显示完整文本。</li>
+        </ul>
+
+        <h3>查询语法</h3>
+        <div class="table-wrap">
+          <table class="tbl">
+            <thead><tr><th>写法</th><th>含义</th></tr></thead>
+            <tbody>
+              <tr><td><code>*.docx</code></td><td><code>*</code> 匹配任意长度，<code>?</code> 匹配单个字符</td></tr>
+              <tr><td><code>模板 方案</code></td><td>空格表示 AND，两个词都要命中</td></tr>
+              <tr><td><code>ext:pdf 合同</code></td><td>限定扩展名</td></tr>
+              <tr><td><code>path:项目 预算</code></td><td>限定路径中包含的片段</td></tr>
+              <tr><td><code>regex:^2026-\d{2}</code></td><td>按正则匹配（大小写规则随输入变化）</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>内容检索</h3>
+        <p>候选集由名称索引先按作用域、分类、扩展名与大小筛出，再逐个文件流式扫描。默认单文件上限 <strong>2 MiB</strong>、最多 <strong>2000</strong> 条结果、<strong>8 秒</strong>时间预算；超限结果会标记为部分结果，可以按 <kbd>Esc</kbd> 立即取消。二进制与大文件默认跳过，UTF-8 / UTF-16 BOM / GB18030 会按配置尝试。</p>
+
+        <h3>快捷键</h3>
+        <div class="table-wrap">
+          <table class="tbl">
+            <thead><tr><th>按键</th><th>动作</th></tr></thead>
+            <tbody>
+              <tr><td><kbd>Alt</kbd> + <kbd>S</kbd></td><td>唤起 / 收起检索窗口（全局）</td></tr>
+              <tr><td><kbd>Esc</kbd></td><td>内容检索中先取消，再按隐藏窗口</td></tr>
+              <tr><td><kbd>Enter</kbd></td><td>打开选中项</td></tr>
+              <tr><td><kbd>Ctrl</kbd> + <kbd>Enter</kbd></td><td>打开所在文件夹并选中文件</td></tr>
+              <tr><td><kbd>Ctrl</kbd> + <kbd>F</kbd></td><td>聚焦关键词输入框并全选</td></tr>
+              <tr><td><kbd>Ctrl</kbd> + <kbd>1</kbd> / <kbd>2</kbd></td><td>切换 文件名 / 内容 模式</td></tr>
+              <tr><td><kbd>Ctrl</kbd> + <kbd>D</kbd></td><td>展开路径下拉</td></tr>
+              <tr><td><kbd>Ctrl</kbd> + <kbd>C</kbd></td><td>复制选中项完整路径</td></tr>
+              <tr><td><kbd>↑</kbd> <kbd>↓</kbd> <kbd>PgUp</kbd> <kbd>PgDn</kbd></td><td>移动选中项</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- 06 信息岛 -->
+      <section class="doc-section" id="island">
+        <h2><span class="num">06</span>桌面信息岛<a class="anchor" href="#island" aria-label="链接到本节">#</a></h2>
+        <p>独立进程 <code class="code-inline">dcx-island.exe</code>，默认关闭。在「设置 → 桌面信息岛」打开主开关后，屏幕顶部居中显示常驻胶囊；它不占任务栏槽位，也不依赖引擎的槽位预留协议。</p>
+
+        <h3>胶囊与面板是同一张卡</h3>
+        <ul>
+          <li>紧凑态显示时间 / 星期 / 日期、性能指标与未读角标；播放媒体且没有提醒、没有活跃卡片时显示曲名。</li>
+          <li>点击胶囊或按 <kbd>Alt</kbd> + <kbd>I</kbd> 展开。胶囊那一行就是面板的标题栏，展开后点它不会收起。</li>
+          <li>收起用右上角 <kbd>✕</kbd> 或 <kbd>Esc</kbd>；窗口尺寸随同一段缓动一起变化。</li>
+        </ul>
+
+        <h3>六个页签</h3>
+        <div class="table-wrap">
+          <table class="tbl">
+            <thead><tr><th>页签</th><th>内容</th></tr></thead>
+            <tbody>
+              <tr><td>任务</td><td>待办、到点提醒、自动结转与 Markdown 归档</td></tr>
+              <tr><td>剪贴板</td><td>图文历史、搜索、收藏、备注、回写、存入收纳盒</td></tr>
+              <tr><td>消息</td><td>渠道接入状态 + 统一收件箱；全部已读 / 清空</td></tr>
+              <tr><td>性能</td><td>CPU / 内存 / 网络 / 磁盘采样；桌面待整理与收纳库计数</td></tr>
+              <tr><td>动态</td><td>脚本推送的卡片（本地推送 API）</td></tr>
+              <tr><td>搜索</td><td>≥2 字符同时匹配开始菜单应用与文件名</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>提醒：重复与间隔是两个维度</h3>
+        <p><strong>重复</strong>决定哪几天存在（不重复 / 每天 / 工作日 / 每周），<strong>间隔</strong>决定一天里提醒几次（单次 / 15 分 / 30 分 / 1 时 / 2 时）。时间框接受 <code class="code-inline">09:00</code> 或 <code class="code-inline">09:00-18:00</code>；写了区间就表示起止。</p>
+        <div class="example-line">
+          <code>喝水　工作日　09:00-18:00　每30分</code><br>
+          这是<strong>一条记录</strong>，一天 <b>19 次</b>提醒；睡过去的时段只补一次，不会醒来刷屏。
+        </div>
+        <p>到点时铃铛摆动、标题轻摆、accent 底色脉冲，配一声双句提示音，持续 12 秒，<strong>不自动弹出面板</strong>。全屏时可以暂缓，退出全屏后按过期规则补发。</p>
+
+        <h3>通知渠道</h3>
+        <div class="table-wrap">
+          <table class="tbl">
+            <thead><tr><th>渠道</th><th>接入方式</th><th>说明</th></tr></thead>
+            <tbody>
+              <tr><td>微信 / 企业微信</td><td>任务栏关注信号（SHELLHOOK）</td><td>不读聊天正文</td></tr>
+              <tr><td>QQ</td><td>WinRT 通知监听，按 AUMID 过滤</td><td>只读通知</td></tr>
+              <tr><td>邮箱</td><td>IMAP</td><td>只同步未读邮件头</td></tr>
+              <tr><td>系统通知</td><td>WinRT 通知中心</td><td>默认关闭；开启后全部应用 Toast 汇总，只读不落盘</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p><strong>出站</strong>只有两条：企业微信群机器人 webhook 与 SMTP。QQ / 微信个人号没有官方出站接口，因此不支持发送。</p>
+
+        <h3>剪贴板、媒体与收纳联动</h3>
+        <ul>
+          <li>剪贴板保存图文历史，可搜索、收藏、加备注、回写剪贴板，或直接「存入收纳盒」。</li>
+          <li>文件直接拖到胶囊上即收纳，搬运在工作线程进行，不卡窗口。</li>
+          <li>媒体读取系统媒体会话（GSMTC）：封面、标题、艺术家与上一首 / 播放暂停 / 下一首，进度本地插值；没有会话时整行消失。</li>
+        </ul>
+
+        <h3>凭据与隐私</h3>
+        <p>授权码、SMTP 密码、Webhook Key 只存 Windows 凭据管理器（<code class="code-inline">DCX/island/&lt;key&gt;</code>），不写 TOML、不写日志。剪贴板与通知内容全部本地保存。唯一的例外是推送 API 令牌：它需要被脚本一行读到，因此放在 <code class="code-inline">%LOCALAPPDATA%\dcx\island_api_token.txt</code>，只授予「往岛上推卡片」这一项能力。</p>
+      </section>
+
+      <!-- 07 桌面快照 -->
+      <section class="doc-section" id="snip">
+        <h2><span class="num">07</span>桌面快照<a class="anchor" href="#snip" aria-label="链接到本节">#</a></h2>
+        <p><code class="code-inline">dcx-snip.exe</code> 默认不常驻：<kbd>Alt</kbd> + <kbd>J</kbd> 由宿主按需拉起，冻结整屏后框选，空闲一段时间自动退出。设置中心「截图与标注」页可改热键、标注默认值、保存目录、输出格式与截图圆角。</p>
+        <figure class="shot">
+          <img src="assets/img/snip.webp?v=20261110a" width="1200" height="852" loading="lazy" decoding="async" alt="桌面快照：设置中心的截图与标注页与底部两行标注工具条">
+        </figure>
+        <p class="shot-cap"><span>截图与标注设置页 · 两行标注工具条</span><span>Alt+J 唤出</span></p>
+        <h3>标注与输出</h3>
+        <ul>
+          <li>框选后可用矩形、箭头、文本、荧光笔、模糊、聚光与序号标记；箭头再次点选可重新编辑，空白处单击只取消上一次的编辑态。</li>
+          <li>两行工具条：上排是工具与撤销 / 重做 / 复制 / 保存 / 取消，下排是当前工具的属性（10 色色板、色轮取色、线宽、字体…）。</li>
+          <li><kbd>Enter</kbd> 复制（同时写入 <code class="code-inline">CF_DIB</code> 与 <code class="code-inline">PNG</code>），<kbd>Ctrl</kbd> + <kbd>S</kbd> 另存；默认保存到 <code class="code-inline">图片\DCX 截图</code>，可在设置中心改目录并一键打开。</li>
+          <li>长截图按滚轮停下后自动抓帧拼接；导出不含标注。截图圆角 0–128 px 任选，PNG 四角透明。</li>
+        </ul>
+        <div class="callout warn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 4 3 20h18z"/><path d="M12 10v4M12 17h.01"/></svg>
+          <p>覆盖层以普通权限运行，<strong>无法覆盖以管理员身份运行的程序窗口</strong>（UIPI 限制），抓屏本身不受影响。</p>
+        </div>
+      </section>
+
+      <!-- 08 快捷键 -->
+      <section class="doc-section" id="hotkeys">
+        <h2><span class="num">08</span>快捷键<a class="anchor" href="#hotkeys" aria-label="链接到本节">#</a></h2>
+        <div class="table-wrap">
+          <table class="tbl">
+            <thead><tr><th>快捷键</th><th>动作</th><th>前提</th></tr></thead>
+            <tbody>
+              <tr><td><kbd>Alt</kbd> + <kbd>D</kbd></td><td>打开 / 收起桌面收纳盒</td><td>宿主运行</td></tr>
+              <tr><td><kbd>Alt</kbd> + <kbd>S</kbd></td><td>打开文件检索</td><td>宿主运行</td></tr>
+              <tr><td><kbd>Alt</kbd> + <kbd>I</kbd></td><td>展开 / 收起桌面信息岛</td><td>信息岛主开关已开启</td></tr>
+              <tr><td><kbd>Alt</kbd> + <kbd>J</kbd></td><td>打开桌面快照（框选截图与标注）</td><td>宿主运行</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>四个热键都由常驻的宿主监听，可以在设置中心修改或关闭。文件检索不依赖检索进程是否已启动；信息岛额外要求 <code class="code-inline">island.toml</code> 与 <code class="code-inline">apps.toml</code> 都为开启，避免一个已关闭的应用被键盘复活。</p>
+        <p>热键被其他程序占用时，注册会失败并写 <code class="code-inline">box_hotkey_error.txt</code> / <code class="code-inline">search_hotkey_error.txt</code> / <code class="code-inline">island_hotkey_error.txt</code>，设置页对应位置会提示改键。前台是管理员权限窗口或全屏独占应用时，热键可能不到达；宿主未运行时热键无效。</p>
+      </section>
+
+      <!-- 09 配置 -->
+      <section class="doc-section" id="config">
+        <h2><span class="num">09</span>配置文件<a class="anchor" href="#config" aria-label="链接到本节">#</a></h2>
+        <p>运行时文件全部在 <code class="code-inline">%LOCALAPPDATA%\dcx\</code>。仓库里没有这些文件，只有源码与生成脚本。</p>
+        <div class="table-wrap">
+          <table class="tbl">
+            <thead><tr><th>文件</th><th>所有者</th><th>内容</th></tr></thead>
+            <tbody>
+              <tr><td><code>settings.toml</code></td><td>宿主 / 引擎</td><td>形状、缩放、间距、高度、悬停效果</td></tr>
+              <tr><td><code>organizer.toml</code></td><td>宿主 / 收纳盒</td><td>分类、手动分类、收纳库路径、视图偏好</td></tr>
+              <tr><td><code>search.toml</code></td><td>宿主 / 检索</td><td>热键、检索范围、排除规则、内容检索策略</td></tr>
+              <tr><td><code>island.toml</code></td><td>宿主 / 信息岛</td><td>启停、时钟 / 性能、任务、剪贴板、渠道与出站</td></tr>
+              <tr><td><code>apps.toml</code></td><td>宿主</td><td>各独立应用的启停状态</td></tr>
+              <tr><td><code>snip.toml</code></td><td>宿主 / 桌面快照</td><td>热键、标注默认值、保存目录与输出格式、截图圆角</td></tr>
+              <tr><td><code>island_tasks.json</code> / <code>island_clipboard.json</code></td><td>信息岛</td><td>任务与剪贴板历史（本地，不上传）</td></tr>
+              <tr><td><code>island_api_token.txt</code></td><td>信息岛</td><td>推送 API 的 Bearer 令牌</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>示例：settings.toml</h3>
+        <div class="code" data-lang="TOML">
+<pre><span class="c"># %LOCALAPPDATA%\dcx\settings.toml</span>
+taskbar_shape = <span class="s">"Capsule"</span>      <span class="c"># Capsule | Card</span>
+icon_scale = <span class="n">100</span>             <span class="c"># 50..125（百分比）</span>
+icon_spacing = { between = <span class="n">0</span> } <span class="c"># -6..6 px</span>
+hover_effect = <span class="s">"Dock"</span>        <span class="c"># Background | Dock</span>
+taskbar_height = <span class="n">40</span>          <span class="c"># 30..44 DIP</span>
+ui_theme = <span class="s">"Light"</span>          <span class="c"># 只影响设置窗口本身</span></pre>
+        </div>
+
+        <h3>写入协议</h3>
+        <p>六个 TOML 与两个 JSON 都是多进程读写，因此写入遵循同一套规则（实现见 <code class="code-inline">dcx-win32/src/config_file.rs</code>）：</p>
+        <ul>
+          <li><strong>跨进程互斥</strong>：按文件全路径派生的命名互斥体保护整个「读—改—写」，宿主、收纳盒、检索、信息岛不会互相覆盖。</li>
+          <li><strong>原子替换</strong>：先写带 PID 与序号的临时文件并落盘，再用 <code class="code-inline">ReplaceFileW</code> / <code class="code-inline">MoveFileExW</code> 换入；没有「rename 失败就直接覆盖」的回退分支。</li>
+          <li><strong>损坏即只读</strong>：文件存在但解析失败时，进程只使用内存默认值，并拒绝把默认值写回磁盘；修好或删除该文件后自动恢复可写。</li>
+        </ul>
+
+        <div class="callout warn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4 3 20h18z"/><path d="M12 10v4M12 17h.01"/></svg>
+          <p>手工改配置前先退出对应应用。互斥体只保护程序自己的「读—改—写」，你在外部改完又没有刷新，下一次保存会把内存里的旧视图写回去。</p>
+        </div>
+      </section>
+
+      <!-- 10 排错 -->
+      <section class="doc-section" id="troubleshoot">
+        <h2><span class="num">10</span>故障排查<a class="anchor" href="#troubleshoot" aria-label="链接到本节">#</a></h2>
+        <div class="table-wrap">
+          <table class="tbl">
+            <thead><tr><th>现象</th><th>原因</th><th>处理</th></tr></thead>
+            <tbody>
+              <tr><td>设置改了，任务栏没变</td><td>引擎未注入</td><td>看状态行；点「重新应用」；确认 <code>wh_injector.exe</code> 与 DLL 同目录</td></tr>
+              <tr><td>所有应用都显示「已停止」</td><td>分发包缺 exe 或不在同目录</td><td>把五个 exe 放回宿主同目录</td></tr>
+              <tr><td>热键没反应</td><td>被占用 / 宿主未运行 / 前台是管理员窗口</td><td>设置页改键；确认托盘图标存在；换普通窗口再试</td></tr>
+              <tr><td>任务栏样式错乱或消失</td><td>Windows 版本变化、引擎异常</td><td>托盘「退出并恢复任务栏」，让 Explorer 重启</td></tr>
+              <tr><td>强杀宿主后仍有应用进程</td><td><code>stop-dcx.bat</code> 未覆盖该应用</td><td>用 <code>stop-dcx-all.bat</code>，或手动结束三个独立 exe</td></tr>
+              <tr><td>信息岛按 Alt+I 不出来</td><td>主开关关闭，或两个 TOML 状态不一致</td><td>在设置页重新打开主开关（同时写两个文件）</td></tr>
+              <tr><td>检索没有结果</td><td>索引还在建立，或排除规则命中</td><td>看状态栏索引计数；检查 <code>search.toml</code> 的 <code>scope.exclude</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>日志</h3>
+        <div class="table-wrap">
+          <table class="tbl">
+            <thead><tr><th>文件</th><th>来源</th></tr></thead>
+            <tbody>
+              <tr><td><code>search_trace.log</code> / <code>search_panic.log</code></td><td>文件检索的诊断与 panic</td></tr>
+              <tr><td><code>island.log</code>（256 KB 轮转）/ <code>island_panic.log</code></td><td>信息岛诊断与 panic</td></tr>
+              <tr><td><code>*_hotkey_error.txt</code></td><td>热键注册失败原因</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>升级引擎</h3>
+        <p><code>dcx_engine.dll</code> 被 Explorer 映射时不能直接覆盖。请用发布包内的 <code class="code-inline">update-engine.bat</code>：它先移动旧文件再复制新文件。替换后可以确认产物确实带槽位协议：</p>
+        <div class="code" data-lang="Git Bash">
+<pre>grep -a "box_slot.txt" "D:/dcx-dist/dcx_engine.dll"</pre>
+        </div>
+        <p>然后重算 <code class="code-inline">SHA256SUMS.txt</code>。注意该文件要用 LF 行尾，写成 CRLF 会让 <code class="code-inline">sha256sum -c</code> 把 <code>\r</code> 当成文件名的一部分。</p>
+
+        <div class="callout danger">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16h.01"/></svg>
+          <p><strong>不要对 <code class="code-inline">dcx_engine.dll</code> 调用 FreeLibrary。</strong>XAML 持有注入期间注册的对象与 8192 条元素句柄，卸载镜像会让 Explorer 跳进已释放的代码页（<code class="code-inline">0xc000027b</code>）。唯一受支持的卸载方式是结束并重启 Explorer。</p>
+        </div>
+      </section>
+
+      <!-- 11 卸载 -->
+      <section class="doc-section" id="uninstall">
+        <h2><span class="num">11</span>卸载与恢复<a class="anchor" href="#uninstall" aria-label="链接到本节">#</a></h2>
+        <ol class="steps">
+          <li><strong>恢复任务栏</strong>：托盘右键 →「退出并恢复任务栏」，或在设置 → 关于里点两次确认。它会暂停看门狗、结束 Explorer、等 shell 自启后退出宿主。</li>
+          <li><strong>关闭开机自启</strong>：如果开过「开机自启」，先在设置里关掉，或删除注册表 <code>HKCU\Software\Microsoft\Windows\CurrentVersion\Run</code> 下的 <code>DCX</code> 值。</li>
+          <li><strong>删除程序目录</strong>：直接删掉解压出来的 DCX 文件夹。没有安装器，也没有卸载项。</li>
+          <li><strong>清理本地数据（可选）</strong>：删除 <code>%LOCALAPPDATA%\dcx\</code> 会同时删除设置、任务、剪贴板历史与检索索引。</li>
+          <li><strong>处理收纳库</strong>：<code>文档\dcx收纳</code> 是你自己的文件，删不删由你决定；删除不可恢复。</li>
+        </ol>
+
+        <div class="callout">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg>
+          <p>只删程序目录而不执行「恢复任务栏」，已注入的引擎会继续留在 Explorer 里，直到下次重启。任务栏外观不会自己变回去。</p>
+        </div>
+
+        <div class="pager">
+          <a href="api.html">
+            <span class="dir">下一篇</span>
+            <span class="t">接入文档 · 本地推送 API</span>
+          </a>
+          <a class="next" href="index.html">
+            <span class="dir">返回</span>
+            <span class="t">功能首页</span>
+          </a>
+        </div>
+      </section>
+
+    </div>
+  </div>
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <div class="footer-grid">
+      <div class="footer-brand">
+        <a class="brand" href="index.html" aria-label="DCX 首页">
+          <img src="assets/img/mark.svg" alt="" width="26" height="26">
+          <span class="brand-name">DCX</span>
+        </a>
+        <p>Windows 11 桌面增强平台。任务栏主题、桌面收纳盒、文件检索、桌面信息岛、桌面快照，五个进程，一个托盘。</p>
+        <span class="pill">v0.1.3 · Windows 11 x64</span>
+      </div>
+      <div class="footer-col">
+        <h3>产品</h3>
+        <ul>
+          <li><a href="index.html#features">功能总览</a></li>
+          <li><a href="index.html#architecture">进程架构</a></li>
+          <li><a href="index.html#download">下载安装</a></li>
+          <li><a href="index.html#limits">已知限制</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h3>文档</h3>
+        <ul>
+          <li><a href="docs.html">操作文档</a></li>
+          <li><a href="api.html">接入文档</a></li>
+          <li><a href="#config">配置文件</a></li>
+          <li><a href="#troubleshoot">故障排查</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h3>项目</h3>
+        <ul>
+          <li><a href="https://github.com/gggaiitx/dcx" target="_blank" rel="noopener">GitHub 仓库</a></li>
+          <li><a href="https://github.com/gggaiitx/dcx/releases/latest" target="_blank" rel="noopener">Releases</a></li>
+          <li><a href="https://github.com/gggaiitx/dcx/blob/main/LICENSE" target="_blank" rel="noopener">MIT License</a></li>
+          <li><a href="https://github.com/gggaiitx/dcx/issues" target="_blank" rel="noopener">Issue / PR</a></li>
+        </ul>
+      </div>
+    </div>
+    <span class="footer-mark" aria-hidden="true">DCX</span>
+    <div class="footer-bottom">
+      <span>© <span data-year>2026</span> DCX · MIT License · 用 Rust 编写</span>
+      <span>静态页面 · 无追踪脚本 <span class="dot-sep">·</span> 截图取自 Windows 11 实机</span>
+    </div>
+  </div>
+</footer>
+
+<script src="assets/js/site.js?v=20261108i" defer></script>
+</body>
+</html>

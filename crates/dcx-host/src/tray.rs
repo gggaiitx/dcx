@@ -15,7 +15,14 @@ use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEv
 pub fn build_tray() -> tray_icon::TrayIcon {
     let open = MenuItem::new("设置 (Settings)", true, None);
     let box_item = MenuItem::new("桌面整理 (File box)", true, None);
-    let restore = MenuItem::new("退出并恢复任务栏 (Quit & restore taskbar)", true, None);
+    // Without the engine there is no taskbar to hand back; the same path just
+    // stops the standalone apps and quits (see `shutdown::restore()`).
+    let restore_label = if dcx_win32::platform::taskbar_style_supported() {
+        "退出并恢复任务栏 (Quit & restore taskbar)"
+    } else {
+        "退出并停止应用 (Quit & stop apps)"
+    };
+    let restore = MenuItem::new(restore_label, true, None);
     let quit = MenuItem::new("退出 (Quit)", true, None);
 
     let menu = Menu::new();

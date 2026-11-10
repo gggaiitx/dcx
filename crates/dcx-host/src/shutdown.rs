@@ -79,6 +79,14 @@ pub fn restore_taskbar_and_quit() {
 }
 
 fn restore() -> Result<(), String> {
+    // On an unsupported OS the engine was never injected (see `injector`'s
+    // capability gate), so there is nothing the shell needs to forget. Killing
+    // Explorer anyway would only blank the desktop for a couple of seconds.
+    // `restore_taskbar_and_quit` still stops the apps and exits on `Ok(())`.
+    if !dcx_win32::platform::taskbar_style_supported() {
+        return Ok(());
+    }
+
     // 1. Stop re-injection before the shell goes away. The watchdog polls every
     //    5 s and would otherwise put the engine straight back into the fresh
     //    Explorer while this process is still alive, which makes the restart

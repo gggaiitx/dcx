@@ -11,6 +11,13 @@
 //! which we shell out to with `<pid> <dll>` arguments. Paths are resolved from
 //! the host's own directory, overridable via `DCX_INJECTOR` / `DCX_ENGINE_DLL`
 //! for development.
+//!
+//! **Capability gate.** The engine only understands the Windows 11 XAML taskbar.
+//! On Windows 10 (and older) `DesktopWindowContentBridge` does not exist, so an
+//! injected engine would retry `FindWindowExW` forever inside Explorer while
+//! never applying anything. Every entry point below therefore checks
+//! `dcx_win32::platform::taskbar_style_supported()` and becomes a no-op / an
+//! explicit error when it is false. Standalone apps do not use this module.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -200,8 +207,27 @@ pub fn is_paused() -> bool {
     PAUSED.load(Ordering::SeqCst)
 }
 
+/// The one place the injection watchdog asks "does this shell have a XAML
+/// taskbar?". Cached per process in `dcx_win32::platform`, so calling it every
+/// frame in the settings window is free.
+fn supported() -> bool {
+    dcx_win32::platform::taskbar_style_supported()
+}
+
 /// Spawn the background thread that keeps Explorer injected.
+///
+/// Unsupported platforms skip the thread entirely: enumerating Explorer PIDs
+/// every 5 s and injecting a DLL that can never connect is exactly the silent
+/// busy-loop the capability gate exists to prevent.
 pub fn spawn_watchdog() {
+    if !supported() {
+        println!(
+            "[dcx-host] taskbar styling disabled: {} (reason: {})",
+            dcx_win32::platform::describe(),
+            dcx_win32::platform::reason()
+        );
+        return;
+    }
     thread::spawn(|| {
         let mut injected: HashSet<u32> = HashSet::new();
         // pid → (consecutive failures, next attempt). A permanently failing
@@ -278,6 +304,13 @@ pub fn spawn_watchdog() {
 /// Runs on the caller's thread on purpose: `wh_injector` finishes in a few
 /// hundred milliseconds and the answer belongs in this click.
 pub fn inject_now() -> Result<(), String> {
+    if !supported() {
+        return Err(format!(
+            "任务栏样式不可用：{}，{}",
+            dcx_win32::platform::display_name(),
+            dcx_win32::platform::reason()
+        ));
+    }
     if is_paused() {
         return Err("正在恢复任务栏，注入已暂停".to_string());
     }
@@ -322,17 +355,27 @@ pub const ENGINE_UNKNOWN: u8 = 0;
 pub const ENGINE_ABSENT: u8 = 1;
 /// At least one Explorer process hosts the engine.
 pub const ENGINE_ATTACHED: u8 = 2;
+/// This OS has no XAML taskbar; no DLL was injected and no polling is running.
+pub const ENGINE_UNSUPPORTED: u8 = 3;
 
 static ENGINE_STATE: AtomicU8 = AtomicU8::new(ENGINE_UNKNOWN);
 
 /// Latest sampled engine state (one of the `ENGINE_*` constants).
 pub fn engine_state() -> u8 {
+    if !supported() {
+        return ENGINE_UNSUPPORTED;
+    }
     ENGINE_STATE.load(Ordering::Relaxed)
 }
 
 /// Sample [`engine_state`] every 3 s. Cheap enough to keep running for the
-/// lifetime of the host; safe to call once.
+/// lifetime of the host; safe to call once. On unsupported systems no thread is
+/// started at all — `engine_state()` answers `ENGINE_UNSUPPORTED` directly.
 pub fn spawn_status_monitor() {
+    if !supported() {
+        ENGINE_STATE.store(ENGINE_UNSUPPORTED, Ordering::Relaxed);
+        return;
+    }
     thread::spawn(|| loop {
         let pids = explorer_pids();
         let state = if pids.is_empty() {

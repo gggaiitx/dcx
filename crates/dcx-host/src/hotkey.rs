@@ -1,9 +1,9 @@
-//! Global hotkeys for the desk-box, file-search and info-island apps.
+//! Global hotkeys for the desk-box, file-search, info-island and snapshot apps.
 //!
 //! The hotkeys must be owned by the **resident platform**, not by the apps:
 //! `apps.toml [apps.search].enabled` defaults to false, and even the box can be
 //! started on demand. A dedicated thread here creates a `HWND_MESSAGE` window,
-//! registers all three hotkeys against that window and runs its own message loop.
+//! registers every hotkey against that window and runs its own message loop.
 //!
 //! `RegisterHotKey(NULL, ...)` would post `WM_HOTKEY` to the *thread queue*,
 //! which the host's `Platform::run()` pump is not guaranteed to dispatch into
@@ -29,6 +29,7 @@ const TIMER_ID: usize = 1;
 const BOX_HOTKEY_ID: i32 = 1;
 const SEARCH_HOTKEY_ID: i32 = 2;
 const ISLAND_HOTKEY_ID: i32 = 3;
+const SNIP_HOTKEY_ID: i32 = 4;
 const HWND_MESSAGE: isize = -3;
 const MOD_ALT: u32 = 0x0001;
 const MOD_CONTROL: u32 = 0x0002;
@@ -39,10 +40,12 @@ const MOD_NOREPEAT: u32 = 0x4000;
 const BOX_ERROR_FILE: &str = "box_hotkey_error.txt";
 const SEARCH_ERROR_FILE: &str = "search_hotkey_error.txt";
 const ISLAND_ERROR_FILE: &str = "island_hotkey_error.txt";
+const SNIP_ERROR_FILE: &str = "snip_hotkey_error.txt";
 
 static BOUND_BOX: Mutex<Option<(String, bool)>> = Mutex::new(None);
 static BOUND_SEARCH: Mutex<Option<(String, bool)>> = Mutex::new(None);
 static BOUND_ISLAND: Mutex<Option<(String, bool)>> = Mutex::new(None);
+static BOUND_SNIP: Mutex<Option<(String, bool)>> = Mutex::new(None);
 /// Last message written per error file, so the retry loop does not rewrite an
 /// unchanged error every second.
 static LAST_ERROR: Mutex<Option<(String, String)>> = Mutex::new(None);
@@ -139,6 +142,10 @@ pub fn last_island_error() -> Option<String> {
     read_error(ISLAND_ERROR_FILE)
 }
 
+pub fn last_snip_error() -> Option<String> {
+    read_error(SNIP_ERROR_FILE)
+}
+
 fn note_error(file: &str, text: &str) {
     // The 1 s retry loop calls this every tick while a key is taken. Writing
     // the file (and the log line) only on a change keeps the disk quiet and
@@ -201,6 +208,12 @@ fn island_hotkey_setting() -> (String, bool) {
     hotkey_setting("island.toml", None, "Alt+i")
 }
 
+/// `Alt+j` — 截 (jié). Chosen to stay clear of `Alt+d` / `Alt+s` / `Alt+i`, and
+/// it carries a modifier, which `parse_hotkey` requires.
+fn snip_hotkey_setting() -> (String, bool) {
+    hotkey_setting("snip.toml", Some("activation"), "Alt+j")
+}
+
 /// The island's master switch also lives in `island.toml` (the settings centre
 /// writes it together with `apps.toml`). A hotkey must not resurrect a
 /// permanently topmost window the user explicitly turned off.
@@ -244,7 +257,8 @@ fn parse_hotkey(s: &str) -> Result<(u32, u32), String> {
                     } else {
                         None
                     }
-                } else if let Some(n) = upper.strip_prefix('F').and_then(|n| n.parse::<u32>().ok()) {
+                } else if let Some(n) = upper.strip_prefix('F').and_then(|n| n.parse::<u32>().ok())
+                {
                     if (1..=24).contains(&n) {
                         Some(0x70 + n - 1)
                     } else {
@@ -282,6 +296,23 @@ fn set_key(slot: &mut Option<u32>, code: u32, part: &str, whole: &str) -> Result
     Ok(())
 }
 
+/// Is this combination free right now?
+///
+/// `Ok(true)` means nobody (including this platform) holds it — either the
+/// value was never applied, or the running host predates the app that needs it.
+/// The settings centre uses this to tell "已生效" apart from "按了没反应",
+/// which is otherwise invisible from the UI.
+pub fn probe(key: &str) -> Result<bool, String> {
+    let (mods, vk) = parse_hotkey(key)?;
+    // Not 0: a real id keeps the probe away from any window that might use id 0.
+    const PROBE_ID: i32 = 0x7FF0;
+    let ok = unsafe { RegisterHotKey(0, PROBE_ID, mods, vk) } != 0;
+    if ok {
+        unsafe { UnregisterHotKey(0, PROBE_ID) };
+    }
+    Ok(ok)
+}
+
 /// Check a user-entered hotkey without registering it. Used by the settings
 /// window so an invalid combination is explained at the field, not only after
 /// it silently failed to register.
@@ -294,7 +325,14 @@ fn touch_show_marker(name: &str) {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis().to_string())
         .unwrap_or_default();
-    let _ = std::fs::write(local_dir().join(name), now);
+    // Readers poll these files; a truncated write briefly published an empty
+    // value, which the snapshot app took for a new request.
+    let dir = local_dir();
+    let path = dir.join(name);
+    let tmp = dir.join(format!("{name}.tmp{}", std::process::id()));
+    if std::fs::write(&tmp, now).is_ok() {
+        let _ = std::fs::rename(&tmp, &path);
+    }
 }
 
 fn bind(
@@ -373,6 +411,15 @@ fn rebind(hwnd: isize) {
         island_on,
         ISLAND_ERROR_FILE,
     );
+    let (snip_key, snip_on) = snip_hotkey_setting();
+    bind(
+        hwnd,
+        SNIP_HOTKEY_ID,
+        &BOUND_SNIP,
+        snip_key,
+        snip_on,
+        SNIP_ERROR_FILE,
+    );
 }
 
 fn fire(id: i32) {
@@ -411,6 +458,18 @@ fn fire(id: i32) {
                     note_error(ISLAND_ERROR_FILE, &e);
                 }
                 touch_show_marker("island_show");
+            }
+        }
+        SNIP_HOTKEY_ID => {
+            let (_, enabled) = snip_hotkey_setting();
+            // The snapshot app is a transient tool, not a resident panel: the
+            // hotkey is exactly the "on demand" entry point, so it is gated by
+            // its own switch only — never by `apps.toml`.
+            if enabled {
+                if let Err(e) = crate::apps::launch_on_demand("snip") {
+                    note_error(SNIP_ERROR_FILE, &e);
+                }
+                touch_show_marker("snip_show");
             }
         }
         _ => {}
@@ -499,6 +558,8 @@ pub fn start() {
         unsafe {
             UnregisterHotKey(hwnd, BOX_HOTKEY_ID);
             UnregisterHotKey(hwnd, SEARCH_HOTKEY_ID);
+            UnregisterHotKey(hwnd, ISLAND_HOTKEY_ID);
+            UnregisterHotKey(hwnd, SNIP_HOTKEY_ID);
             KillTimer(hwnd, TIMER_ID);
         }
     });
@@ -540,6 +601,11 @@ mod tests {
     fn unknown_tokens_are_refused_instead_of_ignored() {
         assert!(parse_hotkey("Alt+Hyper+s").is_err());
         assert!(parse_hotkey("Alt+F25").is_err());
+    }
+
+    #[test]
+    fn snip_default_is_valid() {
+        assert_eq!(parsed("Alt+j").1, 'J' as u32);
     }
 
     #[test]
