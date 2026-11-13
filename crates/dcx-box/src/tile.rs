@@ -191,6 +191,7 @@ impl Tile {
         };
         tile.create();
         start_bar_watch();
+        start_slot_watch();
         tile
     }
 
@@ -416,29 +417,34 @@ fn compose(size: (i32, i32), open: bool, hover: bool, scale: f32) -> Vec<u8> {
     let mut buf = vec![0u8; width * height * 4];
     let s = crate::view::Skin::system();
 
-    // Plate: inset 1 pt from the button cell on every side. The cell now
-    // follows the dock row (30–44 DIP); a fixed 40 pt plate overflowed the
-    // taskbar when it was short and touched the edges when it was tall.
-    let pad = (1.0 * scale).round().max(1.0);
-    let plate = (width as f32 - pad * 2.0)
-        .min(height as f32 - pad * 2.0)
-        .max(1.0);
-    let (cx, cy) = (width as f32 / 2.0, height as f32 / 2.0);
-    let (x0, y0) = (cx - plate / 2.0, cy - plate / 2.0);
-    let radius = (8.0 * scale).min(plate * 0.28);
+    // Plate: the Start button's hover plate, measured on the live bar —
+    // 48×38 px with a 9.5 px radius in a 55×50 cell at 125 %, i.e. a white
+    // half-transparent fill (#E2E7E7 over a #C4CFCE bar) that stops short of
+    // the cell's top and bottom so the bar keeps its breathing room around it.
+    let pad_x = (2.8 * scale).round().max(1.0);
+    let plate_w = (width as f32 - pad_x * 2.0).max(1.0);
+    let plate_h = (height as f32 * 0.76).round().max(1.0);
+    let half_w = width as f32 / 2.0;
+    let half_h = height as f32 / 2.0;
+    let (x0, y0) = (half_w - plate_w / 2.0, half_h - plate_h / 2.0);
+    let radius = (plate_h * 0.25).max(2.0);
     // Even at rest the plate is filled with a 1/255 white: a layered window is
     // hit-tested against its **alpha**, so a fully transparent cell would make
     // only the 24 pt icon clickable and every click near the edge fall through
-    // to the taskbar.
-    let fill = if open {
-        s.accent_soft
-    } else if hover {
+    // to the taskbar. Hover and open share one plate — the same neutral fill
+    // the Start button uses, no accent tint and no running bar.
+    let fill = if open || hover {
         s.tile_hover
     } else {
         egui::Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 1)
     };
 
     if fill.a() > 0 {
+        // `Color32` premultiplies in **linear** space, so its channels are not
+        // the straight sRGB the layered surface wants (white 50 % reads back as
+        // 187, not 255). Unmultiply first, or the plate lands darker than the
+        // bar instead of lighter.
+        let [fr, fg, fb, fa] = fill.to_srgba_unmultiplied();
         for y in 0..height {
             for x in 0..width {
                 let cover = round_rect_coverage(
@@ -446,18 +452,18 @@ fn compose(size: (i32, i32), open: bool, hover: bool, scale: f32) -> Vec<u8> {
                     y as f32 + 0.5,
                     x0,
                     y0,
-                    plate,
-                    plate,
+                    plate_w,
+                    plate_h,
                     radius,
                 );
                 if cover <= 0.0 {
                     continue;
                 }
-                let a = fill.a() as f32 / 255.0 * cover;
+                let a = fa as f32 / 255.0 * cover;
                 let px = &mut buf[(y * width + x) * 4..(y * width + x) * 4 + 4];
-                px[0] = (fill.b() as f32 * a) as u8;
-                px[1] = (fill.g() as f32 * a) as u8;
-                px[2] = (fill.r() as f32 * a) as u8;
+                px[0] = (fb as f32 * a) as u8;
+                px[1] = (fg as f32 * a) as u8;
+                px[2] = (fr as f32 * a) as u8;
                 px[3] = (255.0 * a) as u8;
             }
         }
@@ -465,40 +471,9 @@ fn compose(size: (i32, i32), open: bool, hover: bool, scale: f32) -> Vec<u8> {
 
     // Icon: 24 pt, bilinear from the 64 px source.
     let icon_px = (24.0 * scale).round().max(1.0);
-    let ix = (cx - icon_px / 2.0).round() as i32;
-    let iy = (cy - icon_px / 2.0).round() as i32;
+    let ix = (half_w - icon_px / 2.0).round() as i32;
+    let iy = (half_h - icon_px / 2.0).round() as i32;
     blit_icon(&mut buf, width, height, ix, iy, icon_px as i32);
-
-    // Running indicator under the plate when the panel is open.
-    if open {
-        let bar_w = (10.0 * scale).round().max(4.0);
-        let bar_h = (2.5 * scale).round().max(2.0);
-        let bx = cx - bar_w / 2.0;
-        let by = y0 + plate - bar_h;
-        let accent = s.accent;
-        for y in 0..height {
-            for x in 0..width {
-                let px = &mut buf[(y * width + x) * 4..(y * width + x) * 4 + 4];
-                let cover = round_rect_coverage(
-                    x as f32 + 0.5,
-                    y as f32 + 0.5,
-                    bx,
-                    by,
-                    bar_w,
-                    bar_h,
-                    bar_h / 2.0,
-                );
-                if cover > 0.0 {
-                    let a = cover;
-                    let src = [accent.b(), accent.g(), accent.r()];
-                    for c in 0..3 {
-                        px[c] = ((px[c] as f32) * (1.0 - a) + src[c] as f32 * a) as u8;
-                    }
-                    px[3] = (px[3] as f32 * (1.0 - a) + 255.0 * a) as u8;
-                }
-            }
-        }
-    }
     buf
 }
 
@@ -695,6 +670,44 @@ fn start_guard() {
 /// the idle loop is woken only when it actually changes.
 pub fn set_auto_hide(on: bool) {
     AUTO_HIDE.store(on, Ordering::Relaxed);
+}
+
+/// Follow the engine's slot file at timer rate.
+///
+/// The engine publishes the row's end at 4 Hz; the frame loop used to poll it
+/// on its own 400 ms beat on top of that, so a newly opened app (one new button
+/// grows the row — right under the button) left the tile sitting on the new icon
+/// for up to half a second. Read the file here every 25 ms, publish the value
+/// for the frame loop, and wake it the moment the numbers move.
+fn start_slot_watch() {
+    static SLOT_WATCH: AtomicBool = AtomicBool::new(false);
+    if SLOT_WATCH.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    std::thread::spawn(|| {
+        let mut last: Option<(i32, i32, usize)> = None;
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            let Some((slot, age)) = crate::win::read_slot() else {
+                continue;
+            };
+            // The engine stops writing while an auto-hidden bar is down; a
+            // minutes-old reading is still the correct geometry.
+            if age > std::time::Duration::from_secs(600) {
+                continue;
+            }
+            let key = (slot.right as i32, slot.limit as i32, slot.n);
+            if last == Some(key) {
+                continue;
+            }
+            let first = last.is_none();
+            last = Some(key);
+            crate::win::set_latest_slot(slot);
+            if !first {
+                wake();
+            }
+        }
+    });
 }
 
 fn start_bar_watch() {

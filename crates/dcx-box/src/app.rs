@@ -175,7 +175,6 @@ pub struct App {
     dock_h: f32,
 
     slot: Option<win::Slot>,
-    slot_probe_at: Instant,
     app_right: Option<f32>,
     app_probe_at: Instant,
 
@@ -259,7 +258,6 @@ impl App {
             scale: 1.0,
             dock_h: dock_height(),
             slot: None,
-            slot_probe_at: Instant::now() - Duration::from_secs(10),
             app_right: None,
             app_probe_at: Instant::now() - Duration::from_secs(10),
             geo: None,
@@ -491,17 +489,10 @@ impl App {
                 win::write_ui_state(panel, g.tile.min, self.scale);
             }
         }
-        if self.slot_probe_at.elapsed() >= Duration::from_millis(400) {
-            self.slot_probe_at = now;
-            if let Some((s, age)) = win::read_slot() {
-                // The engine stops writing while an auto-hidden bar is down;
-                // a minutes-old reading is still the correct geometry. Keep the
-                // last good one for up to ten minutes instead of snapping to
-                // the (wrong) Win32 fallback every time the bar slides out.
-                if age < Duration::from_secs(600) {
-                    self.slot = Some(s);
-                }
-            }
+        // Published by the slot watcher (timer rate): the row's end has to
+        // reach the frame that the watcher just woke, not the next 400 ms poll.
+        if let Some(s) = win::latest_slot() {
+            self.slot = Some(s);
         }
         if self.slot.is_none() && self.app_probe_at.elapsed() >= Duration::from_millis(1500) {
             self.app_probe_at = now;
@@ -1463,6 +1454,18 @@ impl eframe::App for App {
         win::touch_no_reserve(false);
         self.shown = true;
 
+        // Content that owns the screen. The button is topmost and its guard
+        // re-raises it whenever another process covers its pixels, so it would
+        // float above a full-screen app; during a snip it is worse than that —
+        // the frozen frame already shows the button, and the anchor may have
+        // moved since the freeze, so the live copy lands next to the frozen one
+        // ("the icon sticks out and is misaligned"). Hide instead, the way the
+        // shell hides its own bars. A raw foreground window only displaces the
+        // button while the panel is closed: an open panel is what the user is
+        // working in.
+        let away = win::snip_overlay_open() || win::shell_busy();
+        let covered = !self.open && win::foreground_covers_bar(self.win.hwnd);
+
         // Auto-hide has the bar parked off-screen: the button goes with it.
         // Nothing else can happen until the bar slides back, and the bar
         // watcher wakes this loop the moment it starts to move, so idle at the
@@ -1487,7 +1490,7 @@ impl eframe::App for App {
             geo.tile,
             self.scale,
             self.open,
-            self.shown && self.model.cfg.enabled && !geo.bar_parked,
+            self.shown && self.model.cfg.enabled && !geo.bar_parked && !away && !covered,
         );
         if tile::take_click() {
             if self.open {
@@ -1505,7 +1508,10 @@ impl eframe::App for App {
         // While a drag is in flight the size is frozen and the window merely
         // translates — resizing a per-pixel-alpha surface every frame is what
         // made the drag flash.
-        let open = self.open && self.shown && self.model.cfg.enabled;
+        // While a capture overlay or a full-screen app is up the panel window
+        // is parked too: it is topmost as well and would sit above the frozen
+        // frame / the app. `open` itself is untouched, so it comes back.
+        let open = self.open && self.shown && self.model.cfg.enabled && !away;
         let on_screen = win::snap(geo.panel.expand(SHADOW), self.scale);
         // Park the window at the **panel's own size**, not 1x1. Opening is then
         // a pure move: resizing a per-pixel-alpha surface on the same frame it

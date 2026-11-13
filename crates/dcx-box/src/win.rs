@@ -310,6 +310,108 @@ pub fn taskbar_auto_hide() -> bool {
     (state as u32 & dcx_win32::ABS_AUTOHIDE) != 0
 }
 
+// --- what is in front of the bar -------------------------------------------
+
+#[link(name = "shell32")]
+extern "system" {
+    fn SHQueryUserNotificationState(state: *mut i32) -> i32;
+}
+
+/// Classes the "covers the monitor" test must ignore: the desktop, the bar and
+/// the shell's own full-screen hosts (Task View). Hiding the button on the
+/// desktop or in Task View would hide it for no reason — the bar is still there.
+fn is_shell_class(class: &str) -> bool {
+    matches!(
+        class,
+        "Progman"
+            | "WorkerW"
+            | "Shell_TrayWnd"
+            | "Shell_SecondaryTrayWnd"
+            | "Windows.UI.Core.CoreWindow"
+            | "ApplicationFrameWindow"
+            | "MultitaskingViewFrame"
+            | "ForegroundStaging"
+            | "XamlExplorerHostIslandWindow"
+    )
+}
+
+fn class_of(hwnd: isize) -> String {
+    let mut buf = [0u16; 256];
+    let n = unsafe { dcx_win32::GetClassNameW(hwnd, buf.as_mut_ptr(), buf.len() as i32) };
+    if n <= 0 {
+        return String::new();
+    }
+    String::from_utf16_lossy(&buf[..n as usize])
+}
+
+/// The shell says "nothing of yours belongs on top": a full-screen app (D3D or
+/// borderless) or presentation mode.
+///
+/// `QUNS_BUSY` (2), `QUNS_RUNNING_D3D_FULL_SCREEN` (3) and
+/// `QUNS_PRESENTATION_MODE` (4) qualify. `QUNS_APP` (7) does **not**: it only
+/// means a Store app owns the foreground, and the Start menu reports it while
+/// open — the button lives on the bar and has to stay put. A failed query reads
+/// as "not busy": the button must not disappear because one HRESULT came back
+/// negative.
+pub fn shell_busy() -> bool {
+    let mut state: i32 = 0;
+    let hr = unsafe { SHQueryUserNotificationState(&mut state) };
+    hr >= 0 && matches!(state, 2 | 3 | 4)
+}
+
+/// A **topmost** window covers the bar's monitor and owns the screen.
+///
+/// Only a topmost window can get above the bar — the bar is topmost itself — so
+/// this is exactly the topmost full-screen content (video players, games,
+/// borderless player modes) where the button would otherwise be the only thing
+/// left floating over the picture. A plain full-screen window keeps the bar and
+/// the button visible, and with an auto-hidden taskbar a **maximised** window
+/// covers the monitor exactly: while the bar slides out the button has to come
+/// back with it, not stay hidden.
+pub fn foreground_covers_bar(own: isize) -> bool {
+    let fg = unsafe { dcx_win32::GetForegroundWindow() };
+    if fg == 0 || fg == own || is_shell_class(&class_of(fg)) {
+        return false;
+    }
+    if unsafe { dcx_win32::ex_style(fg) } & dcx_win32::WS_EX_TOPMOST == 0 {
+        return false;
+    }
+    let cls = dcx_win32::wide("Shell_TrayWnd");
+    let bar = unsafe { dcx_win32::FindWindowW(cls.as_ptr(), core::ptr::null()) };
+    let anchor = if bar != 0 { bar } else { fg };
+    let mon = unsafe { dcx_win32::MonitorFromWindow(anchor, dcx_win32::MONITOR_DEFAULTTONEAREST) };
+    let mut info = dcx_win32::MONITORINFO::default();
+    info.cbSize = core::mem::size_of::<dcx_win32::MONITORINFO>() as u32;
+    if mon == 0 || unsafe { dcx_win32::GetMonitorInfoW(mon, &mut info) } == 0 {
+        return false;
+    }
+    let mut rc = dcx_win32::RECT::default();
+    if unsafe { dcx_win32::GetWindowRect(fg, &mut rc) } == 0 {
+        return false;
+    }
+    // 2 px tolerance: a maximised window is one border-pixel smaller than the
+    // monitor on some drivers.
+    let m = info.rcMonitor;
+    rc.left <= m.left + 2
+        && rc.top <= m.top + 2
+        && rc.right >= m.right - 2
+        && rc.bottom >= m.bottom - 2
+}
+
+/// dcx-snip's capture overlay is up.
+///
+/// Its frozen frame was grabbed **before** the overlay appeared and already
+/// contains the button. The tile is topmost with a guard that re-raises it when
+/// another process covers its pixels, so it would be painted a second time
+/// above the dimmed frame — and the anchor can have moved since the freeze, so
+/// the live copy lands next to the frozen one: "the icon sticks out and is
+/// misaligned".
+pub fn snip_overlay_open() -> bool {
+    let cls = dcx_win32::wide("DCX.Snip.Overlay");
+    let h = unsafe { dcx_win32::FindWindowW(cls.as_ptr(), core::ptr::null()) };
+    h != 0 && unsafe { dcx_win32::IsWindowVisible(h) } != 0
+}
+
 /// The engine's measurement of the taskbar row, in **physical** pixels.
 #[derive(Clone, Copy, Debug)]
 pub struct Slot {
@@ -332,6 +434,21 @@ pub fn slot_file() -> std::path::PathBuf {
     p.push("dcx");
     p.push("box_slot.txt");
     p
+}
+
+/// Latest reading published by the slot watcher. The frame loop reads this
+/// instead of the file: the watcher polls at timer rate, the loop must see a
+/// new value on the very frame it is woken for.
+static LATEST_SLOT: Mutex<Option<Slot>> = Mutex::new(None);
+
+pub fn latest_slot() -> Option<Slot> {
+    LATEST_SLOT.lock().ok().and_then(|g| *g)
+}
+
+pub fn set_latest_slot(s: Slot) {
+    if let Ok(mut g) = LATEST_SLOT.lock() {
+        *g = Some(s);
+    }
 }
 
 /// Read the engine's slot file. Age is returned, not enforced: when the bar is

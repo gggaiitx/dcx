@@ -80,6 +80,9 @@ use crate::xaml::ComPtr;
 /// no business at that rate.
 const TIMER_ID: usize = 0x0DC0_0002;
 const TICK_MS: u32 = 250;
+/// One-shot timer: measure right after the layout pass that reported a button
+/// change, instead of waiting for the next 250 ms beat.
+const TIMER_SOON: usize = 0x0DC0_0003;
 /// Rewrite the file even when nothing changed, so the box app can tell "the
 /// shell is idle" (file still fresh) from "the engine is gone" (file went stale).
 const HEARTBEAT_TICKS: u32 = 8;
@@ -94,6 +97,8 @@ pub const SLOT_DIP: f64 = 52.0;
 
 static STARTED: AtomicBool = AtomicBool::new(false);
 static TICKS: AtomicU32 = AtomicU32::new(0);
+/// A `TIMER_SOON` one-shot is already queued; further adds coalesce into it.
+static SOON_ARMED: AtomicBool = AtomicBool::new(false);
 /// Epoch ms of the last time [`tick`] actually ran — proof the timer is alive.
 static LAST_TICK: AtomicU64 = AtomicU64::new(0);
 static REARMED: AtomicBool = AtomicBool::new(false);
@@ -168,8 +173,28 @@ pub fn ensure_started() {
 
 /// A task button appeared or vanished: the row changed, so sample on the next
 /// tick instead of waiting for the heartbeat.
+///
+/// The beat is 250 ms and the button appears in one layout pass, so waiting for
+/// it left the tile sitting on the new icon for up to a quarter second (the
+/// box paints the tile's window from this file). Arm a one-shot instead: the
+/// layout pass that reported the change is over by the time this timer fires,
+/// so `ActualOffset`/`ActualWidth` are settled.
 pub fn note_change() {
     ensure_started();
+    if SOON_ARMED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    unsafe {
+        dcx_win32::SetTimer(0, TIMER_SOON, 16, soon_proc as *const () as usize);
+    }
+}
+
+unsafe extern "system" fn soon_proc(_hwnd: isize, _msg: u32, _id: usize, _time: u32) {
+    unsafe {
+        dcx_win32::KillTimer(0, TIMER_SOON);
+    }
+    SOON_ARMED.store(false, Ordering::SeqCst);
+    tick();
 }
 
 /// Is the tile's band currently held open?
