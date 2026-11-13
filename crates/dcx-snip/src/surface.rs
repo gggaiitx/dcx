@@ -312,27 +312,25 @@ impl<'a> Sk<'a> {
     }
 
     pub fn draw_coverage(&mut self, x: i32, y: i32, w: u32, h: u32, cov: &[u8], c: Rgba) {
-        if x < 0 || y < 0 {
-            return;
-        }
         let stride = (self.pm.width() as usize) * 4;
         let surf_w = self.pm.width() as i32;
         let surf_h = self.pm.height() as i32;
+        // Masks are padded (italic overhang, shadow halo) and may start off the
+        // surface; clip the rows and columns instead of dropping the run.
+        let x0 = x.max(0);
+        let y0 = y.max(0);
+        let x1 = (x + w as i32).min(surf_w);
+        let y1 = (y + h as i32).min(surf_h);
+        if x1 <= x0 || y1 <= y0 {
+            return;
+        }
         let data = self.pm.data_mut();
-        for row in 0..h as i32 {
-            let sy = y + row;
-            if sy >= surf_h {
-                break;
-            }
-            let src = (row as usize) * (w as usize);
-            for col in 0..w as i32 {
-                let sx = x + col;
-                // Without this a label that runs off the right edge wraps its
-                // remaining pixels into the start of the next scanline.
-                if sx >= surf_w {
-                    break;
-                }
-                let a = cov[src + col as usize] as u32;
+        for sy in y0..y1 {
+            let row = (sy - y) as usize;
+            let src = row * (w as usize);
+            for sx in x0..x1 {
+                let col = (sx - x) as usize;
+                let a = cov[src + col] as u32;
                 if a == 0 {
                     continue;
                 }
@@ -380,6 +378,14 @@ pub fn path_round_rect(r: &Rect, radius: f32) -> Option<Path> {
     pb.line_to(x0, y0 + rad);
     pb.cubic_to(x0, y0 + rad - k, x0 + rad - k, y0, x0 + rad, y0);
     pb.close();
+    pb.finish()
+}
+
+/// Ellipse inscribed in `r`; the circle tool drags out the bounding box.
+pub fn path_ellipse(r: &Rect) -> Option<Path> {
+    let rect = sk_rect(r)?;
+    let mut pb = PathBuilder::new();
+    pb.push_oval(rect);
     pb.finish()
 }
 

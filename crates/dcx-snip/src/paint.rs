@@ -7,12 +7,12 @@ use crate::layout::{
     PANEL_DEEP, PRESSED, TEXT,
 };
 use crate::model::{Kind, Obj, Pt, TextStyle, Tool};
-use crate::surface::{copy_rect, path_rect, tint_rect, Rect, Rgba, Sk};
+use crate::surface::{copy_rect, path_ellipse, path_rect, tint_rect, Rect, Rgba, Sk};
 use crate::text;
 
-/// Drop shadow behind text objects. Black at ~55 % keeps white and coloured
-/// glyphs legible over both light documents and dark terminals.
-const SHADOW: Rgba = Rgba::new(0x00, 0x00, 0x00, 0x8C);
+/// Drop shadow behind text objects. A soft black at ~60 % keeps white and
+/// coloured glyphs legible over both light documents and dark terminals.
+const SHADOW: Rgba = Rgba::new(0x00, 0x00, 0x00, 0x9C);
 
 /// Draw a run of text with the glyph masks; returns the advance width.
 pub fn label(sk: &mut Sk, s: &str, x: f32, y: f32, size: f32, color: Rgba) -> f32 {
@@ -53,6 +53,23 @@ pub fn object(sk: &mut Sk, obj: &Obj) {
                 sk.fill_round(r, *radius, obj.color);
             } else {
                 sk.stroke_round(r, *radius, obj.width, obj.color);
+            }
+        }
+        Kind::Ellipse { r, filled } => {
+            if let Some(path) = path_ellipse(r) {
+                if *filled {
+                    sk.fill_path(&path, obj.color);
+                } else {
+                    sk.stroke_path(&path, obj.width, obj.color, false);
+                }
+            }
+        }
+        Kind::Connector { a, c1, c2, b } => {
+            let mut pb = tiny_skia::PathBuilder::new();
+            pb.move_to(a.x, a.y);
+            pb.cubic_to(c1.x, c1.y, c2.x, c2.y, b.x, b.y);
+            if let Some(path) = pb.finish() {
+                sk.stroke_path(&path, obj.width, obj.color, false);
             }
         }
         Kind::Arrow { a, c1, c2, b } => {
@@ -102,11 +119,12 @@ pub fn object(sk: &mut Sk, obj: &Obj) {
             let dx = (at.x - cov.bleed).round() as i32;
             let dy = (at.y - cov.bleed).round() as i32;
             if style.shadow {
-                // Hard drop shadow from the same mask: one offset copy, so the
-                // shadow always matches the glyph shape exactly (a GDI shadow
-                // offset would need a second font render per frame).
-                let off = text::shadow_offset(*size).round() as i32;
-                sk.draw_coverage(dx + off, dy + off, cov.w, cov.h, &cov.alpha, SHADOW);
+                // The blurred mask is built once per rasterised run and cached
+                // with it, so a soft shadow costs nothing per frame.
+                if let Some(shadow) = cov.shadow.as_ref() {
+                    let off = text::shadow_offset(*size).round() as i32;
+                    sk.draw_coverage(dx + off, dy + off, cov.w, cov.h, shadow, SHADOW);
+                }
             }
             sk.draw_coverage(dx, dy, cov.w, cov.h, &cov.alpha, obj.color);
         }
@@ -280,9 +298,9 @@ pub struct Chrome<'a> {
     pub custom_set: bool,
     /// Bounds of the selected object, when there is one.
     pub obj: Option<Rect>,
-    /// Selected arrow's cubic: (a, c1, c2, b). Both controls get their own
-    /// draggable grip, so the bow can be adjusted freely (either side, any
-    /// amount, even an S-curve).
+    /// Selected cubic (arrow or connector): (a, c1, c2, b). Both controls get
+    /// their own draggable grip, so the bow can be adjusted freely (either
+    /// side, any amount, even an S-curve).
     pub curve_handles: Option<(Pt, Pt, Pt, Pt)>,
     /// Ghost badge under the pointer while the serial tool is armed.
     pub serial_preview: Option<(u32, Pt, f32)>,
@@ -447,11 +465,13 @@ fn icon_of(t: Tool) -> Icon {
     match t {
         Tool::Hand => Icon::Hand,
         Tool::Rect => Icon::Frame,
+        Tool::Ellipse => Icon::Ellipse,
         Tool::Arrow => Icon::Vector,
+        Tool::Connector => Icon::Connector,
         Tool::Text => Icon::Glyph,
         Tool::Marker => Icon::Marker,
         Tool::Blur => Icon::Defocus,
-        Tool::Spot => Icon::Aperture,
+        Tool::Spot => Icon::Spotlight,
         Tool::Serial => Icon::Serial,
     }
 }
@@ -929,19 +949,52 @@ pub fn clip_outside(dst: &mut [u8], stride: usize, dim: &[u8], sel: Rect, w: u32
     copy_rect(dst, stride, dim, stride, x1, y0, w as i32, y1);
 }
 
-/// Spotlight: dim everything inside the selection except the focus rectangle.
-pub fn spotlight(dst: &mut [u8], stride: usize, focus: Rect, sel: Rect, w: u32, h: u32) {
-    let Some(f) = focus.intersect(&sel) else {
-        return;
-    };
+/// How hard the selection is dimmed around its focus areas. Kept below the
+/// frame's own dim so the highlighted content still steps forward without
+/// turning the rest of the selection into a black plate.
+const SPOT_DIM: u32 = 100;
+
+/// Spotlight: dim everything inside the selection except the focus rectangles.
+/// The rectangles are unioned before any pixel is touched, so several
+/// highlights coexist instead of each pass darkening the previous one.
+pub fn spotlight(dst: &mut [u8], stride: usize, focus: &[Rect], sel: Rect, w: u32, h: u32) {
     let Some((x0, y0, x1, y1)) = sel.to_px(w, h) else {
         return;
     };
-    let (fx0, fy0, fx1, fy1) = (f.x0 as i32, f.y0 as i32, f.x1 as i32, f.y1 as i32);
-    tint_rect(dst, stride, x0, y0, x1, fy0, [0, 0, 0], 150);
-    tint_rect(dst, stride, x0, fy1, x1, y1, [0, 0, 0], 150);
-    tint_rect(dst, stride, x0, fy0, fx0, fy1, [0, 0, 0], 150);
-    tint_rect(dst, stride, fx1, fy0, x1, fy1, [0, 0, 0], 150);
+    let rects: Vec<(i32, i32, i32, i32)> = focus
+        .iter()
+        .filter_map(|r| r.intersect(&sel))
+        .filter_map(|r| r.to_px(w, h))
+        .collect();
+    if rects.is_empty() {
+        tint_rect(dst, stride, x0, y0, x1, y1, [0, 0, 0], SPOT_DIM);
+        return;
+    }
+    // Merge the covered spans row by row; a pixel is dimmed only when no
+    // focus rectangle covers it, which is what keeps highlights additive.
+    let mut spans: Vec<(i32, i32)> = Vec::with_capacity(rects.len());
+    for y in y0..y1 {
+        spans.clear();
+        for r in &rects {
+            if y >= r.1 && y < r.3 {
+                let (a, b) = (r.0.max(x0), r.2.min(x1));
+                if b > a {
+                    spans.push((a, b));
+                }
+            }
+        }
+        spans.sort_unstable();
+        let mut lit = x0;
+        for &(a, b) in spans.iter() {
+            if a > lit {
+                tint_rect(dst, stride, lit, y, a, y + 1, [0, 0, 0], SPOT_DIM);
+            }
+            lit = lit.max(b);
+        }
+        if lit < x1 {
+            tint_rect(dst, stride, lit, y, x1, y + 1, [0, 0, 0], SPOT_DIM);
+        }
+    }
 }
 
 /// Fade the four corners of the selection back into the dimmed surround, so
@@ -995,5 +1048,32 @@ pub fn round_selection(
             blend(x0 + xx, y1 - 1 - yy, cov);
             blend(x1 - 1 - xx, y1 - 1 - yy, cov);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Spotlights are a union, not a stack: every focus rect keeps its pixels
+    /// at full brightness, overlapping rects darken nothing, and the rest of
+    /// the selection is dimmed exactly once (a second pass would go darker).
+    #[test]
+    fn spotlights_union_instead_of_stacking() {
+        let (w, h) = (40u32, 20u32);
+        let mut buf = vec![255u8; (w * h * 4) as usize];
+        let sel = Rect::from_xywh(2.0, 2.0, 36.0, 16.0);
+        let a = Rect::from_xywh(4.0, 4.0, 8.0, 8.0);
+        let b = Rect::from_xywh(10.0, 4.0, 8.0, 8.0); // overlaps `a`
+        let c = Rect::from_xywh(24.0, 4.0, 8.0, 8.0);
+        spotlight(&mut buf, (w * 4) as usize, &[a, b, c], sel, w, h);
+        let px = |x: u32, y: u32| buf[((y * w + x) * 4) as usize];
+        let dimmed = (255 * (255 - SPOT_DIM) / 255) as u8;
+
+        assert_eq!(px(5, 5), 255, "first focus must stay bright");
+        assert_eq!(px(25, 5), 255, "a later focus must stay bright");
+        assert_eq!(px(11, 5), 255, "overlap must not double dim");
+        assert_eq!(px(20, 5), dimmed, "surround is dimmed exactly once");
+        assert_eq!(px(1, 1), 255, "pixels outside the selection are untouched");
     }
 }

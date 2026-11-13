@@ -83,20 +83,26 @@ pub enum Tool {
     /// steal the drag that was meant to draw a new one.
     Hand = 0,
     Rect = 1,
-    Arrow = 2,
-    Text = 3,
-    Marker = 4,
-    Blur = 5,
-    Spot = 6,
+    Ellipse = 2,
+    Arrow = 3,
+    /// Cubic connector: an arrow without the head, same two draggable
+    /// controls, so its curvature stays editable after the stroke.
+    Connector = 4,
+    Text = 5,
+    Marker = 6,
+    Blur = 7,
+    Spot = 8,
     /// Numbered step badge (1, 2, 3 …).
-    Serial = 7,
+    Serial = 9,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 8] = [
+    pub const ALL: [Tool; 10] = [
         Tool::Hand,
         Tool::Rect,
+        Tool::Ellipse,
         Tool::Arrow,
+        Tool::Connector,
         Tool::Text,
         Tool::Marker,
         Tool::Blur,
@@ -116,7 +122,9 @@ impl Tool {
     pub fn of_kind(k: &Kind) -> Tool {
         match k {
             Kind::Rect { .. } => Tool::Rect,
+            Kind::Ellipse { .. } => Tool::Ellipse,
             Kind::Arrow { .. } => Tool::Arrow,
+            Kind::Connector { .. } => Tool::Connector,
             Kind::Text { .. } => Tool::Text,
             Kind::Marker { .. } => Tool::Marker,
             Kind::Blur { .. } => Tool::Blur,
@@ -133,10 +141,23 @@ pub enum Kind {
         radius: f32,
         filled: bool,
     },
+    /// Inscribed in `r`, so a drag draws an ellipse and a square drag a circle.
+    Ellipse {
+        r: Rect,
+        filled: bool,
+    },
     /// Cubic Bézier arrow. A straight arrow simply keeps both controls on the
     /// chord (at the thirds); the two are separately draggable, which is what
     /// makes the bow amount and side freely adjustable.
     Arrow {
+        a: Pt,
+        c1: Pt,
+        c2: Pt,
+        b: Pt,
+    },
+    /// The same cubic without the head: a connective line whose bend is still
+    /// re-editable through its two control grips.
+    Connector {
         a: Pt,
         c1: Pt,
         c2: Pt,
@@ -183,12 +204,18 @@ impl Obj {
     pub fn bounds(&self) -> Rect {
         let pad = match &self.kind {
             Kind::Marker { .. } => self.width * 0.5,
-            Kind::Rect { .. } | Kind::Arrow { .. } => self.width * 0.5,
+            Kind::Rect { .. }
+            | Kind::Ellipse { .. }
+            | Kind::Arrow { .. }
+            | Kind::Connector { .. } => self.width * 0.5,
             Kind::Text { .. } | Kind::Blur { .. } | Kind::Spot { .. } | Kind::Serial { .. } => 0.0,
         };
         let raw = match &self.kind {
-            Kind::Rect { r, .. } | Kind::Blur { r } | Kind::Spot { r } => *r,
-            Kind::Arrow { a, c1, c2, b } => {
+            Kind::Rect { r, .. }
+            | Kind::Ellipse { r, .. }
+            | Kind::Blur { r }
+            | Kind::Spot { r } => *r,
+            Kind::Arrow { a, c1, c2, b } | Kind::Connector { a, c1, c2, b } => {
                 // The curve lies inside the control hull, so this is tight for
                 // a straight arrow (controls on the chord) and exact for a bow.
                 Rect::new(
@@ -232,10 +259,27 @@ impl Obj {
                     outer.contains(p.x, p.y) && !inner.contains(p.x, p.y)
                 }
             }
+            Kind::Ellipse { r, filled } => {
+                let (cx, cy) = r.center();
+                let (rx, ry) = (r.width() * 0.5, r.height() * 0.5);
+                if rx < 0.01 || ry < 0.01 {
+                    return r.inflate(tol).contains(p.x, p.y);
+                }
+                let nx = (p.x - cx) / rx;
+                let ny = (p.y - cy) / ry;
+                let d = (nx * nx + ny * ny).sqrt();
+                // Distance to the rim in pixels, via the smaller semi-axis.
+                let band = (tol + self.width * 0.5) / rx.min(ry);
+                if *filled {
+                    d <= 1.0 + band
+                } else {
+                    (d - 1.0).abs() <= band
+                }
+            }
             Kind::Blur { r } | Kind::Spot { r } => r.contains(p.x, p.y),
             Kind::Text { .. } => self.bounds().contains(p.x, p.y),
             Kind::Serial { at, size, .. } => at.dist(&p) <= size * 0.5 + tol,
-            Kind::Arrow { a, c1, c2, b } => {
+            Kind::Arrow { a, c1, c2, b } | Kind::Connector { a, c1, c2, b } => {
                 let n = 24;
                 let mut prev = *a;
                 for i in 1..=n {
@@ -264,13 +308,16 @@ impl Obj {
 
     pub fn translate(&mut self, dx: f32, dy: f32) {
         match &mut self.kind {
-            Kind::Rect { r, .. } | Kind::Blur { r } | Kind::Spot { r } => {
+            Kind::Rect { r, .. }
+            | Kind::Ellipse { r, .. }
+            | Kind::Blur { r }
+            | Kind::Spot { r } => {
                 r.x0 += dx;
                 r.x1 += dx;
                 r.y0 += dy;
                 r.y1 += dy;
             }
-            Kind::Arrow { a, c1, c2, b, .. } => {
+            Kind::Arrow { a, c1, c2, b, .. } | Kind::Connector { a, c1, c2, b, .. } => {
                 for p in [a, c1, c2, b] {
                     p.x += dx;
                     p.y += dy;
@@ -308,14 +355,17 @@ impl Obj {
             p.y = new.y0 + (p.y - old.y0) * sy;
         };
         match &mut self.kind {
-            Kind::Rect { r, .. } | Kind::Blur { r } | Kind::Spot { r } => {
+            Kind::Rect { r, .. }
+            | Kind::Ellipse { r, .. }
+            | Kind::Blur { r }
+            | Kind::Spot { r } => {
                 let mut a = Pt::new(r.x0, r.y0);
                 let mut b = Pt::new(r.x1, r.y1);
                 map(&mut a);
                 map(&mut b);
                 *r = Rect::new(a.x, a.y, b.x, b.y);
             }
-            Kind::Arrow { a, c1, c2, b, .. } => {
+            Kind::Arrow { a, c1, c2, b, .. } | Kind::Connector { a, c1, c2, b, .. } => {
                 map(a);
                 map(c1);
                 map(c2);
@@ -358,6 +408,13 @@ pub fn arrow_bowed(a: Pt, b: Pt, bow: f32) -> (Pt, Pt) {
         Pt::new(c1.x - dy * bow, c1.y + dx * bow),
         Pt::new(c2.x - dy * bow, c2.y + dx * bow),
     )
+}
+
+/// Highlighter stroke width for one of the shared width presets. The nib is
+/// wider than a pen but no longer floors at 10 px, so the thin preset actually
+/// draws a thin highlighter.
+pub fn marker_stroke(width: f32) -> f32 {
+    (width * 3.0).max(4.0)
 }
 
 /// Whether the controls differ from the straight thirds. Comparing controls
@@ -497,6 +554,28 @@ mod tests {
         let mid = cubic(a, c1, c2, b, 0.5);
         let chord = Pt::new(45.0, 15.0);
         assert!(mid.dist(&chord) < 0.01);
+    }
+
+    /// The circle tool must hit its rim, not its hollow centre, and the fill
+    /// toggle must switch that contract.
+    #[test]
+    fn ellipse_hit_follows_the_rim() {
+        let color = crate::surface::Rgba::opaque(0, 0, 0);
+        let r = Rect::from_xywh(10.0, 10.0, 100.0, 60.0);
+        let hollow = Obj::new(Kind::Ellipse { r, filled: false }, color, 2.0);
+        assert!(hollow.hit(Pt::new(110.0, 40.0), 2.0), "right rim");
+        assert!(!hollow.hit(Pt::new(60.0, 40.0), 2.0), "centre is empty");
+        assert!(!hollow.hit(Pt::new(110.0, 10.0), 2.0), "corner is outside");
+        let filled = Obj::new(Kind::Ellipse { r, filled: true }, color, 2.0);
+        assert!(filled.hit(Pt::new(60.0, 40.0), 2.0), "filled centre");
+        assert!(!filled.hit(Pt::new(115.0, 10.0), 2.0), "outside the oval");
+    }
+
+    #[test]
+    fn highlighter_thin_preset_is_thinner_than_before() {
+        assert_eq!(marker_stroke(1.5), 4.5);
+        assert_eq!(marker_stroke(3.0), 9.0);
+        assert_eq!(marker_stroke(6.0), 18.0);
     }
 
     /// Both sides and any amount come from the same signed bow, and the two

@@ -12,11 +12,13 @@ use crate::surface::{Rect, Rgba, Sk};
 pub enum Icon {
     Hand,
     Frame,
+    Ellipse,
     Vector,
+    Connector,
     Glyph,
     Marker,
     Defocus,
-    Aperture,
+    Spotlight,
     Rewind,
     Forward,
     Stack,
@@ -204,10 +206,31 @@ pub fn draw(sk: &mut Sk, icon: Icon, area: Rect, color: Rgba, weight: f32) {
             }
             pen.round_rect(9.0, 9.0, 15.0, 15.0, 1.4, false);
         }
+        Icon::Ellipse => {
+            pen.circle(12.0, 12.0, 8.4, false);
+        }
         Icon::Vector => {
             pen.circle(5.5, 18.5, 1.9, false);
             pen.line(6.8, 17.2, 16.2, 7.8);
             pen.head((17.6, 6.4), (16.2, 7.8), 4.6, 2.1);
+        }
+        Icon::Connector => {
+            // Two endpoints on a gentle S: a line that connects without an
+            // arrowhead, and whose bow is adjustable.
+            let mut pb = tiny_skia::PathBuilder::new();
+            let a = pen.p(4.6, 17.6);
+            let c1 = pen.p(8.2, 17.6);
+            let c2 = pen.p(15.8, 6.4);
+            let b = pen.p(19.4, 6.4);
+            pb.move_to(a.0, a.1);
+            pb.cubic_to(c1.0, c1.1, c2.0, c2.1, b.0, b.1);
+            let w = pen.weight;
+            let c = pen.color;
+            if let Some(path) = pb.finish() {
+                pen.sk.stroke_path(&path, w, c, false);
+            }
+            pen.circle(4.6, 17.6, 1.8, true);
+            pen.circle(19.4, 6.4, 1.8, true);
         }
         Icon::Glyph => {
             // A serif "A" as two stems plus a crossbar, over a baseline tick.
@@ -217,36 +240,58 @@ pub fn draw(sk: &mut Sk, icon: Icon, area: Rect, color: Rgba, weight: f32) {
             pen.line(5.0, 21.0, 19.0, 21.0);
         }
         Icon::Marker => {
-            pen.fill_poly(&[(9.0, 4.0), (14.0, 6.0), (9.5, 15.0), (4.5, 13.0)]);
-            pen.poly(&[(9.0, 4.0), (14.0, 6.0), (9.5, 15.0), (4.5, 13.0)], true);
-            pen.line(4.0, 20.5, 20.0, 20.5);
+            // A chisel marker laid diagonally over the broad swath it leaves.
+            // The split between nib and barrel plus the full-width stroke is
+            // the highlighter silhouette; a bare pen read as a pencil and an
+            // upright body as a bottle at 20 px.
+            pen.round_rect(3.8, 19.2, 20.2, 21.4, 1.0, true);
+            pen.fill_poly(&[(8.2, 12.6), (16.4, 4.4), (19.6, 7.6), (11.4, 15.8)]);
+            pen.fill_poly(&[(7.3, 13.5), (10.5, 16.7), (8.6, 18.6), (5.4, 15.4)]);
         }
         Icon::Defocus => {
-            // Two concentric dotted rings with a steady core: defocus as
-            // scattered points, not as a spiral that read like a "C".
-            for r in [8.2f32, 5.2] {
-                for k in 0..4 {
-                    let a0 = k as f32 * core::f32::consts::TAU / 4.0 + 0.34;
-                    let a1 = (k + 1) as f32 * core::f32::consts::TAU / 4.0 - 0.34;
-                    pen.arc(12.0, 12.0, r, a0, a1);
-                }
+            // A water drop: the image-editor sign for soften/blur. Four cubics
+            // keep it one clean stroke at 16 px; an inner gloss arc made it
+            // read as a power button, so the silhouette carries it alone.
+            let mut pb = tiny_skia::PathBuilder::new();
+            let apex = pen.p(12.0, 3.2);
+            let r1 = pen.p(14.2, 7.2);
+            let r2 = pen.p(17.8, 10.4);
+            let right = pen.p(17.8, 14.4);
+            pb.move_to(apex.0, apex.1);
+            pb.cubic_to(r1.0, r1.1, r2.0, r2.1, right.0, right.1);
+            let d1 = pen.p(17.8, 17.8);
+            let d2 = pen.p(15.2, 20.6);
+            let bottom = pen.p(12.0, 20.6);
+            pb.cubic_to(d1.0, d1.1, d2.0, d2.1, bottom.0, bottom.1);
+            let l1 = pen.p(8.8, 20.6);
+            let l2 = pen.p(6.2, 17.8);
+            let left = pen.p(6.2, 14.4);
+            pb.cubic_to(l1.0, l1.1, l2.0, l2.1, left.0, left.1);
+            let u1 = pen.p(6.2, 10.4);
+            let u2 = pen.p(9.8, 7.2);
+            pb.cubic_to(u1.0, u1.1, u2.0, u2.1, apex.0, apex.1);
+            pb.close();
+            let w = pen.weight;
+            let c = pen.color;
+            if let Some(path) = pb.finish() {
+                pen.sk.stroke_path(&path, w, c, false);
             }
-            pen.circle(12.0, 12.0, 1.5, true);
         }
-        Icon::Aperture => {
-            for i in 0..6 {
-                let a = i as f32 * core::f32::consts::TAU / 6.0;
+        Icon::Spotlight => {
+            // A lit core with eight rays: light aimed at one area. Unlike a
+            // lamp-and-cone silhouette, which collapsed into the "eject" glyph
+            // at 20 px, the sun stays distinct from every other tool.
+            pen.circle(12.0, 12.0, 3.9, true);
+            for i in 0..8 {
+                let a = i as f32 * core::f32::consts::TAU / 8.0;
                 let (s, c) = (a.sin(), a.cos());
-                pen.line(12.0 + 3.4 * c, 12.0 + 3.4 * s, 12.0 + 8.0 * c, 12.0 + 8.0 * s);
-                let a2 = a + 0.9;
                 pen.line(
-                    12.0 + 8.0 * c,
-                    12.0 + 8.0 * s,
-                    12.0 + 8.0 * a2.cos(),
-                    12.0 + 8.0 * a2.sin(),
+                    12.0 + 6.2 * c,
+                    12.0 + 6.2 * s,
+                    12.0 + 8.7 * c,
+                    12.0 + 8.7 * s,
                 );
             }
-            pen.circle(12.0, 12.0, 2.0, true);
         }
         Icon::Rewind => {
             // Hook arrow: the curve comes back to the left and the head points

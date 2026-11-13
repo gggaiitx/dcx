@@ -98,12 +98,14 @@ pub fn tip(a: Act) -> (&'static str, &'static str) {
     match a {
         Act::Tool(Tool::Hand) => ("移动 / 选择", "1"),
         Act::Tool(Tool::Rect) => ("矩形", "2"),
-        Act::Tool(Tool::Arrow) => ("箭头", "3"),
-        Act::Tool(Tool::Text) => ("文本", "4"),
-        Act::Tool(Tool::Marker) => ("荧光笔", "5"),
-        Act::Tool(Tool::Blur) => ("模糊", "6"),
-        Act::Tool(Tool::Spot) => ("聚光", "7"),
-        Act::Tool(Tool::Serial) => ("序号标记", "8"),
+        Act::Tool(Tool::Ellipse) => ("圆形", "3"),
+        Act::Tool(Tool::Arrow) => ("箭头", "4"),
+        Act::Tool(Tool::Connector) => ("连接线", "5"),
+        Act::Tool(Tool::Text) => ("文本", "6"),
+        Act::Tool(Tool::Marker) => ("荧光笔", "7"),
+        Act::Tool(Tool::Blur) => ("模糊", "8"),
+        Act::Tool(Tool::Spot) => ("聚光", "9"),
+        Act::Tool(Tool::Serial) => ("序号标记", "0"),
         Act::FullScreen => ("当前屏幕选区", "Ctrl+A"),
         Act::LongShot => ("长截图（滚动自动拼接）", "Ctrl+L"),
         Act::Radius => ("截图圆角", ""),
@@ -261,11 +263,11 @@ impl Layout {
                     attrs.push((Act::FontDown, WCELL));
                     attrs.push((Act::FontUp, WCELL));
                 }
-                Tool::Rect => {
+                Tool::Rect | Tool::Ellipse => {
                     group(&mut attrs);
                     attrs.push((Act::ToggleFill, WCELL));
                 }
-                Tool::Arrow => {
+                Tool::Arrow | Tool::Connector => {
                     group(&mut attrs);
                     attrs.push((Act::ToggleCurve, WCELL));
                 }

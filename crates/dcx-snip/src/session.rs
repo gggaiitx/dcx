@@ -63,8 +63,9 @@ const S_KEY: i32 = b'S' as i32;
 const V_KEY: i32 = b'V' as i32;
 const Y_KEY: i32 = b'Y' as i32;
 const Z_KEY: i32 = b'Z' as i32;
+const K0: i32 = b'0' as i32;
 const K1: i32 = b'1' as i32;
-const K8: i32 = b'8' as i32;
+const K9: i32 = b'9' as i32;
 
 thread_local! {
     static CURRENT: Cell<*mut Session> = const { Cell::new(core::ptr::null_mut()) };
@@ -1085,7 +1086,13 @@ impl Session {
         let t = Tool::of_kind(&obj.kind);
         matches!(
             t,
-            Tool::Rect | Tool::Arrow | Tool::Text | Tool::Marker | Tool::Serial
+            Tool::Rect
+                | Tool::Ellipse
+                | Tool::Arrow
+                | Tool::Connector
+                | Tool::Text
+                | Tool::Marker
+                | Tool::Serial
         )
         .then_some(t)
     }
@@ -1270,7 +1277,8 @@ impl Session {
                 } else {
                     p
                 };
-                if let Kind::Arrow { c1, c2, .. } = &mut next.kind {
+                if let Kind::Arrow { c1, c2, .. } | Kind::Connector { c1, c2, .. } = &mut next.kind
+                {
                     // Each control follows the pointer independently: any bow
                     // amount, either side, asymmetric or S-shaped.
                     if which == 0 {
@@ -1450,10 +1458,12 @@ impl Session {
                         .find(|h| handle_point(b, *h).dist(&p) <= r)
                         .map(Phase::ResizeObj)
                         .or_else(|| match &obj.kind {
-                            Kind::Arrow { c1, c2, .. } => [*c1, *c2]
-                                .iter()
-                                .position(|q| q.dist(&p) <= r)
-                                .map(Phase::BendObj),
+                            Kind::Arrow { c1, c2, .. } | Kind::Connector { c1, c2, .. } => {
+                                [*c1, *c2]
+                                    .iter()
+                                    .position(|q| q.dist(&p) <= r)
+                                    .map(Phase::BendObj)
+                            }
                             _ => None,
                         })
                         .or_else(|| obj.hit(p, 4.0 * self.scale).then_some(Phase::MoveObj));
@@ -1482,24 +1492,26 @@ impl Session {
             }
         }
 
-        // A selected arrow keeps its frame and cubic grips live in Arrow mode:
+        // A selected cubic keeps its frame and grips live in its own mode:
         // drag a grip to bend, drag a frame handle to resize. Any other press
         // on the body is handled further down (select / move), so drawing over
         // an old arrow does not silently stack a second one.
-        if self.tool == Tool::Arrow {
+        if matches!(self.tool, Tool::Arrow | Tool::Connector) {
             if let Some(i) = self.doc.selected {
                 if let Some(obj) = self.doc.objs.get(i).cloned() {
-                    if matches!(obj.kind, Kind::Arrow { .. }) {
+                    if Tool::of_kind(&obj.kind) == self.tool {
                         let b = obj.bounds();
                         let r = HANDLE_HIT * self.scale;
                         let grabbed = (0..8)
                             .find(|h| handle_point(b, *h).dist(&p) <= r)
                             .map(Phase::ResizeObj)
                             .or_else(|| match &obj.kind {
-                                Kind::Arrow { c1, c2, .. } => [*c1, *c2]
-                                    .iter()
-                                    .position(|q| q.dist(&p) <= r)
-                                    .map(Phase::BendObj),
+                                Kind::Arrow { c1, c2, .. } | Kind::Connector { c1, c2, .. } => {
+                                    [*c1, *c2]
+                                        .iter()
+                                        .position(|q| q.dist(&p) <= r)
+                                        .map(Phase::BendObj)
+                                }
                                 _ => None,
                             });
                         if let Some(phase) = grabbed {
@@ -1554,12 +1566,12 @@ impl Session {
                     }
                     return;
                 }
-                // Arrow tool: pressing an existing arrow selects it instead of
-                // stacking a second head on top — the same "click again to
-                // re-edit" flow the text tool has. Pressing empty space starts
-                // nothing and, on release, clears the previous edit state.
-                if self.tool == Tool::Arrow {
-                    if let Some(i) = self.object_of_kind_at(p, Tool::Arrow) {
+                // Cubic tools: pressing an existing arrow/connector selects it
+                // instead of stacking a second one on top — the same "click
+                // again to re-edit" flow the text tool has. Pressing empty
+                // space starts nothing and, on release, clears the edit state.
+                if matches!(self.tool, Tool::Arrow | Tool::Connector) {
+                    if let Some(i) = self.object_of_kind_at(p, self.tool) {
                         self.doc.selected = Some(i);
                         if let Some(obj) = self.doc.objs.get(i).cloned() {
                             self.drag_from = obj.bounds();
@@ -1712,23 +1724,27 @@ impl Session {
         if self.layout.bar.contains(p.x, p.y) {
             return;
         }
-        // Double-click a cubic control straightens the arrow again, matching
+        // Double-click a cubic control straightens the line again, matching
         // the usual "drag to bend, double-click to reset" gesture. This works
-        // in Arrow mode too, right after the stroke.
+        // in the drawing tool's own mode too, right after the stroke.
         let r = HANDLE_HIT * self.scale;
         let on_ctrl = self
             .doc
             .selected
             .and_then(|i| self.doc.objs.get(i))
             .is_some_and(|o| match &o.kind {
-                Kind::Arrow { c1, c2, .. } => c1.dist(&p) <= r || c2.dist(&p) <= r,
+                Kind::Arrow { c1, c2, .. } | Kind::Connector { c1, c2, .. } => {
+                    c1.dist(&p) <= r || c2.dist(&p) <= r
+                }
                 _ => false,
             });
         if on_ctrl {
             self.doc.snapshot();
             if let Some(i) = self.doc.selected {
                 if let Some(o) = self.doc.objs.get_mut(i) {
-                    if let Kind::Arrow { a, c1, c2, b } = &mut o.kind {
+                    if let Kind::Arrow { a, c1, c2, b } | Kind::Connector { a, c1, c2, b } =
+                        &mut o.kind
+                    {
                         let (q1, q2) = crate::model::arrow_straight(*a, *b);
                         *c1 = q1;
                         *c2 = q2;
@@ -2022,8 +2038,9 @@ impl Session {
                     self.invalidate();
                 }
             }
-            K1..=K8 => {
-                self.tool = Tool::from_index((vk - K1) as usize);
+            K0 | K1..=K9 => {
+                let i = if vk == K0 { 9 } else { (vk - K1) as usize };
+                self.tool = Tool::from_index(i);
                 self.doc.selected = None;
                 self.update_layout();
             }
@@ -2121,7 +2138,7 @@ impl Session {
                             return unsafe { LoadCursorW(0, cursor_for(h) as *const u16) };
                         }
                     }
-                    if let Kind::Arrow { c1, c2, .. } = &o.kind {
+                    if let Kind::Arrow { c1, c2, .. } | Kind::Connector { c1, c2, .. } = &o.kind {
                         if c1.dist(&p) <= r || c2.dist(&p) <= r {
                             return unsafe { LoadCursorW(0, IDC_HAND as *const u16) };
                         }
@@ -2348,18 +2365,22 @@ impl Session {
             }
             Act::Width(i) => {
                 self.width_index = Some(i.min(layout::WIDTHS.len() - 1));
-                self.width = layout::WIDTHS[self.width_index.unwrap()];
+                self.width = layout::WIDTHS[self.width_index.unwrap_or(0)];
                 self.hud = Some((format!("线宽 {}", fmt_num(self.width)), now_ms() + HUD_MS));
                 if let Some(idx) = self.doc.selected {
+                    let target = match self.doc.objs.get(idx).map(|o| &o.kind) {
+                        Some(Kind::Marker { .. }) => crate::model::marker_stroke(self.width),
+                        _ => self.width,
+                    };
                     let changed = self
                         .doc
                         .objs
                         .get(idx)
-                        .is_some_and(|o| (o.width - self.width).abs() > 0.01);
+                        .is_some_and(|o| (o.width - target).abs() > 0.01);
                     if changed {
                         self.doc.snapshot();
                         if let Some(o) = self.doc.objs.get_mut(idx) {
-                            o.width = self.width;
+                            o.width = target;
                         }
                         self.invalidate();
                     }
@@ -2452,15 +2473,18 @@ impl Session {
             }
             Act::ToggleFill => {
                 if let Some(idx) = self.doc.selected {
-                    let is_rect = matches!(
+                    let is_shape = matches!(
                         self.doc.objs.get(idx).map(|o| &o.kind),
-                        Some(Kind::Rect { .. })
+                        Some(Kind::Rect { .. } | Kind::Ellipse { .. })
                     );
-                    if is_rect {
+                    if is_shape {
                         self.doc.snapshot();
                         if let Some(o) = self.doc.objs.get_mut(idx) {
-                            if let Kind::Rect { filled, .. } = &mut o.kind {
-                                *filled = !*filled;
+                            match &mut o.kind {
+                                Kind::Rect { filled, .. } | Kind::Ellipse { filled, .. } => {
+                                    *filled = !*filled;
+                                }
+                                _ => {}
                             }
                         }
                         self.invalidate();
@@ -2473,14 +2497,16 @@ impl Session {
             }
             Act::ToggleCurve => {
                 if let Some(idx) = self.doc.selected {
-                    let is_arrow = matches!(
+                    let is_cubic = matches!(
                         self.doc.objs.get(idx).map(|o| &o.kind),
-                        Some(Kind::Arrow { .. })
+                        Some(Kind::Arrow { .. } | Kind::Connector { .. })
                     );
-                    if is_arrow {
+                    if is_cubic {
                         self.doc.snapshot();
                         if let Some(o) = self.doc.objs.get_mut(idx) {
-                            if let Kind::Arrow { a, c1, c2, b } = &mut o.kind {
+                            if let Kind::Arrow { a, c1, c2, b } | Kind::Connector { a, c1, c2, b } =
+                                &mut o.kind
+                            {
                                 // The button cycles between the straight chord
                                 // and a default bow; the two control grips are
                                 // for everything in between and beyond.
@@ -2547,12 +2573,12 @@ impl Session {
         self.phase = Phase::Drawing;
         self.anchor = p;
         self.drag_start = p;
-        // The arrow tool defers its stroke: pressing without moving must not
+        // The cubic tools defer their stroke: pressing without moving must not
         // leave anything behind. A click on empty canvas is how the user
-        // leaves the previous arrow's edit state (see `finish_draft`); the
-        // arrow itself stays on the canvas. The stroke is created only on the
+        // leaves the previous object's edit state (see `finish_draft`); the
+        // object itself stays on the canvas. The stroke is created only on the
         // first move past DRAG_MIN (see `update_draft`).
-        if self.tool == Tool::Arrow {
+        if matches!(self.tool, Tool::Arrow | Tool::Connector) {
             return;
         }
         // Any other stroke starts with a clean slate: the previous object's
@@ -2569,10 +2595,18 @@ impl Session {
                 color,
                 width,
             ),
+            Tool::Ellipse => Obj::new(
+                Kind::Ellipse {
+                    r: Rect::new(p.x, p.y, p.x, p.y),
+                    filled: self.fill,
+                },
+                color,
+                width,
+            ),
             Tool::Marker => Obj::new(
                 Kind::Marker { pts: vec![p] },
                 color,
-                (width * 4.0).max(10.0),
+                crate::model::marker_stroke(width),
             ),
             Tool::Blur => Obj::new(
                 Kind::Blur {
@@ -2588,7 +2622,7 @@ impl Session {
                 color,
                 0.0,
             ),
-            Tool::Arrow | Tool::Text | Tool::Hand | Tool::Serial => return,
+            Tool::Arrow | Tool::Connector | Tool::Text | Tool::Hand | Tool::Serial => return,
         });
         self.invalidate();
         self.redraw(false);
@@ -2596,20 +2630,27 @@ impl Session {
 
     fn update_draft(&mut self, p: Pt) {
         if self.draft.is_none() {
-            if self.tool != Tool::Arrow || self.anchor.dist(&p) < DRAG_MIN * self.scale {
+            let cubic = matches!(self.tool, Tool::Arrow | Tool::Connector);
+            if !cubic || self.anchor.dist(&p) < DRAG_MIN * self.scale {
                 return;
             }
-            self.doc.selected = None;
-            self.draft = Some(Obj::new(
+            let kind = if self.tool == Tool::Arrow {
                 Kind::Arrow {
                     a: self.anchor,
                     c1: self.anchor,
                     c2: self.anchor,
                     b: p,
-                },
-                self.color,
-                self.width,
-            ));
+                }
+            } else {
+                Kind::Connector {
+                    a: self.anchor,
+                    c1: self.anchor,
+                    c2: self.anchor,
+                    b: p,
+                }
+            };
+            self.doc.selected = None;
+            self.draft = Some(Obj::new(kind, self.color, self.width));
             self.invalidate();
             self.update_layout();
             // Fall through: the block below sets `b` and both controls. Leaving
@@ -2620,10 +2661,13 @@ impl Session {
             return;
         };
         match &mut draft.kind {
-            Kind::Rect { r, .. } | Kind::Blur { r } | Kind::Spot { r } => {
+            Kind::Rect { r, .. }
+            | Kind::Ellipse { r, .. }
+            | Kind::Blur { r }
+            | Kind::Spot { r } => {
                 *r = Rect::new(self.anchor.x, self.anchor.y, p.x, p.y);
             }
-            Kind::Arrow { a, c1, c2, b } => {
+            Kind::Arrow { a, c1, c2, b } | Kind::Connector { a, c1, c2, b } => {
                 *b = p;
                 let (q1, q2) = if self.curve {
                     crate::model::arrow_bowed(*a, *b, DEFAULT_BOW)
@@ -2662,20 +2706,22 @@ impl Session {
         };
         let bounds = draft.bounds();
         let tiny = match &draft.kind {
-            Kind::Arrow { a, b, .. } => a.dist(b) < DRAG_MIN * self.scale,
+            Kind::Arrow { a, b, .. } | Kind::Connector { a, b, .. } => {
+                a.dist(b) < DRAG_MIN * self.scale
+            }
             _ => bounds.width() < 3.0 && bounds.height() < 3.0,
         };
         if tiny {
             self.invalidate();
             return;
         }
-        let is_arrow = matches!(draft.kind, Kind::Arrow { .. });
+        let cubic = matches!(draft.kind, Kind::Arrow { .. } | Kind::Connector { .. });
         self.doc.snapshot();
         self.doc.objs.push(draft);
-        // Keep a freshly drawn arrow selected: its two cubic grips become
+        // Keep a freshly drawn cubic selected: its two grips become
         // immediately draggable, the way AirSnip hands you the curve controls
         // right after the stroke.
-        if is_arrow {
+        if cubic {
             self.doc.selected = Some(self.doc.objs.len() - 1);
         }
         self.invalidate();
@@ -3139,15 +3185,25 @@ impl Session {
             if let Some(sel) = sel {
                 let buf = surface.bytes_mut();
                 for obj in doc.objs.iter().chain(draft.iter()) {
-                    match &obj.kind {
-                        Kind::Blur { r } => {
-                            if let Some(clipped) = r.intersect(&sel) {
-                                paint::blur_region(buf, stride, base, clipped, w, h, 1.0);
-                            }
+                    if let Kind::Blur { r } = &obj.kind {
+                        if let Some(clipped) = r.intersect(&sel) {
+                            paint::blur_region(buf, stride, base, clipped, w, h, 1.0);
                         }
-                        Kind::Spot { r } => paint::spotlight(buf, stride, *r, sel, w, h),
-                        _ => {}
                     }
+                }
+                // One pass over the union of every spotlight: a later spot
+                // must light its own area, never re-shadow the earlier ones.
+                let spots: Vec<Rect> = doc
+                    .objs
+                    .iter()
+                    .chain(draft.iter())
+                    .filter_map(|o| match &o.kind {
+                        Kind::Spot { r } => Some(*r),
+                        _ => None,
+                    })
+                    .collect();
+                if !spots.is_empty() {
+                    paint::spotlight(buf, stride, &spots, sel, w, h);
                 }
             }
             // Annotations only exist in the context of a selection: without
@@ -3198,21 +3254,26 @@ impl Session {
         // next to a yellow selected arrow.
         let (color, width_index, fill, curve) = if let Some(o) = sel_obj {
             let fill = match &o.kind {
-                Kind::Rect { filled, .. } => *filled,
+                Kind::Rect { filled, .. } | Kind::Ellipse { filled, .. } => *filled,
                 _ => self.fill,
             };
             let curve = match &o.kind {
-                Kind::Arrow { a, c1, c2, b } => crate::model::arrow_bent(*a, *c1, *c2, *b),
+                Kind::Arrow { a, c1, c2, b } | Kind::Connector { a, c1, c2, b } => {
+                    crate::model::arrow_bent(*a, *c1, *c2, *b)
+                }
                 _ => self.curve,
             };
-            (
-                o.color,
-                layout::WIDTHS
+            // Highlighter widths are nib widths, not the raw preset values, so
+            // the ring must compare against the scaled mapping.
+            let width_index = match &o.kind {
+                Kind::Marker { .. } => layout::WIDTHS
+                    .iter()
+                    .position(|v| (crate::model::marker_stroke(*v) - o.width).abs() < 0.01),
+                _ => layout::WIDTHS
                     .iter()
                     .position(|v| (*v - o.width).abs() < 0.01),
-                fill,
-                curve,
-            )
+            };
+            (o.color, width_index, fill, curve)
         } else {
             (self.color, self.width_index, self.fill, self.curve)
         };
@@ -3240,7 +3301,9 @@ impl Session {
             0.0
         };
         let curve_handles = sel_obj.and_then(|o| match &o.kind {
-            Kind::Arrow { a, c1, c2, b } => Some((*a, *c1, *c2, *b)),
+            Kind::Arrow { a, c1, c2, b } | Kind::Connector { a, c1, c2, b } => {
+                Some((*a, *c1, *c2, *b))
+            }
             _ => None,
         });
         // The attribute row reflects the selected text object's own font,
@@ -3553,6 +3616,69 @@ mod tests {
                 "a straight drag must not leave the controls on the anchor"
             ),
             _ => panic!("expected an arrow"),
+        }
+    }
+
+    /// The circle tool draws its own kind, and a connector comes out selected
+    /// with a live grip: dragging that grip later must bend it again.
+    #[test]
+    fn ellipse_and_connector_are_drawn_and_reeditable() {
+        fn lp(x: f32, y: f32) -> isize {
+            (((y as i32) << 16) | (x as i32 & 0xFFFF)) as isize
+        }
+
+        let (w, h) = (320u32, 220u32);
+        let shot = Shot {
+            origin: (0, 0),
+            w,
+            h,
+            bgra: vec![0u8; (w as usize) * (h as usize) * 4],
+        };
+        let mut s = build(shot, Config::default()).expect("session");
+        s.sel = Some(Rect::from_xywh(0.0, 0.0, w as f32, h as f32));
+        s.phase = Phase::Ready;
+
+        s.tool = Tool::Ellipse;
+        s.on_down(lp(40.0, 40.0));
+        s.on_up(lp(120.0, 100.0));
+        assert!(
+            matches!(
+                s.doc.objs.last().map(|o| &o.kind),
+                Some(Kind::Ellipse { .. })
+            ),
+            "the circle tool creates an ellipse"
+        );
+
+        s.tool = Tool::Connector;
+        s.on_down(lp(40.0, 130.0));
+        s.on_up(lp(160.0, 170.0));
+        let i = s.doc.objs.len() - 1;
+        assert!(
+            matches!(&s.doc.objs[i].kind, Kind::Connector { .. }),
+            "the connector tool creates a connector"
+        );
+        assert_eq!(s.doc.selected, Some(i), "fresh connector exposes its grips");
+
+        // The connector tool itself reselects the straight line for editing.
+        s.doc.selected = None;
+        s.on_down(lp(100.0, 150.0));
+        s.on_up(lp(100.0, 150.0));
+        assert_eq!(s.doc.selected, Some(i), "pressing the line reselects it");
+        assert_eq!(s.doc.objs.len(), i + 1, "no second connector is stacked");
+
+        let grip = match &s.doc.objs[i].kind {
+            Kind::Connector { c1, .. } => *c1,
+            _ => unreachable!(),
+        };
+        s.tool = Tool::Hand;
+        s.on_down(lp(grip.x, grip.y));
+        s.on_mouse(lp(80.0, 60.0));
+        s.on_up(lp(80.0, 60.0));
+        match &s.doc.objs[i].kind {
+            Kind::Connector { c1, .. } => {
+                assert!(c1.dist(&Pt::new(80.0, 60.0)) < 1.0, "grip drag bends it");
+            }
+            _ => panic!("object kind changed"),
         }
     }
 

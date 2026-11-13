@@ -146,6 +146,9 @@ pub struct Coverage {
     /// How far the mask extends past the anchor on every side. Italic overhang
     /// and a drop shadow both need more room than the plain 3 px bleed.
     pub bleed: f32,
+    /// Blurred alpha for the drop shadow; `None` unless the style asks for
+    /// one. Blurred once here so compositing stays a single mask blend.
+    pub shadow: Option<Vec<u8>>,
 }
 
 pub fn coverage_styled(text: &str, size: f32, style: &TextStyle) -> Option<std::rc::Rc<Coverage>> {
@@ -178,20 +181,29 @@ pub fn coverage_styled(text: &str, size: f32, style: &TextStyle) -> Option<std::
     Some(rc)
 }
 
-/// Hard-shadow offset for a text size, in physical pixels. Tied to the glyph
-/// height so a 12 px caption and a 96 px headline both look right, and capped
-/// so the mask stays small.
+/// Shadow offset for a text size, in physical pixels. Tied to the glyph height
+/// so a 12 px caption and a 96 px headline both look right, and capped so the
+/// mask stays small.
 pub fn shadow_offset(size: f32) -> f32 {
-    (size * 0.07).clamp(1.0, 6.0).round()
+    (size * 0.07).clamp(1.0, 5.0).round()
+}
+
+/// Shadow blur radius for a text size, in physical pixels. Small captions get
+/// a tight halo, headlines a soft one; the mask padding reserves twice this
+/// because the halo is the union of two box passes.
+pub fn shadow_blur(size: f32) -> f32 {
+    (size * 0.04).clamp(1.0, 4.0).round()
 }
 
 fn coverage_raw(text: &str, size: f32, style: &TextStyle) -> Option<Coverage> {
     let (tw, th) = measure_styled(text, size, style);
-    // The mask must contain the shadow, otherwise the offset copy is clipped
-    // at the mask border and the shadow turns into a hard-edged ghost.
+    // The mask must contain the whole shadow: offset plus the halo of two box
+    // passes. Otherwise the blur is clipped at the mask border and the shadow
+    // turns into a hard-edged ghost.
+    let blur = if style.shadow { shadow_blur(size) } else { 0.0 };
     let bleed = BLEED
         + if style.shadow {
-            shadow_offset(size)
+            shadow_offset(size) + blur * 2.0
         } else {
             0.0
         };
@@ -259,6 +271,11 @@ fn coverage_raw(text: &str, size: f32, style: &TextStyle) -> Option<Coverage> {
         for i in 0..n {
             alpha[i] = src[i * 4]; // red channel = coverage
         }
+        let shadow = if style.shadow {
+            Some(blur_alpha(&alpha, w as usize, h as usize, blur as usize))
+        } else {
+            None
+        };
 
         dcx_win32::SelectObject(dc, old_font);
         dcx_win32::SelectObject(dc, old_bmp);
@@ -270,8 +287,51 @@ fn coverage_raw(text: &str, size: f32, style: &TextStyle) -> Option<Coverage> {
             h: h as u32,
             alpha,
             bleed,
+            shadow,
         })
     }
+}
+
+/// Separable box blur with zero padding. Two passes approximate a Gaussian
+/// closely enough for a 1–4 px shadow halo.
+fn blur_alpha(src: &[u8], w: usize, h: usize, r: usize) -> Vec<u8> {
+    if r == 0 {
+        return src.to_vec();
+    }
+    box_blur(&box_blur(src, w, h, r), w, h, r)
+}
+
+fn box_blur(src: &[u8], w: usize, h: usize, r: usize) -> Vec<u8> {
+    let mut tmp = vec![0u8; src.len()];
+    let mut out = vec![0u8; src.len()];
+    let div = (2 * r + 1) as u32;
+    for y in 0..h {
+        let row = &src[y * w..(y + 1) * w];
+        let dst = &mut tmp[y * w..(y + 1) * w];
+        let mut sum: u32 = row[..r.min(w)].iter().map(|&v| v as u32).sum();
+        for (x, d) in dst.iter_mut().enumerate() {
+            if x + r < w {
+                sum += row[x + r] as u32;
+            }
+            if x > r {
+                sum -= row[x - r - 1] as u32;
+            }
+            *d = (sum / div) as u8;
+        }
+    }
+    for x in 0..w {
+        let mut sum: u32 = (0..r.min(h)).map(|y| tmp[y * w + x] as u32).sum();
+        for y in 0..h {
+            if y + r < h {
+                sum += tmp[(y + r) * w + x] as u32;
+            }
+            if y > r {
+                sum -= tmp[(y - r - 1) * w + x] as u32;
+            }
+            out[y * w + x] = (sum / div) as u8;
+        }
+    }
+    out
 }
 
 /// Truncate `body` to `max_w` physical pixels with an ellipsis. Counting
@@ -298,3 +358,22 @@ pub fn fit_px(body: &str, size: f32, style: &TextStyle, max_w: f32) -> String {
 /// Where the mask's top-left sits relative to the text anchor for a run with
 /// no shadow (the mask has a 3 px bleed).
 pub const BLEED: f32 = 3.0;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Two box passes spread a lit pixel into a symmetric halo; the mask
+    /// padding reserves twice the radius, so nothing is clipped at the edge.
+    #[test]
+    fn shadow_blur_spreads_coverage() {
+        let (w, h) = (9usize, 9usize);
+        let mut src = vec![0u8; w * h];
+        src[4 * w + 4] = 255;
+        let out = blur_alpha(&src, w, h, 1);
+        assert_eq!(out[4 * w + 4], 28, "centre keeps the bulk of the energy");
+        assert_eq!(out[4 * w + 3], 18, "halo is one column out");
+        assert_eq!(out[4 * w + 2], 9, "halo reaches two columns out");
+        assert_eq!(out[4 * w + 1], 0, "beyond the two-pass support is clear");
+    }
+}
