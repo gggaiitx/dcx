@@ -443,6 +443,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
+name = "base64"
+version = "0.22.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
+
+[[package]]
 name = "bit-set"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -886,7 +892,7 @@ checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 
 [[package]]
 name = "dcx-blur"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "cc",
  "dcx-win32",
@@ -894,7 +900,7 @@ dependencies = [
 
 [[package]]
 name = "dcx-box"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "dcx-organizer",
  "dcx-settings",
@@ -907,14 +913,14 @@ dependencies = [
 
 [[package]]
 name = "dcx-core"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "dcx-win32",
 ]
 
 [[package]]
 name = "dcx-effect-corners"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "dcx-core",
  "dcx-win32",
@@ -922,7 +928,7 @@ dependencies = [
 
 [[package]]
 name = "dcx-engine"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "cc",
  "dcx-blur",
@@ -934,7 +940,7 @@ dependencies = [
 
 [[package]]
 name = "dcx-host"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "dcx-core",
  "dcx-effect-corners",
@@ -952,7 +958,7 @@ dependencies = [
 
 [[package]]
 name = "dcx-island"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "dcx-island-config",
  "dcx-organizer",
@@ -973,7 +979,7 @@ dependencies = [
 
 [[package]]
 name = "dcx-island-config"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "dcx-win32",
  "serde",
@@ -982,7 +988,7 @@ dependencies = [
 
 [[package]]
 name = "dcx-organizer"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "dcx-win32",
  "serde",
@@ -991,7 +997,7 @@ dependencies = [
 
 [[package]]
 name = "dcx-search"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "crossbeam-channel",
  "dcx-organizer",
@@ -1012,7 +1018,7 @@ dependencies = [
 
 [[package]]
 name = "dcx-settings"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "dcx-win32",
  "serde",
@@ -1021,27 +1027,30 @@ dependencies = [
 
 [[package]]
 name = "dcx-snip"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
+ "base64",
  "dcx-win32",
  "image",
  "png 0.18.1",
  "serde",
+ "serde_json",
  "tiny-skia",
  "toml",
+ "windows 0.62.2",
 ]
 
 [[package]]
 name = "dcx-theme"
-version = "0.1.3"
+version = "0.1.4"
 
 [[package]]
 name = "dcx-win32"
-version = "0.1.3"
+version = "0.1.4"
 
 [[package]]
 name = "dcx-xaml"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "cc",
  "dcx-win32",

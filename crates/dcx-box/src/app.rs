@@ -787,6 +787,7 @@ impl App {
             let egui::Event::Key {
                 key,
                 pressed: true,
+                repeat: false,
                 modifiers,
                 ..
             } = ev
@@ -810,6 +811,12 @@ impl App {
             // in the rename box also opened the selected file (and Delete
             // replaced the box with the delete confirmation).
             if self.model.dialog.is_some() || self.model.popup.is_some() {
+                continue;
+            }
+            if key == egui::Key::F5 {
+                // Windows' own refresh key; same path as the menu row, so it
+                // gets the same sweep.
+                self.push(Cmd::Refresh);
                 continue;
             }
             if self.search_focused {
@@ -984,6 +991,33 @@ impl App {
                 }
             }
             Cmd::CollectDesktop(paths) => self.model.collect_desktop(&paths),
+            Cmd::AskRestoreLibrary => {
+                // Fixed scope: the whole collection, whatever tab is active.
+                let paths = self.model.library_paths();
+                if paths.is_empty() {
+                    self.model.toast("收纳库是空的");
+                } else {
+                    self.model.dialog = Some(Dialog::ConfirmRestoreDesktop {
+                        paths,
+                        scope: "收纳库".to_string(),
+                    });
+                }
+            }
+            Cmd::AskRestoreDesktop => {
+                // Scope follows the visible list: a category restores that
+                // category, 「全部」 restores the whole collection.
+                let (paths, scope) = self.model.restore_scope();
+                if paths.is_empty() {
+                    self.model.toast(if self.model.active == Tab::Desktop {
+                        "当前是桌面视图，没有可还原的项目"
+                    } else {
+                        "这里没有可还原的项目"
+                    });
+                } else {
+                    self.model.dialog = Some(Dialog::ConfirmRestoreDesktop { paths, scope });
+                }
+            }
+            Cmd::RestoreDesktop(paths) => self.model.restore_desktop(&paths),
             Cmd::OpenLibrary => match shell_io::open_dir(&self.model.library_folder()) {
                 Ok(()) => self.close_panel(),
                 Err(e) => self.model.toast(format!("无法打开收纳库：{e}")),
@@ -1012,7 +1046,16 @@ impl App {
                 Ok(()) => self.close_panel(),
                 Err(e) => self.model.toast(format!("无法打开桌面目录：{e}")),
             },
-            Cmd::Refresh => self.model.refresh(),
+            Cmd::Refresh => {
+                self.model.refresh();
+                // Timed from *after* the scan: it is synchronous, so starting
+                // the clock before it would eat most of the animation while
+                // the frame is blocked.
+                self.model.refresh_started = Some(Instant::now());
+                // Commands run after this frame is painted; ask for the next
+                // one so the sweep starts immediately.
+                ctx.request_repaint();
+            }
             Cmd::ClosePanel => self.close_panel(),
             Cmd::FocusSearch => self.model.search_focus = true,
             Cmd::AskDelete(paths) => {
@@ -1405,6 +1448,9 @@ impl eframe::App for App {
             ctx.set_pixels_per_point(self.scale);
         }
         self.tick();
+        if self.model.pump_bulk() {
+            ctx.request_repaint();
+        }
 
         // Flight recorder (see `last_state`): the clicks and the open/shown
         // transitions are the only things that can make the window twitch.

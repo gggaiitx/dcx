@@ -10,7 +10,7 @@ use dcx_organizer::{
     Snapshot, SortKey, ViewMode, CATCH_ALL,
 };
 use egui::Pos2;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -107,6 +107,13 @@ pub enum Cmd {
     /// Ask before moving every visible desktop item into the collection.
     AskCollectDesktop,
     CollectDesktop(Vec<PathBuf>),
+    /// Ask before restoring, scoped to the active tab. The footer button uses
+    /// this one.
+    AskRestoreDesktop,
+    /// Ask before restoring the whole collection, whatever tab is active. The
+    /// 「还原全部桌面」 menu row always uses this one.
+    AskRestoreLibrary,
+    RestoreDesktop(Vec<PathBuf>),
     /// Open the collection root in Explorer.
     OpenLibrary,
     /// Copy the collection root path to the clipboard.
@@ -170,6 +177,8 @@ pub enum MenuIcon {
     FileType,
     ArrowUpDown,
     Release,
+    /// Two left arrows against a wall: "put everything back".
+    ReleaseAll,
     Trash,
     Check,
     Expand,
@@ -246,6 +255,8 @@ pub enum Dialog {
     NewFolder { parent: PathBuf, text: String },
     NewCategory { label: String, exts: String },
     ConfirmCollectDesktop { paths: Vec<PathBuf> },
+    /// `scope` names what is being restored: 「应用」, 搜索结果 or 收纳库.
+    ConfirmRestoreDesktop { paths: Vec<PathBuf>, scope: String },
     About,
 }
 
@@ -285,6 +296,9 @@ pub struct Model {
     /// the thumb centre under it.
     pub scroll_grab: Option<f32>,
     pub last_refresh: Instant,
+    /// When the last user-triggered `Cmd::Refresh` finished, for the sweep
+    /// animation across the top of the list. `None` once it has played out.
+    pub refresh_started: Option<Instant>,
     /// When the opacity slider last moved, so the write is debounced.
     pub alpha_dirty: Option<Instant>,
     pub cfg_stamp: Option<(u64, u128)>,
@@ -294,6 +308,24 @@ pub struct Model {
     pub expanded: BTreeSet<PathBuf>,
     /// Rows currently visible (after tab/query/sort/tree). Rebuilt on refresh.
     pub rows: Vec<RowItem>,
+    /// A confirmed desktop↔library bulk move, sliced across frames by
+    /// [`Model::pump_bulk`].
+    bulk: Option<BulkJob>,
+}
+
+/// Kind of a bulk move, for the progress and result wording.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BulkKind {
+    Restore,
+    Collect,
+}
+
+struct BulkJob {
+    kind: BulkKind,
+    queue: VecDeque<PathBuf>,
+    total: usize,
+    moved: usize,
+    failed: usize,
 }
 
 /// A category chip being dragged to a new position.
@@ -368,12 +400,14 @@ impl Model {
             list_scroll: 0.0,
             scroll_grab: None,
             last_refresh: Instant::now(),
+            refresh_started: None,
             alpha_dirty: None,
             cfg_stamp: config_stamp(),
             search_focus: false,
             drag_in: false,
             expanded: BTreeSet::new(),
             rows: Vec::new(),
+            bulk: None,
         };
         m.rebuild_rows();
         m
@@ -957,18 +991,176 @@ impl Model {
 
     /// Bulk migration: move a confirmed list of desktop items into the library.
     pub fn collect_desktop(&mut self, paths: &[PathBuf]) {
+        self.start_bulk(BulkKind::Collect, paths);
+    }
+
+    fn start_bulk(&mut self, kind: BulkKind, paths: &[PathBuf]) {
         if paths.is_empty() {
             return;
         }
-        let (adopted, _) = self.org.absorb_auto(paths);
+        self.dialog = None;
+        self.bulk = Some(BulkJob {
+            kind,
+            queue: paths.iter().cloned().collect(),
+            total: paths.len(),
+            moved: 0,
+            failed: 0,
+        });
+    }
+
+    /// Run one slice of the pending bulk move. Returns true while work remains;
+    /// the frame loop requests another repaint so the panel stays live. The
+    /// final slice refreshes the list and reports the outcome.
+    ///
+    /// A whole-library restore or collection can be thousands of files, and a
+    /// library on another volume copies each one: doing that in a single call
+    /// froze the panel for the entire duration with no progress.
+    pub fn pump_bulk(&mut self) -> bool {
+        const BATCH: usize = 16;
+        let Some(job) = self.bulk.as_mut() else {
+            return false;
+        };
+        let n = job.queue.len().min(BATCH);
+        let batch: Vec<PathBuf> = job.queue.drain(..n).collect();
+        match job.kind {
+            BulkKind::Restore => {
+                let out = self.org.move_to_desktop(&batch);
+                job.moved += out.len();
+                job.failed += batch.len() - out.len();
+            }
+            BulkKind::Collect => {
+                let (adopted, _) = self.org.absorb_auto(&batch);
+                job.moved += adopted;
+                job.failed += batch.len() - adopted;
+            }
+        }
         let _ = self.org.save();
+        if !job.queue.is_empty() {
+            let (done, total, verb) = (
+                job.total - job.queue.len(),
+                job.total,
+                match job.kind {
+                    BulkKind::Restore => "还原",
+                    BulkKind::Collect => "收纳",
+                },
+            );
+            self.toast(format!("正在{verb}… {done}/{total}"));
+            return true;
+        }
+        let (kind, moved, failed) = (job.kind, job.moved, job.failed);
+        self.bulk = None;
         self.refresh();
-        self.leave_source_tab(None);
-        self.toast(format!("已收纳 {adopted} 项到收纳库"));
+        match kind {
+            BulkKind::Restore => {
+                if moved == 0 {
+                    self.toast("未能还原：文件可能正在使用中");
+                } else if failed > 0 {
+                    self.toast(format!(
+                        "已还原 {moved} 项到桌面，{failed} 项失败（文件可能正在使用中）"
+                    ));
+                } else {
+                    self.toast(format!("已还原 {moved} 项到桌面"));
+                }
+            }
+            BulkKind::Collect => {
+                self.leave_source_tab(None);
+                if failed > 0 {
+                    self.toast(format!("已收纳 {moved} 项到收纳库，{failed} 项失败"));
+                } else {
+                    self.toast(format!("已收纳 {moved} 项到收纳库"));
+                }
+            }
+        }
+        false
     }
 
     pub fn desktop_paths(&self) -> Vec<PathBuf> {
         self.desk_items.iter().map(|e| e.path.clone()).collect()
+    }
+
+    /// Every top-level item in the collection, regardless of the active tab.
+    /// Backs the fixed 「还原全部桌面」 menu row.
+    pub fn library_paths(&self) -> Vec<PathBuf> {
+        self.org.items().into_iter().map(|e| e.path).collect()
+    }
+
+    /// Menu label for 「桌面还原」, naming the same scope the footer uses.
+    pub fn restore_label(&self) -> String {
+        if self.active == Tab::Desktop {
+            return "桌面还原…".to_string();
+        }
+        if !self.query.trim().is_empty() {
+            return "还原搜索结果…".to_string();
+        }
+        match &self.active {
+            Tab::Key(_) => format!("还原「{}」到桌面…", self.active_label()),
+            Tab::Recent => "还原「最近 7 天」…".to_string(),
+            // On 「全部」 this is the same set as 「还原全部桌面」; the label
+            // stays tab-centric so the two rows do not read as duplicates.
+            _ => "还原当前视图…".to_string(),
+        }
+    }
+
+    /// What 「桌面还原」 acts on *right now*: the active category, the visible
+    /// list (search result / 最近), or the whole collection on 「全部」. The
+    /// second value labels the scope in the confirmation dialog.
+    pub fn restore_scope(&self) -> (Vec<PathBuf>, String) {
+        if self.active == Tab::Desktop {
+            return (Vec::new(), "桌面".to_string());
+        }
+        // A search or 「最近」 is a *view*: restore exactly the rows in it, not
+        // the tab behind it.
+        if !self.query.trim().is_empty() || self.active == Tab::Recent {
+            let paths = self
+                .rows
+                .iter()
+                .filter(|r| r.depth == 0)
+                .map(|r| r.path().clone())
+                .collect();
+            let scope = if self.query.trim().is_empty() {
+                format!("「{}」", self.active_label())
+            } else {
+                "搜索结果".to_string()
+            };
+            return (paths, scope);
+        }
+        match &self.active {
+            Tab::Key(k) => {
+                let paths = self
+                    .snap
+                    .items
+                    .iter()
+                    .filter(|e| &e.category == k)
+                    .map(|e| e.path.clone())
+                    .collect();
+                (paths, format!("「{}」", self.active_label()))
+            }
+            _ => (
+                self.org.items().into_iter().map(|e| e.path).collect(),
+                "收纳库".to_string(),
+            ),
+        }
+    }
+
+    /// Short label for the footer's hover hint, without touching the disk.
+    pub fn restore_hint(&self) -> String {
+        if self.active == Tab::Desktop {
+            return "当前是桌面视图，没有可还原的项目".to_string();
+        }
+        if !self.query.trim().is_empty() {
+            return "还原当前搜索结果的顶层项目到桌面".to_string();
+        }
+        match &self.active {
+            Tab::Key(_) => format!("还原「{}」分类里的项目到桌面", self.active_label()),
+            Tab::Recent => "还原「最近 7 天」列表里的项目到桌面".to_string(),
+            _ => "还原整个收纳库到桌面".to_string(),
+        }
+    }
+
+    /// Undo the collection: every library item goes back to the desktop root.
+    /// Runs through [`Model::pump_bulk`], see the note there.
+    pub fn restore_desktop(&mut self, paths: &[PathBuf]) {
+        self.start_bulk(BulkKind::Restore, paths);
     }
 
     pub fn library_folder(&self) -> PathBuf {
@@ -1394,10 +1586,28 @@ impl Model {
     }
 
     pub fn more_items(&self) -> Vec<PopupItem> {
+        let overrides = self.org.override_count();
         let mut items = vec![
             PopupItem::action("刷新", Cmd::Refresh).icon(MenuIcon::Refresh),
             PopupItem::action("打开收纳库", Cmd::OpenLibrary).icon(MenuIcon::Folder),
+            PopupItem::action("复制收纳库路径", Cmd::CopyLibraryPath).icon(MenuIcon::Copy),
             PopupItem::action("自动收纳桌面", Cmd::AskCollectDesktop).icon(MenuIcon::MoveIn),
+            // The two actions that left the footer live here now, next to their
+            // counterparts: 还原 undoes 收纳, 重新分类 undoes manual overrides.
+            // First row follows the active tab (same scope as the footer);
+            // the second one is the fixed "put everything back" entry, so the
+            // user never has to switch to 「全部」 first.
+            PopupItem::action(self.restore_label(), Cmd::AskRestoreDesktop).icon(MenuIcon::Release),
+            PopupItem::action("还原全部桌面", Cmd::AskRestoreLibrary).icon(MenuIcon::ReleaseAll),
+            PopupItem::action(
+                if overrides > 0 {
+                    format!("重新分类（清除 {overrides} 项手动记录）")
+                } else {
+                    "重新分类".to_string()
+                },
+                Cmd::ReclassifyAll,
+            )
+            .icon(MenuIcon::Reclassify),
             PopupItem::action(
                 if self.cfg.show_hidden {
                     "隐藏系统隐藏项目"

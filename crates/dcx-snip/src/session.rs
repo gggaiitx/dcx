@@ -22,6 +22,7 @@
 //! behaviour of the first version.
 
 use std::cell::Cell;
+use std::sync::{Arc, Mutex};
 
 use crate::capture::Shot;
 use crate::config::Config;
@@ -37,6 +38,7 @@ use dcx_win32::HWND;
 
 pub const WM_APP_TEXT_COMMIT: u32 = 0x8000 + 10;
 pub const WM_APP_TEXT_CANCEL: u32 = 0x8000 + 11;
+const WM_APP_OCR_DONE: u32 = 0x8000 + 12;
 
 const TIMER_FRAME: usize = 1;
 const FRAME_MS: u64 = 10;
@@ -60,6 +62,7 @@ const C_KEY: i32 = b'C' as i32;
 const I_KEY: i32 = b'I' as i32;
 const L_KEY: i32 = b'L' as i32;
 const S_KEY: i32 = b'S' as i32;
+const T_KEY: i32 = b'T' as i32;
 const V_KEY: i32 = b'V' as i32;
 const Y_KEY: i32 = b'Y' as i32;
 const Z_KEY: i32 = b'Z' as i32;
@@ -107,6 +110,10 @@ pub struct Session {
     /// Monitor the toolbar/hints are clamped into, in overlay coordinates.
     monitor: Rect,
 
+    /// A request already on the wire. Online OCR runs on a worker thread so
+    /// the overlay keeps pumping messages for the whole HTTP timeout.
+    ocr_job: Option<OcrJob>,
+
     phase: Phase,
     anchor: Pt,
     sel: Option<Rect>,
@@ -144,9 +151,9 @@ pub struct Session {
     picker_snapshot: bool,
     radius_picker: RadiusPicker,
     radius_drag: bool,
-    /// A long capture is running (or is being started) on this stack. Closing
+    /// A nested modal (long capture / OCR card) runs on this stack. Closing
     /// the session now would free it under the nested message loop.
-    long_active: bool,
+    modal_active: bool,
 
     cursor: Pt,
     layout: Layout,
@@ -163,6 +170,15 @@ pub struct Session {
     text_at: Pt,
     hint_until: u64,
     hint_last: u64,
+}
+
+struct OcrJob {
+    shared: Arc<Mutex<Option<Result<(String, String), String>>>>,
+    anchor: (i32, i32),
+    monitor: (i32, i32, i32, i32),
+    w: u32,
+    h: u32,
+    translate_now: bool,
 }
 
 fn now_ms() -> u64 {
@@ -191,6 +207,10 @@ pub fn reap() {
 
 /// Ask the running session to close (host shutdown, app stop).
 pub fn cancel() {
+    if crate::ocr::is_active() {
+        crate::ocr::request_close();
+        return;
+    }
     let p = CURRENT.with(|c| c.get());
     if !p.is_null() {
         unsafe {
@@ -202,6 +222,10 @@ pub fn cancel() {
 /// Hotkey pressed while a session is up. In long-capture mode this restores
 /// the overlay instead of tearing the whole session down.
 pub fn hotkey_toggle() {
+    if crate::ocr::is_active() {
+        crate::ocr::request_close();
+        return;
+    }
     let p = CURRENT.with(|c| c.get());
     if p.is_null() {
         return;
@@ -305,7 +329,7 @@ fn build(shot: Shot, cfg: Config) -> Result<Box<Session>, String> {
         picker_snapshot: false,
         radius_picker: RadiusPicker::default(),
         radius_drag: false,
-        long_active: false,
+        modal_active: false,
         tool: Tool::Hand,
         doc: Doc::default(),
         draft: None,
@@ -334,6 +358,7 @@ fn build(shot: Shot, cfg: Config) -> Result<Box<Session>, String> {
         cfg,
         scale,
         monitor,
+        ocr_job: None,
     }))
 }
 
@@ -462,11 +487,53 @@ pub fn demo(shot: Shot, cfg: Config, out: &std::path::Path) -> Result<(), String
     Ok(())
 }
 
+/// `--ocr-test` / `--ocr-demo`: run the real OCR pipeline on a PNG without
+/// touching the live screen. The `show` variant opens the result card.
+pub fn ocr_file(path: &std::path::Path, show: bool) -> Result<(), String> {
+    let image = image::open(path).map_err(|e| format!("读取图片失败：{e}"))?;
+    let rgba = image.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    let mut bgra = Vec::with_capacity((w as usize) * (h as usize) * 4);
+    for px in rgba.pixels() {
+        bgra.extend_from_slice(&[px[2], px[1], px[0], px[3]]);
+    }
+    let (raw, badge) = crate::ocr::recognize(bgra, w, h)?;
+    let text = crate::translate::clean_ocr(&raw);
+    crate::app::log(&format!(
+        "ocr-file: {}x{} via {} -> {} chars\n{}",
+        w,
+        h,
+        badge,
+        text.chars().count(),
+        text
+    ));
+    if text.trim().is_empty() {
+        return Err("未识别到文字".to_string());
+    }
+    if show {
+        let (vx, vy, vw, vh) = crate::capture::virtual_screen();
+        crate::ocr::run(
+            text,
+            badge,
+            (vx + vw / 2, vy + vh / 2),
+            (vx, vy, vw, vh),
+            1.25,
+            false,
+        )
+    } else {
+        let dir = crate::translate::detect_direction(&text);
+        match crate::translate::translate(&text, dir) {
+            Ok(out) => crate::app::log(&format!("ocr-file {}:\n{}", dir.label(), out)),
+            Err(e) => return Err(format!("ocr-file 翻译未完成：{e}")),
+        }
+        Ok(())
+    }
+}
+
 /// Offscreen UI workbench used by `--demo-synth`: a synthetic desktop, the new
 /// serial / picker / radius / bend chrome, and a rounded export — all without
 /// touching the live screen or the clipboard.
-pub fn demo_synth(out: &std::path::Path) -> Result<(), String> {
-    let (w, h) = (1600u32, 900u32);
+pub fn demo_synth(out: &std::path::Path) -> Result<(), String> {    let (w, h) = (1600u32, 900u32);
     let mut bgra = vec![0u8; (w as usize) * (h as usize) * 4];
     for y in 0..h {
         for x in 0..w {
@@ -741,6 +808,8 @@ pub fn demo_synth(out: &std::path::Path) -> Result<(), String> {
 
     // Long-capture bar + preview, rendered offscreen (no HWND).
     crate::longshot::demo(out)?;
+    // OCR result card, also offscreen.
+    crate::ocr::demo(out)?;
     Ok(())
 }
 
@@ -1027,15 +1096,22 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: usize, lp: isize) -
             s.discard_text();
             0
         }
+        WM_APP_OCR_DONE => {
+            s.poll_ocr();
+            0
+        }
         WM_SETCURSOR => {
             let cur = s.cursor_for_hover();
             SetCursor(cur);
             1
         }
         WM_CLOSE => {
-            // Long capture runs a nested message loop on this same stack:
-            // tearing the session down here would free `s` under it.
-            if s.long_active || crate::longshot::is_active() {
+            // A nested modal loop runs on this same stack: tearing the session
+            // down here would free `s` under it. The OCR card is one of those
+            // loops and must be asked first, or its WM_CLOSE is swallowed.
+            if crate::ocr::is_active() {
+                crate::ocr::request_close();
+            } else if s.modal_active || crate::longshot::is_active() {
                 crate::longshot::request_close();
             } else {
                 DestroyWindow(hwnd);
@@ -1960,6 +2036,14 @@ impl Session {
                 self.start_longshot();
                 return;
             }
+            T_KEY if ctrl => {
+                self.start_ocr_translate();
+                return;
+            }
+            T_KEY => {
+                self.start_ocr();
+                return;
+            }
             Z_KEY if ctrl && shift => {
                 let keep = self.doc.selected;
                 self.doc.redo();
@@ -2564,6 +2648,12 @@ impl Session {
             Act::LongShot => {
                 self.start_longshot();
             }
+            Act::Ocr => {
+                self.start_ocr();
+            }
+            Act::Translate => {
+                self.start_ocr_translate();
+            }
             Act::Divider => {}
         }
         self.redraw(false);
@@ -3014,7 +3104,7 @@ impl Session {
             jpeg: self.cfg.jpeg(),
             quality: self.cfg.output.jpeg_quality,
         };
-        self.long_active = true;
+        self.modal_active = true;
         // Hand focus to the page **before** hiding the overlay. A hidden
         // window stays the foreground window otherwise, and the wheel then
         // goes to this process instead of the page being captured.
@@ -3035,7 +3125,7 @@ impl Session {
             ShowWindow(self.hwnd, SW_HIDE);
         }
         let started = crate::longshot::run(ctx);
-        self.long_active = false;
+        self.modal_active = false;
         if !started {
             unsafe {
                 ShowWindow(self.hwnd, SW_SHOW);
@@ -3049,6 +3139,170 @@ impl Session {
             return;
         }
         // Post, never destroy: this call is still on the session's stack.
+        unsafe { PostMessageW(self.hwnd, WM_CLOSE, 0, 0) };
+    }
+
+    // -- offline OCR --------------------------------------------------------
+
+    /// OCR the selected pixels with the system engine, then hand the text to
+    /// the result card. The crop comes from the frozen base frame, so it does
+    /// not include annotations the user drew over the text.
+    fn start_ocr(&mut self) {
+        self.start_ocr_flow(false);
+    }
+
+    fn start_ocr_translate(&mut self) {
+        self.start_ocr_flow(true);
+    }
+
+    fn start_ocr_flow(&mut self, translate_now: bool) {
+        let Some(sel) = self.sel else {
+            self.toast("先框选要识别文字的区域", true, 2200);
+            return;
+        };
+        let Some((x0, y0, x1, y1)) = sel.to_px(self.w, self.h) else {
+            return;
+        };
+        let fw = (x1 - x0) as u32;
+        let fh = (y1 - y0) as u32;
+        if fw < 16 || fh < 16 {
+            self.toast("选区太小，文字识别至少需要 16 × 16 px", true, 2400);
+            return;
+        }
+        let Some((bgra, w, h)) =
+            crate::output::crop(&self.base, self.w as usize * 4, self.w, self.h, &sel)
+        else {
+            return;
+        };
+        let anchor = (
+            self.origin.0 + (x0 + x1) / 2,
+            self.origin.1 + (y0 + y1) / 2,
+        );
+        let monitor = (
+            self.origin.0 + self.monitor.x0 as i32,
+            self.origin.1 + self.monitor.y0 as i32,
+            self.monitor.width() as i32,
+            self.monitor.height() as i32,
+        );
+        // Recognize before hiding the overlay: a failure leaves the user in
+        // the selection instead of a dead card with no way back. An online
+        // provider can take seconds, so it runs off the UI thread.
+        let online = !matches!(
+            crate::config::load().ocr.provider.as_str(),
+            "windows" | ""
+        );
+        if online {
+            self.start_ocr_job(bgra, w, h, anchor, monitor, translate_now);
+            return;
+        }
+        let result = crate::ocr::recognize(bgra, w, h);
+        self.finish_ocr(result, w, h, anchor, monitor, translate_now);
+    }
+
+    fn start_ocr_job(
+        &mut self,
+        bgra: Vec<u8>,
+        w: u32,
+        h: u32,
+        anchor: (i32, i32),
+        monitor: (i32, i32, i32, i32),
+        translate_now: bool,
+    ) {
+        if self.ocr_job.is_some() {
+            self.toast("正在识别中，请稍候…", false, 1600);
+            return;
+        }
+        self.toast("正在请求在线 OCR…", false, 60_000);
+        self.redraw(true);
+        let shared: Arc<Mutex<Option<Result<(String, String), String>>>> =
+            Arc::new(Mutex::new(None));
+        let slot = shared.clone();
+        let hwnd = self.hwnd;
+        std::thread::spawn(move || {
+            let result = crate::ocr::recognize(bgra, w, h);
+            if let Ok(mut slot) = slot.lock() {
+                *slot = Some(result);
+            }
+            unsafe {
+                PostMessageW(hwnd, WM_APP_OCR_DONE, 0, 0);
+            }
+        });
+        self.ocr_job = Some(OcrJob {
+            shared,
+            anchor,
+            monitor,
+            w,
+            h,
+            translate_now,
+        });
+    }
+
+    fn poll_ocr(&mut self) {
+        let Some(job) = self.ocr_job.take() else {
+            return;
+        };
+        let result = match job.shared.lock() {
+            Ok(mut slot) => slot
+                .take()
+                .unwrap_or_else(|| Err("OCR 请求未返回结果".to_string())),
+            Err(_) => Err("OCR 请求异常结束".to_string()),
+        };
+        self.finish_ocr(
+            result,
+            job.w,
+            job.h,
+            job.anchor,
+            job.monitor,
+            job.translate_now,
+        );
+    }
+
+    fn finish_ocr(
+        &mut self,
+        result: Result<(String, String), String>,
+        w: u32,
+        h: u32,
+        anchor: (i32, i32),
+        monitor: (i32, i32, i32, i32),
+        translate_now: bool,
+    ) {
+        let (raw, badge) = match result {
+            Ok(pair) => pair,
+            Err(e) => {
+                self.toast(e, true, 3600);
+                return;
+            }
+        };
+        let text = crate::translate::clean_ocr(&raw);
+        if text.trim().is_empty() {
+            self.toast("未识别到文字", true, 2400);
+            return;
+        }
+        crate::app::log(&format!(
+            "ocr: {}x{} at ({anchor:?}) -> {} chars via {badge}",
+            w,
+            h,
+            text.chars().count()
+        ));
+        self.modal_active = true;
+        unsafe {
+            KillTimer(self.hwnd, TIMER_FRAME);
+            ShowWindow(self.hwnd, SW_HIDE);
+        }
+        let result = crate::ocr::run(text, badge, anchor, monitor, self.scale, translate_now);
+        self.modal_active = false;
+        if let Err(e) = result {
+            unsafe {
+                ShowWindow(self.hwnd, SW_SHOW);
+                SetTimer(self.hwnd, TIMER_FRAME, FRAME_MS as u32, core::ptr::null());
+                force_foreground(self.hwnd);
+                SetFocus(self.hwnd);
+            }
+            self.invalidate();
+            self.redraw(true);
+            self.toast(e, true, 3200);
+            return;
+        }
         unsafe { PostMessageW(self.hwnd, WM_CLOSE, 0, 0) };
     }
 

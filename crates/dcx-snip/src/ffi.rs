@@ -25,6 +25,8 @@ pub const WM_SETCURSOR: UINT = 0x0020;
 pub const WM_MOUSEACTIVATE: UINT = 0x0021;
 pub const WM_GETMINMAXINFO: UINT = 0x0024;
 pub const WM_NCHITTEST: UINT = 0x0084;
+pub const WM_NCLBUTTONDOWN: UINT = 0x00A1;
+pub const HTCAPTION: usize = 2;
 pub const WM_KEYDOWN: UINT = 0x0100;
 pub const WM_KEYUP: UINT = 0x0101;
 pub const WM_CHAR: UINT = 0x0102;
@@ -129,6 +131,10 @@ pub const VK_ESCAPE: i32 = 0x1B;pub const VK_RETURN: i32 = 0x0D;
 pub const VK_DELETE: i32 = 0x2E;
 pub const VK_BACK: i32 = 0x08;
 pub const VK_SPACE: i32 = 0x20;
+pub const VK_PRIOR: i32 = 0x21;
+pub const VK_NEXT: i32 = 0x22;
+pub const VK_END: i32 = 0x23;
+pub const VK_HOME: i32 = 0x24;
 pub const VK_TAB: i32 = 0x09;
 pub const VK_SHIFT: i32 = 0x10;
 pub const VK_CONTROL: i32 = 0x11;
@@ -308,6 +314,7 @@ extern "system" {
 
 pub const GMEM_MOVEABLE: UINT = 0x0002;
 pub const CF_DIB: UINT = 8;
+pub const CF_UNICODETEXT: UINT = 13;
 
 #[link(name = "user32")]
 extern "system" {

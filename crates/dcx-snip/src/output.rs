@@ -32,7 +32,7 @@ pub fn crop(bgra: &[u8], stride: usize, w: u32, h: u32, r: &Rect) -> Option<(Vec
     Some((out, cw as u32, ch as u32))
 }
 
-fn png_bytes(bgra: &[u8], w: u32, h: u32) -> Result<Vec<u8>, String> {
+pub(crate) fn png_bytes(bgra: &[u8], w: u32, h: u32) -> Result<Vec<u8>, String> {
     let mut rgba = Vec::with_capacity(bgra.len());
     for px in bgra.chunks_exact(4) {
         rgba.push(px[2]);
@@ -177,6 +177,35 @@ pub fn to_clipboard(hwnd: dcx_win32::HWND, bgra: &[u8], w: u32, h: u32) -> Resul
         r2?;
     }
     Ok(())
+}
+
+/// Put text on the clipboard as `CF_UNICODETEXT` (UTF-16 with a terminator).
+pub fn to_clipboard_text(hwnd: dcx_win32::HWND, text: &str) -> Result<(), String> {
+    if text.is_empty() {
+        return Err("没有可复制的内容".to_string());
+    }
+    let mut wide: Vec<u16> = text.encode_utf16().collect();
+    wide.push(0);
+    let bytes = unsafe {
+        core::slice::from_raw_parts(wide.as_ptr() as *const u8, wide.len() * core::mem::size_of::<u16>())
+    };
+    unsafe {
+        let mut opened = false;
+        for _ in 0..12 {
+            if OpenClipboard(hwnd) != 0 {
+                opened = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        if !opened {
+            return Err("剪贴板被其他程序占用".to_string());
+        }
+        EmptyClipboard();
+        let result = set_clipboard(bytes, CF_UNICODETEXT);
+        CloseClipboard();
+        result
+    }
 }
 
 /// `DCX截图-20261110-113045.png`

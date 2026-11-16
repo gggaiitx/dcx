@@ -146,7 +146,10 @@ pub struct Skin {
     pub dark: bool,
     pub bg: Color32,
     pub surface: Color32,
-    pub edge: Color32,
+    /// Visible 1 pt outline for the panel and floating surfaces. Darker than
+    /// `hairline`: that one separates rows inside the surface, this one has to
+    /// hold the surface itself against a wallpaper that can be any colour.
+    pub border: Color32,
     pub hairline: Color32,
     pub text: Color32,
     pub secondary: Color32,
@@ -178,7 +181,7 @@ impl Skin {
             dark: false,
             bg: Color32::from_rgb(0xFB, 0xFB, 0xFC),
             surface: Color32::from_rgb(0xF3, 0xF4, 0xF6),
-            edge: Color32::from_rgb(0xFF, 0xFF, 0xFF),
+            border: Color32::from_rgba_unmultiplied(0x00, 0x00, 0x00, 0x2E),
             hairline: Color32::from_rgba_unmultiplied(0x00, 0x00, 0x00, 0x18),
             text: Color32::from_rgb(0x1B, 0x1C, 0x1E),
             secondary: Color32::from_rgb(0x5B, 0x5F, 0x66),
@@ -202,7 +205,7 @@ impl Skin {
             dark: true,
             bg: Color32::from_rgb(0x20, 0x21, 0x24),
             surface: Color32::from_rgb(0x2B, 0x2D, 0x31),
-            edge: Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 0x22),
+            border: Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 0x2A),
             hairline: Color32::from_rgba_unmultiplied(0xFF, 0xFF, 0xFF, 0x18),
             text: Color32::from_rgb(0xF3, 0xF4, 0xF6),
             secondary: Color32::from_rgb(0xC2, 0xC6, 0xCC),
@@ -271,6 +274,103 @@ fn elide(p: &Painter, s: &str, at: Pos2, max_w: f32, size: f32, color: Color32) 
     job.wrap.overflow_character = Some('…');
     let g = p.fonts(|f| f.layout_job(job));
     p.galley(Pos2::new(at.x, at.y - g.size().y * 0.5), g, color);
+}
+
+// ---------------------------------------------------------------------------
+// Rounded surfaces
+// ---------------------------------------------------------------------------
+
+/// Corner radius of the panel and the rounded surfaces nested in it, in points.
+pub const RADIUS: f32 = 14.0;
+
+/// Chords per corner. 16 keeps a 14 pt arc indistinguishable from a circle at
+/// 125 % while staying cheap (64 points per surface).
+const ARC_SEGMENTS: usize = 16;
+
+/// Clockwise outline of a rounded rectangle.
+///
+/// epaint's own `Rounding` is tessellated with too few chords at these radii:
+/// a 12 pt corner came out as one straight 45° bevel, which is exactly what
+/// read as "the four corners are not round" on a 125 % display. Feeding a
+/// polygon to `convex_polygon` keeps epaint's anti-aliasing but gives the
+/// corner a real arc.
+fn rounded_outline(rect: Rect, radius: f32, seg: usize) -> Vec<Pos2> {
+    use std::f32::consts::PI;
+    let r = radius
+        .min(rect.width() * 0.5)
+        .min(rect.height() * 0.5)
+        .max(0.0);
+    if r < 0.25 {
+        return vec![
+            rect.left_top(),
+            rect.right_top(),
+            rect.right_bottom(),
+            rect.left_bottom(),
+        ];
+    }
+    let mut pts = Vec::with_capacity((seg + 1) * 4);
+    let arcs = [
+        (Pos2::new(rect.left() + r, rect.top() + r), PI, 1.5 * PI),
+        (
+            Pos2::new(rect.right() - r, rect.top() + r),
+            1.5 * PI,
+            2.0 * PI,
+        ),
+        (
+            Pos2::new(rect.right() - r, rect.bottom() - r),
+            0.0,
+            0.5 * PI,
+        ),
+        (Pos2::new(rect.left() + r, rect.bottom() - r), 0.5 * PI, PI),
+    ];
+    for (c, a0, a1) in arcs {
+        for i in 0..=seg {
+            let t = a0 + (a1 - a0) * (i as f32 / seg as f32);
+            pts.push(Pos2::new(c.x + r * t.cos(), c.y + r * t.sin()));
+        }
+    }
+    pts
+}
+
+fn fill_round(p: &Painter, rect: Rect, radius: f32, color: Color32) {
+    p.add(egui::Shape::convex_polygon(
+        rounded_outline(rect, radius, ARC_SEGMENTS),
+        color,
+        Stroke::NONE,
+    ));
+}
+
+fn stroke_round(p: &Painter, rect: Rect, radius: f32, stroke: Stroke) {
+    p.add(egui::Shape::closed_line(
+        rounded_outline(rect, radius, ARC_SEGMENTS),
+        stroke,
+    ));
+}
+
+/// A rounded surface with an optional 1 pt border.
+///
+/// An opaque border is painted as a larger fill underneath the surface fill
+/// instead of a stroked polyline: a 1 pt stroke on 64 short chords produces
+/// visible miter spikes at the corner joins, while two concentric arcs stay
+/// uniform. A translucent fill cannot use the two-fill form — the border layer
+/// shows through the whole surface and tints it — so it gets the stroke.
+fn surface(p: &Painter, rect: Rect, radius: f32, fill: Color32, border: Option<Color32>) {
+    match border {
+        Some(c) if fill.a() < 255 => {
+            fill_round(p, rect, radius, fill);
+            stroke_round(
+                p,
+                rect.shrink(0.5),
+                (radius - 0.5).max(0.0),
+                Stroke::new(1.0, c),
+            );
+        }
+        Some(c) => {
+            fill_round(p, rect, radius, c);
+            fill_round(p, rect.shrink(1.0), (radius - 1.0).max(0.0), fill);
+        }
+        None => fill_round(p, rect, radius, fill),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -352,9 +452,8 @@ pub fn draw_panel(d: &mut Draw<'_>, ui: &mut egui::Ui) {
     }
     // With the acrylic backdrop the panel tint has to stay translucent, or it
     // would paint over the blur DWM puts behind the window. The four corners
-    // outside this rounded rectangle are clipped by the window region (see
-    // `app::update`), which clips the backdrop with them — painting our own
-    // shape alone would leave a translucent wedge at each corner.
+    // outside this rounded rectangle are plain transparent pixels — the window
+    // has no region (see `app::update`), so the surface alpha *is* the shape.
     let acrylic = d.model.cfg.acrylic;
     let bg = if acrylic {
         let a = d.model.cfg.acrylic_alpha.clamp(120, 255) as u8;
@@ -362,16 +461,12 @@ pub fn draw_panel(d: &mut Draw<'_>, ui: &mut egui::Ui) {
     } else {
         s.bg
     };
-    p.rect_filled(panel, Rounding::same(12.0), bg);
-    p.rect_stroke(
-        panel.shrink(0.5),
-        Rounding::same(11.5),
-        Stroke::new(1.0_f32, s.edge),
-    );
+    surface(&p, panel, RADIUS, bg, Some(s.border));
     if d.drag_in {
-        p.rect_stroke(
+        stroke_round(
+            &p,
             panel.shrink(2.0),
-            Rounding::same(10.0),
+            (RADIUS - 2.0).max(0.0),
             Stroke::new(2.0_f32, s.accent),
         );
     }
@@ -417,11 +512,50 @@ pub fn draw_panel(d: &mut Draw<'_>, ui: &mut egui::Ui) {
     draw_search(d, ui, search);
     draw_tabs(d, ui, tabs);
     draw_list(d, ui, list);
+    draw_refresh_sweep(d, ui, list);
     draw_footer(d, ui, footer);
     draw_edge_hover(d, ui, panel);
     draw_popup(d, ui, panel);
     draw_dialog(d, ui, panel);
     draw_toast(d, ui, panel);
+}
+
+/// Sweep after a user-triggered refresh.
+///
+/// The scan itself is synchronous: the panel freezes for the duration and then
+/// the list is already correct, which read as "did that do anything?". A thin
+/// accent bar runs across the top of the list once the scan is done, then
+/// fades — the same language Explorer uses after F5, without a progress
+/// fraction we cannot know in advance.
+fn draw_refresh_sweep(d: &mut Draw<'_>, ui: &mut egui::Ui, list: Rect) {
+    const RUN: f32 = 0.42;
+    const FADE: f32 = 0.30;
+    let Some(t0) = d.model.refresh_started else {
+        return;
+    };
+    let elapsed = t0.elapsed().as_secs_f32();
+    if elapsed >= RUN + FADE {
+        d.model.refresh_started = None;
+        return;
+    }
+    let (width, alpha) = if elapsed < RUN {
+        let t = elapsed / RUN;
+        // Fast start, soft landing: the bar is "running", not filling up to a
+        // known total, so a plain linear ramp looks mechanical.
+        (list.width() * (1.0 - (1.0 - t).powi(3)), 1.0)
+    } else {
+        (list.width(), 1.0 - (elapsed - RUN) / FADE)
+    };
+    let bar = Rect::from_min_size(
+        Pos2::new(list.left(), list.top() + 1.0),
+        Vec2::new(width.max(2.0), 2.0),
+    );
+    ui.painter().rect_filled(
+        bar,
+        Rounding::same(1.0),
+        d.skin.accent.gamma_multiply(alpha),
+    );
+    ui.ctx().request_repaint();
 }
 
 /// Cursor feedback for the resize bands. The bands themselves are invisible —
@@ -1853,50 +1987,46 @@ fn draw_footer(d: &mut Draw<'_>, ui: &mut egui::Ui, r: Rect) {
             fmt_size(d.model.total_bytes())
         )
     };
-    text(
-        &p,
-        Pos2::new(r.left() + 14.0, r.center().y),
-        Align2::LEFT_CENTER,
-        &left,
-        11.0,
-        if d.drag_in { s.accent } else { s.secondary },
-    );
-
     let mut x = r.right() - 12.0;
     let mk = |w: f32, x: &mut f32| {
         let rr = Rect::from_center_size(Pos2::new(*x - w / 2.0, r.center().y), Vec2::new(w, 24.0));
         *x -= w + 6.0;
         rr
     };
-    let library_r = mk(58.0, &mut x);
-    let reset_r = mk(76.0, &mut x);
-    chip(ui, library_r, &s, "收纳", false);
-    chip(ui, reset_r, &s, "重新分类", false);
-    let library = ui
-        .allocate_rect(library_r, Sense::click())
-        .on_hover_text("单击复制收纳库路径，双击打开");
+    // Two actions that mirror each other: everything out of the box, everything
+    // into the box. The library shortcut and the re-classify action moved into
+    // the 「更多操作」 menu, which keeps the footer to a pair at any width.
+    let collect_r = mk(78.0, &mut x);
+    let restore_r = mk(78.0, &mut x);
+    chip(ui, restore_r, &s, "桌面还原", false);
+    chip(ui, collect_r, &s, "自动收纳", false);
+
+    // The status line yields to the two buttons: on a 320 pt panel the old
+    // free-form text ran underneath them.
+    elide(
+        &p,
+        &left,
+        Pos2::new(r.left() + 14.0, r.center().y),
+        (restore_r.left() - 12.0 - (r.left() + 14.0)).max(24.0),
+        11.0,
+        if d.drag_in { s.accent } else { s.secondary },
+    );
+
     if !d.blocked() {
-        // The first click of a double click also reports `clicked()`: the path
-        // is copied, then the second click wins and opens the folder.
-        if library.double_clicked() {
-            d.push(Cmd::OpenLibrary);
-        } else if library.clicked() {
-            d.push(Cmd::CopyLibraryPath);
+        if ui
+            .allocate_rect(restore_r, Sense::click())
+            .on_hover_text(d.model.restore_hint())
+            .clicked()
+        {
+            d.push(Cmd::AskRestoreDesktop);
         }
-    }
-    if ui.allocate_rect(reset_r, Sense::click()).clicked() && !d.blocked() {
-        d.push(Cmd::ReclassifyAll);
-    }
-    let overrides = d.model.org.override_count();
-    if overrides > 0 && sel == 0 {
-        text(
-            &p,
-            Pos2::new(reset_r.left() - 10.0, r.center().y),
-            Align2::RIGHT_CENTER,
-            &format!("手动分类 {overrides} 项"),
-            10.0,
-            s.tertiary,
-        );
+        if ui
+            .allocate_rect(collect_r, Sense::click())
+            .on_hover_text("把桌面上的项目全部收进收纳库")
+            .clicked()
+        {
+            d.push(Cmd::AskCollectDesktop);
+        }
     }
     let _ = x;
 }
@@ -2396,6 +2526,32 @@ fn menu_icon(p: &Painter, r: Rect, icon: MenuIcon, color: Color32) {
             );
         }
         // An arrow entering a folder body.
+        MenuIcon::ReleaseAll => {
+            // Wall on the left, two arrows heading for it: "everything out".
+            p.line_segment(
+                [
+                    Pos2::new(c.x - half * 0.85, c.y - half * 0.85),
+                    Pos2::new(c.x - half * 0.85, c.y + half * 0.85),
+                ],
+                st,
+            );
+            for dy in [-half * 0.48, half * 0.48] {
+                p.line_segment(
+                    [
+                        Pos2::new(c.x + half * 0.7, c.y + dy - half * 0.34),
+                        Pos2::new(c.x + half * 0.05, c.y + dy),
+                    ],
+                    thin,
+                );
+                p.line_segment(
+                    [
+                        Pos2::new(c.x + half * 0.05, c.y + dy),
+                        Pos2::new(c.x + half * 0.7, c.y + dy + half * 0.34),
+                    ],
+                    thin,
+                );
+            }
+        }
         MenuIcon::MoveIn => {
             let body = Rect::from_min_max(
                 Pos2::new(c.x - half * 0.95, c.y - half * 0.35),
@@ -2467,29 +2623,26 @@ fn draw_popup(d: &mut Draw<'_>, ui: &mut egui::Ui, panel: Rect) {
     let h = (head_h + rows_h + 8.0)
         .min(panel.height() - 24.0)
         .min(460.0);
+    // No shadow to leave room for any more; 6 pt keeps the menu off the border
+    // so its own outline does not merge with the panel's.
+    let pop_w = pop.width.min((panel.width() - 12.0).max(160.0));
     let mut min = pop.at;
     min.x = min.x.clamp(
         panel.left() + 6.0,
-        (panel.right() - pop.width - 6.0).max(panel.left() + 6.0),
+        (panel.right() - pop_w - 6.0).max(panel.left() + 6.0),
     );
     min.y = min.y.clamp(
         panel.top() + 6.0,
         (panel.bottom() - h - 6.0).max(panel.top() + 6.0),
     );
-    let r = Rect::from_min_size(min, Vec2::new(pop.width, h));
+    let r = Rect::from_min_size(min, Vec2::new(pop_w, h));
     d.popup_rect = Some(r);
 
+    // No drop shadow: the floating surface is held by the 1 pt border alone.
+    // A halo wide enough to read as a shadow in this light theme looked like a
+    // smudge on the flat panel behind it, and anything tighter was invisible.
     let p = ui.painter().clone();
-    for i in (1..=3).rev() {
-        let k = i as f32;
-        p.rect_filled(
-            r.expand(k * 1.5).translate(Vec2::new(0.0, k)),
-            Rounding::same(10.0 + k),
-            s.shadow,
-        );
-    }
-    p.rect_filled(r, Rounding::same(9.0), s.popup);
-    p.rect_stroke(r, Rounding::same(9.0), Stroke::new(1.0_f32, s.hairline));
+    surface(&p, r, 9.0, s.popup, Some(s.border));
     let mut y = r.top() + 4.0;
     if let Some(title) = &pop.title {
         text(
@@ -2525,7 +2678,7 @@ fn draw_popup(d: &mut Draw<'_>, ui: &mut egui::Ui, panel: Rect) {
         }
         let ir = Rect::from_min_size(
             Pos2::new(r.left() + 4.0, cy),
-            Vec2::new(pop.width - 8.0, item_h - 1.0),
+            Vec2::new(pop_w - 8.0, item_h - 1.0),
         );
         if cy + item_h > y && cy < r.bottom() - 4.0 {
             // A slider row: label left, track right. The knob is dragged from
@@ -2679,13 +2832,11 @@ fn draw_dialog(d: &mut Draw<'_>, ui: &mut egui::Ui, panel: Rect) {
         Dialog::NewFolder { .. } => (320.0, 182.0),
         Dialog::NewCategory { .. } => (320.0, 214.0),
         Dialog::ConfirmCollectDesktop { .. } => (360.0, 196.0),
+        Dialog::ConfirmRestoreDesktop { .. } => (380.0, 200.0),
     };
     let r = Rect::from_center_size(panel.center(), Vec2::new(w, h)).intersect(panel.shrink(8.0));
-    ui.painter()
-        .rect_filled(panel, Rounding::same(14.0), Color32::from_black_alpha(60));
-    ui.painter().rect_filled(r, Rounding::same(12.0), s.popup);
-    ui.painter()
-        .rect_stroke(r, Rounding::same(12.0), Stroke::new(1.0_f32, s.hairline));
+    fill_round(ui.painter(), panel, RADIUS, Color32::from_black_alpha(60));
+    surface(ui.painter(), r, RADIUS, s.popup, Some(s.hairline));
 
     let mut confirm: Option<Cmd> = None;
     match &dialog {
@@ -2764,6 +2915,51 @@ fn draw_dialog(d: &mut Draw<'_>, ui: &mut egui::Ui, panel: Rect) {
             let (ok, cancel) = dialog_buttons(r, ui, &s, "收纳", false);
             if ok {
                 confirm = Some(Cmd::CollectDesktop(paths.clone()));
+            }
+            if cancel {
+                d.model.dialog = None;
+            }
+        }
+        Dialog::ConfirmRestoreDesktop { paths, scope } => {
+            text(
+                ui.painter(),
+                Pos2::new(r.left() + 20.0, r.top() + 30.0),
+                Align2::LEFT_CENTER,
+                if scope == "收纳库" {
+                    "还原桌面？"
+                } else {
+                    "还原到桌面？"
+                },
+                15.0,
+                s.text,
+            );
+            text(
+                ui.painter(),
+                Pos2::new(r.left() + 20.0, r.top() + 64.0),
+                Align2::LEFT_CENTER,
+                &format!("将{scope}里的 {} 项移回桌面根目录。", paths.len()),
+                11.5,
+                s.secondary,
+            );
+            text(
+                ui.painter(),
+                Pos2::new(r.left() + 20.0, r.top() + 88.0),
+                Align2::LEFT_CENTER,
+                "桌面图标会重新出现；收纳库内不留副本。",
+                11.0,
+                s.secondary,
+            );
+            text(
+                ui.painter(),
+                Pos2::new(r.left() + 20.0, r.top() + 108.0),
+                Align2::LEFT_CENTER,
+                "遇到同名文件会自动改名为「名称 (1)」，不会覆盖。",
+                11.0,
+                s.tertiary,
+            );
+            let (ok, cancel) = dialog_buttons(r, ui, &s, "还原", false);
+            if ok {
+                confirm = Some(Cmd::RestoreDesktop(paths.clone()));
             }
             if cancel {
                 d.model.dialog = None;
@@ -3130,9 +3326,10 @@ fn draw_toast(d: &mut Draw<'_>, ui: &mut egui::Ui, panel: Rect) {
         Pos2::new(panel.center().x - w / 2.0, panel.bottom() - FOOTER_H - 42.0),
         Vec2::new(w, 30.0),
     );
-    ui.painter().rect_filled(
+    fill_round(
+        ui.painter(),
         r,
-        Rounding::same(15.0),
+        15.0,
         Color32::from_rgba_unmultiplied(0x1C, 0x1E, 0x20, (228.0 * alpha) as u8),
     );
     elide(

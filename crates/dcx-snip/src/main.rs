@@ -27,14 +27,18 @@ mod icons;
 mod layout;
 mod longshot;
 mod model;
+mod net;
+mod ocr;
 mod output;
 mod paint;
 mod picker;
+mod providers;
 mod radius;
 mod session;
 mod stitch;
 mod surface;
 mod text;
+mod translate;
 
 pub fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(core::iter::once(0)).collect()

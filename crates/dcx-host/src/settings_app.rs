@@ -1208,6 +1208,28 @@ struct SnipValues {
     idle_exit: u32,
     /// 0 = follow the DPI of the monitor under the cursor.
     scale: f32,
+    // OCR: windows / openai / custom.
+    ocr_provider: String,
+    ocr_openai_base: String,
+    ocr_openai_key: String,
+    ocr_openai_model: String,
+    ocr_openai_prompt: String,
+    ocr_custom_url: String,
+    ocr_custom_headers: String,
+    ocr_custom_body: String,
+    ocr_custom_path: String,
+    // Translation: none / openai / libretranslate / custom.
+    tr_provider: String,
+    tr_openai_base: String,
+    tr_openai_key: String,
+    tr_openai_model: String,
+    tr_openai_prompt: String,
+    tr_libre_url: String,
+    tr_libre_key: String,
+    tr_custom_url: String,
+    tr_custom_headers: String,
+    tr_custom_body: String,
+    tr_custom_path: String,
 }
 
 fn snip_doc_path() -> std::path::PathBuf {
@@ -1245,6 +1267,8 @@ fn load_snip_values() -> SnipValues {
     let o = doc.get("output");
     let d = doc.get("draw");
     let u = doc.get("ui");
+    let ocr = doc.get("ocr");
+    let tr = doc.get("translate");
 
     let pick = |node: Option<&toml::Value>, key: &str, default: &str| -> String {
         node.and_then(|v| v.get(key))
@@ -1273,6 +1297,19 @@ fn load_snip_values() -> SnipValues {
         _ => "png",
     };
     let scale = num(u, "scale", 0.0);
+    let ocr_provider = match pick(ocr, "provider", "windows").as_str() {
+        "openai" => "openai",
+        "custom" => "custom",
+        _ => "windows",
+    }
+    .to_string();
+    let tr_provider = match pick(tr, "provider", "none").as_str() {
+        "openai" => "openai",
+        "libretranslate" => "libretranslate",
+        "custom" => "custom",
+        _ => "none",
+    }
+    .to_string();
     SnipValues {
         enabled: crate::apps::is_enabled("snip"),
         hotkey: pick(a, "hotkey", "Alt+j"),
@@ -1289,6 +1326,26 @@ fn load_snip_values() -> SnipValues {
         italic: flag(d, "italic", false),
         shadow: flag(d, "shadow", false),
         idle_exit: num(a, "idle_exit_seconds", 30.0).clamp(5.0, 3600.0) as u32,
+        ocr_provider,
+        ocr_openai_base: pick(ocr, "openai_base_url", "https://api.openai.com/v1"),
+        ocr_openai_key: pick(ocr, "openai_key", ""),
+        ocr_openai_model: pick(ocr, "openai_model", "gpt-4o-mini"),
+        ocr_openai_prompt: pick(ocr, "openai_prompt", ""),
+        ocr_custom_url: pick(ocr, "custom_url", ""),
+        ocr_custom_headers: pick(ocr, "custom_headers", ""),
+        ocr_custom_body: pick(ocr, "custom_body", ""),
+        ocr_custom_path: pick(ocr, "custom_path", ""),
+        tr_provider,
+        tr_openai_base: pick(tr, "openai_base_url", "https://api.openai.com/v1"),
+        tr_openai_key: pick(tr, "openai_key", ""),
+        tr_openai_model: pick(tr, "openai_model", "gpt-4o-mini"),
+        tr_openai_prompt: pick(tr, "openai_prompt", ""),
+        tr_libre_url: pick(tr, "libre_url", "http://127.0.0.1:5000/translate"),
+        tr_libre_key: pick(tr, "libre_key", ""),
+        tr_custom_url: pick(tr, "custom_url", ""),
+        tr_custom_headers: pick(tr, "custom_headers", ""),
+        tr_custom_body: pick(tr, "custom_body", ""),
+        tr_custom_path: pick(tr, "custom_path", ""),
         scale: if scale > 0.01 {
             ((scale * 100.0).round() / 100.0) as f32
         } else {
@@ -1390,6 +1447,35 @@ fn save_snip_values(v: &SnipValues, prev_enabled: bool) -> Result<(), String> {
     set(&mut doc, "draw", "italic", toml::Value::Boolean(v.italic));
     set(&mut doc, "draw", "shadow", toml::Value::Boolean(v.shadow));
     set(&mut doc, "ui", "scale", toml::Value::Float(v.scale as f64));
+
+    for (key, value) in [
+        ("provider", v.ocr_provider.as_str()),
+        ("openai_base_url", v.ocr_openai_base.as_str()),
+        ("openai_key", v.ocr_openai_key.as_str()),
+        ("openai_model", v.ocr_openai_model.as_str()),
+        ("openai_prompt", v.ocr_openai_prompt.as_str()),
+        ("custom_url", v.ocr_custom_url.as_str()),
+        ("custom_headers", v.ocr_custom_headers.as_str()),
+        ("custom_body", v.ocr_custom_body.as_str()),
+        ("custom_path", v.ocr_custom_path.as_str()),
+    ] {
+        set(&mut doc, "ocr", key, toml::Value::String(value.to_string()));
+    }
+    for (key, value) in [
+        ("provider", v.tr_provider.as_str()),
+        ("openai_base_url", v.tr_openai_base.as_str()),
+        ("openai_key", v.tr_openai_key.as_str()),
+        ("openai_model", v.tr_openai_model.as_str()),
+        ("openai_prompt", v.tr_openai_prompt.as_str()),
+        ("libre_url", v.tr_libre_url.as_str()),
+        ("libre_key", v.tr_libre_key.as_str()),
+        ("custom_url", v.tr_custom_url.as_str()),
+        ("custom_headers", v.tr_custom_headers.as_str()),
+        ("custom_body", v.tr_custom_body.as_str()),
+        ("custom_path", v.tr_custom_path.as_str()),
+    ] {
+        set(&mut doc, "translate", key, toml::Value::String(value.to_string()));
+    }
 
     let text = toml::to_string_pretty(&doc).map_err(|e| format!("序列化失败：{e}"))?;
     let path = snip_doc_path();
@@ -2985,6 +3071,333 @@ impl SettingsApp {
                     ui.label(RichText::new("").size(12.0).color(p.danger));
                 });
             }
+        });
+
+        ui.add_space(18.0);
+        caption(ui, p, "文字识别（OCR）");
+        card(ui, p, |ui| {
+            let mut mode = match sv.ocr_provider.as_str() {
+                "openai" => 1u8,
+                "custom" => 2,
+                _ => 0,
+            };
+            row_below(
+                ui,
+                p,
+                RowIcon::Doc,
+                "识别引擎",
+                "系统 OCR 完全本地、不联网；在线服务会把选区图片发送到你配置的接口",
+                |ui| {
+                    radios(
+                        ui,
+                        p,
+                        &mut mode,
+                        &[(0u8, "系统 OCR"), (1u8, "OpenAI 兼容"), (2u8, "自定义 HTTP")],
+                    );
+                },
+            );
+            sv.ocr_provider = match mode {
+                1 => "openai",
+                2 => "custom",
+                _ => "windows",
+            }
+            .to_string();
+
+            if mode == 1 {
+                row_separator(ui, p);
+                row_below(
+                    ui,
+                    p,
+                    RowIcon::Link,
+                    "API 地址",
+                    "填到 /v1 即可，程序会自动补 /chat/completions；兼容 OpenAI、DeepSeek、Qwen、Ollama 等",
+                    |ui| {
+                        field_line(
+                            ui,
+                            &mut sv.ocr_openai_base,
+                            280.0,
+                            "https://api.openai.com/v1",
+                            false,
+                        );
+                    },
+                );
+                row_separator(ui, p);
+                row_below(
+                    ui,
+                    p,
+                    RowIcon::Info,
+                    "API Key",
+                    "留空表示服务不需要鉴权（例如本机 Ollama / LM Studio）",
+                    |ui| {
+                        field_line(ui, &mut sv.ocr_openai_key, 240.0, "sk-…", true);
+                    },
+                );
+                row_separator(ui, p);
+                row_below(
+                    ui,
+                    p,
+                    RowIcon::Preset,
+                    "模型",
+                    "必须是支持图片输入的模型，例如 gpt-4o-mini、qwen-vl、llava 等",
+                    |ui| {
+                        field_line(ui, &mut sv.ocr_openai_model, 180.0, "gpt-4o-mini", false);
+                    },
+                );
+                row_separator(ui, p);
+                row_below(
+                    ui,
+                    p,
+                    RowIcon::Doc,
+                    "识别提示词",
+                    "留空使用内置提示；可写“只输出表格文字”等约束",
+                    |ui| {
+                        field_multiline(ui, &mut sv.ocr_openai_prompt, 2, "");
+                    },
+                );
+            }
+
+            if mode == 2 {
+                row_separator(ui, p);
+                row_below(
+                    ui,
+                    p,
+                    RowIcon::Link,
+                    "接口地址",
+                    "POST JSON；Body 可用 {{image_b64}}、{{mime}}、{{width}}、{{height}}",
+                    |ui| {
+                        field_line(ui, &mut sv.ocr_custom_url, 300.0, "https://…", false);
+                    },
+                );
+                row_separator(ui, p);
+                row_below(
+                    ui,
+                    p,
+                    RowIcon::Info,
+                    "请求头",
+                    "每行一条，例如 Authorization: Bearer xxx",
+                    |ui| {
+                        field_multiline(ui, &mut sv.ocr_custom_headers, 2, "Authorization: Bearer …");
+                    },
+                );
+                row_separator(ui, p);
+                row_below(
+                    ui,
+                    p,
+                    RowIcon::Doc,
+                    "请求体模板",
+                    "{{image_b64}} 会替换为选区 PNG 的 base64；不要改动 JSON 引号结构",
+                    |ui| {
+                        field_multiline(
+                            ui,
+                            &mut sv.ocr_custom_body,
+                            3,
+                            "{\"image\":\"{{image_b64}}\"}",
+                        );
+                    },
+                );
+                row_separator(ui, p);
+                row_below(
+                    ui,
+                    p,
+                    RowIcon::Search,
+                    "响应路径",
+                    "JSON 路径，例如 data.text；留空表示响应本身就是文本",
+                    |ui| {
+                        field_line(ui, &mut sv.ocr_custom_path, 200.0, "data.text", false);
+                    },
+                );
+            }
+        });
+
+        ui.add_space(18.0);
+        caption(ui, p, "翻译");
+        card(ui, p, |ui| {
+            let mut mode = match sv.tr_provider.as_str() {
+                "openai" => 1u8,
+                "libretranslate" => 2,
+                "custom" => 3,
+                _ => 0,
+            };
+            row_below(
+                ui,
+                p,
+                RowIcon::Link,
+                "翻译服务",
+                "插件式：选择你的在线 API / LLM / LibreTranslate；不选则翻译按钮只给出配置提示",
+                |ui| {
+                    radios(
+                        ui,
+                        p,
+                        &mut mode,
+                        &[
+                            (0u8, "关闭"),
+                            (1u8, "OpenAI 兼容"),
+                            (2u8, "LibreTranslate"),
+                            (3u8, "自定义 HTTP"),
+                        ],
+                    );
+                },
+            );
+            sv.tr_provider = match mode {
+                1 => "openai",
+                2 => "libretranslate",
+                3 => "custom",
+                _ => "none",
+            }
+            .to_string();
+
+            if mode == 1 {
+                row_separator(ui, p);
+                row_below(
+                    ui,
+                    p,
+                    RowIcon::Link,
+                    "API 地址",
+                    "OpenAI 兼容的 /v1 地址，程序自动补 /chat/completions",
+                    |ui| {
+                        field_line(
+                            ui,
+                            &mut sv.tr_openai_base,
+                            280.0,
+                            "https://api.openai.com/v1",
+                            false,
+                        );
+                    },
+                );
+                row_separator(ui, p);
+                row_below(
+                    ui,
+                    p,
+                    RowIcon::Info,
+                    "API Key",
+                    "留空表示服务不需要鉴权（例如本机 Ollama / LM Studio）",
+                    |ui| {
+                        field_line(ui, &mut sv.tr_openai_key, 240.0, "sk-…", true);
+                    },
+                );
+                row_separator(ui, p);
+                row_below(
+                    ui,
+                    p,
+                    RowIcon::Preset,
+                    "模型",
+                    "任意聊天模型，例如 gpt-4o-mini、deepseek-chat、qwen2.5",
+                    |ui| {
+                        field_line(ui, &mut sv.tr_openai_model, 180.0, "gpt-4o-mini", false);
+                    },
+                );
+                row_separator(ui, p);
+                row_below(
+                    ui,
+                    p,
+                    RowIcon::Doc,
+                    "翻译提示词",
+                    "留空使用内置“只输出译文”提示；可用 {{source}} / {{target}} 占位",
+                    |ui| {
+                        field_multiline(ui, &mut sv.tr_openai_prompt, 2, "");
+                    },
+                );
+            }
+
+            if mode == 2 {
+                row_separator(ui, p);
+                row_below(
+                    ui,
+                    p,
+                    RowIcon::Link,
+                    "接口地址",
+                    "LibreTranslate 的 /translate 完整地址",
+                    |ui| {
+                        field_line(
+                            ui,
+                            &mut sv.tr_libre_url,
+                            300.0,
+                            "http://127.0.0.1:5000/translate",
+                            false,
+                        );
+                    },
+                );
+                row_separator(ui, p);
+                row_below(
+                    ui,
+                    p,
+                    RowIcon::Info,
+                    "API Key",
+                    "实例未启用鉴权时留空",
+                    |ui| {
+                        field_line(ui, &mut sv.tr_libre_key, 240.0, "", true);
+                    },
+                );
+            }
+
+            if mode == 3 {
+                row_separator(ui, p);
+                row_below(
+                    ui,
+                    p,
+                    RowIcon::Link,
+                    "接口地址",
+                    "POST JSON；Body 可用 {{text}}、{{source}}、{{target}}",
+                    |ui| {
+                        field_line(ui, &mut sv.tr_custom_url, 300.0, "https://…", false);
+                    },
+                );
+                row_separator(ui, p);
+                row_below(
+                    ui,
+                    p,
+                    RowIcon::Info,
+                    "请求头",
+                    "每行一条，例如 Authorization: Bearer xxx",
+                    |ui| {
+                        field_multiline(
+                            ui,
+                            &mut sv.tr_custom_headers,
+                            2,
+                            "Authorization: Bearer …",
+                        );
+                    },
+                );
+                row_separator(ui, p);
+                row_below(
+                    ui,
+                    p,
+                    RowIcon::Doc,
+                    "请求体模板",
+                    "{{text}} 会自动做 JSON 转义；source/target 为 en/zh",
+                    |ui| {
+                        field_multiline(
+                            ui,
+                            &mut sv.tr_custom_body,
+                            3,
+                            "{\"q\":\"{{text}}\",\"source\":\"{{source}}\",\"target\":\"{{target}}\"}",
+                        );
+                    },
+                );
+                row_separator(ui, p);
+                row_below(
+                    ui,
+                    p,
+                    RowIcon::Search,
+                    "响应路径",
+                    "JSON 路径，例如 data.translatedText；留空表示响应本身就是文本",
+                    |ui| {
+                        field_line(ui, &mut sv.tr_custom_path, 200.0, "data.translatedText", false);
+                    },
+                );
+            }
+
+            row_separator(ui, p);
+            row_info(
+                ui,
+                p,
+                RowIcon::Info,
+                "密钥存储",
+                "API Key 以明文保存在 %LOCALAPPDATA%\\dcx\\snip.toml；请自行限制该文件的访问权限",
+                |ui| {
+                    ui.label(RichText::new("").size(12.0).color(p.secondary));
+                },
+            );
         });
 
         // Modal shell dialogs must not run inside a paint closure. The picked
@@ -5254,6 +5667,25 @@ fn icon_text_button(
 ///
 /// 用在「选项多、右侧放不下」的行上：五个缩放档位放进 `row_reserve` 的
 /// 右侧 RTL 区域时会从右边缘往左排不下，最后两个被窗口裁掉、点不到。
+fn field_line(ui: &mut egui::Ui, value: &mut String, width: f32, hint: &str, password: bool) {
+    let mut edit = egui::TextEdit::singleline(value)
+        .desired_width(width)
+        .hint_text(hint);
+    if password {
+        edit = edit.password(true);
+    }
+    ui.add(edit);
+}
+
+fn field_multiline(ui: &mut egui::Ui, value: &mut String, rows: usize, hint: &str) {
+    ui.add(
+        egui::TextEdit::multiline(value)
+            .desired_rows(rows)
+            .desired_width(ui.available_width())
+            .hint_text(hint),
+    );
+}
+
 fn row_below<R>(
     ui: &mut egui::Ui,
     p: &Palette,
@@ -5539,7 +5971,8 @@ fn row_icon(ui: &mut egui::Ui, p: &Palette, kind: RowIcon) {
 }
 
 /// Win11 radio group: 20 px ring, accent dot when selected. Items are added in
-/// reverse so they read left-to-right inside a right-to-left parent layout.
+/// reverse inside a right-to-left parent layout (`row_reserve`); in a
+/// left-to-right parent (`row_below`) they keep their declared order.
 fn radios<T: PartialEq + Copy>(
     ui: &mut egui::Ui,
     p: &Palette,
@@ -5547,7 +5980,16 @@ fn radios<T: PartialEq + Copy>(
     options: &[(T, &str)],
 ) -> bool {
     let mut changed = false;
-    for (v, label) in options.iter().rev() {
+    let rtl = matches!(
+        ui.layout().main_dir(),
+        egui::Direction::RightToLeft
+    );
+    let ordered: Vec<&(T, &str)> = if rtl {
+        options.iter().rev().collect()
+    } else {
+        options.iter().collect()
+    };
+    for (v, label) in ordered {
         let selected = *v == *value;
         let text_font = font(14.0);
         let text_w = ui

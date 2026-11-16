@@ -84,6 +84,10 @@ pub enum Act {
     FullScreen,
     /// Enter scrolling-capture stitching mode.
     LongShot,
+    /// Recognize text in the selection with the offline Windows OCR engine.
+    Ocr,
+    /// Recognize the selection and translate it immediately.
+    Translate,
     /// Cycle the selection/output corner radius.
     Radius,
     /// Open the free colour picker.
@@ -108,6 +112,8 @@ pub fn tip(a: Act) -> (&'static str, &'static str) {
         Act::Tool(Tool::Serial) => ("序号标记", "0"),
         Act::FullScreen => ("当前屏幕选区", "Ctrl+A"),
         Act::LongShot => ("长截图（滚动自动拼接）", "Ctrl+L"),
+        Act::Ocr => ("识别文字（OCR）", "T"),
+        Act::Translate => ("识别并翻译（OCR + 翻译）", "Ctrl+T"),
         Act::Radius => ("截图圆角", ""),
         Act::CustomColor => ("自定义颜色", ""),
         Act::Undo => ("撤销", "Ctrl+Z"),
@@ -220,6 +226,8 @@ impl Layout {
         // Capture actions: whole screen, scrolling stitch, rounded corners.
         tools.push((Act::FullScreen, BTN));
         tools.push((Act::LongShot, BTN));
+        tools.push((Act::Ocr, BTN));
+        tools.push((Act::Translate, BTN));
         tools.push((Act::Radius, BTN));
         tools.push((Act::Divider, GROUP));
         tools.push((Act::Undo, BTN));

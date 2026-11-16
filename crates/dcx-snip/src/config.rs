@@ -12,6 +12,8 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct Config {
+    pub ocr: Ocr,
+    pub translate: Translate,
     pub activation: Activation,
     pub output: Output,
     pub draw: Draw,
@@ -75,6 +77,8 @@ impl Default for Config {
             output: Output::default(),
             draw: Draw::default(),
             ui: Ui::default(),
+            ocr: Ocr::default(),
+            translate: Translate::default(),
         }
     }
 }
@@ -201,4 +205,72 @@ pub fn parse_hex(s: &str) -> Option<[u8; 3]> {
     }
     let v = u32::from_str_radix(t, 16).ok()?;
     Some([(v >> 16) as u8, (v >> 8) as u8, v as u8])
+}
+
+/// OCR provider. `windows` is fully local; `openai` and `custom` send the
+/// selected crop to a user-configured HTTP service.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct Ocr {
+    pub provider: String,
+    pub openai_base_url: String,
+    pub openai_key: String,
+    pub openai_model: String,
+    pub openai_prompt: String,
+    pub custom_url: String,
+    pub custom_headers: String,
+    pub custom_body: String,
+    pub custom_path: String,
+}
+
+impl Default for Ocr {
+    fn default() -> Self {
+        Ocr {
+            provider: "windows".to_string(),
+            openai_base_url: "https://api.openai.com/v1".to_string(),
+            openai_key: String::new(),
+            openai_model: "gpt-4o-mini".to_string(),
+            openai_prompt: String::new(),
+            custom_url: String::new(),
+            custom_headers: String::new(),
+            custom_body: String::new(),
+            custom_path: String::new(),
+        }
+    }
+}
+
+/// Translation provider. `none` leaves the translate button disabled with a
+/// configuration hint; no models are bundled or downloaded.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct Translate {
+    pub provider: String,
+    pub openai_base_url: String,
+    pub openai_key: String,
+    pub openai_model: String,
+    pub openai_prompt: String,
+    pub libre_url: String,
+    pub libre_key: String,
+    pub custom_url: String,
+    pub custom_headers: String,
+    pub custom_body: String,
+    pub custom_path: String,
+}
+
+impl Default for Translate {
+    fn default() -> Self {
+        Translate {
+            provider: "none".to_string(),
+            openai_base_url: "https://api.openai.com/v1".to_string(),
+            openai_key: String::new(),
+            openai_model: "gpt-4o-mini".to_string(),
+            openai_prompt: String::new(),
+            libre_url: "http://127.0.0.1:5000/translate".to_string(),
+            libre_key: String::new(),
+            custom_url: String::new(),
+            custom_headers: String::new(),
+            custom_body: String::new(),
+            custom_path: String::new(),
+        }
+    }
 }

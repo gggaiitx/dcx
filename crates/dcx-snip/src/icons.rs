@@ -31,6 +31,8 @@ pub enum Icon {
     Serial,
     Radius,
     Long,
+    Scan,
+    Translate,
 }
 
 struct Pen<'a, 'b> {
@@ -373,6 +375,29 @@ pub fn draw(sk: &mut Sk, icon: Icon, area: Rect, color: Rgba, weight: f32) {
             pen.line(9.5, 12.0, 14.5, 12.0);
             pen.line(12.0, 17.0, 12.0, 21.0);
             pen.head((12.0, 21.5), (12.0, 19.0), 3.4, 1.8);
+        }
+        Icon::Scan => {
+            // Viewfinder corners around three text lines: offline OCR.
+            pen.poly(&[(3.0, 8.5), (3.0, 3.0), (8.5, 3.0)], false);
+            pen.poly(&[(15.5, 3.0), (21.0, 3.0), (21.0, 8.5)], false);
+            pen.poly(&[(3.0, 15.5), (3.0, 21.0), (8.5, 21.0)], false);
+            pen.poly(&[(15.5, 21.0), (21.0, 21.0), (21.0, 15.5)], false);
+            pen.line(8.0, 9.0, 16.0, 9.0);
+            pen.line(8.0, 12.0, 16.0, 12.0);
+            pen.line(8.0, 15.0, 13.0, 15.0);
+        }
+        Icon::Translate => {
+            // Two overlapping speech bubbles: an A on the left, text lines on
+            // the right. Distinct from Scan at 16 px because the bubbles are
+            // the only closed shapes in the capture group.
+            pen.round_rect(2.0, 3.0, 13.5, 14.0, 2.5, false);
+            pen.round_rect(10.5, 9.0, 22.0, 20.0, 2.5, false);
+            pen.line(5.0, 11.5, 7.5, 5.8);
+            pen.line(7.5, 5.8, 10.0, 11.5);
+            pen.line(6.0, 9.2, 9.0, 9.2);
+            pen.line(13.2, 12.8, 19.2, 12.8);
+            pen.line(13.2, 15.3, 19.2, 15.3);
+            pen.line(13.2, 17.8, 17.0, 17.8);
         }
     }
 }

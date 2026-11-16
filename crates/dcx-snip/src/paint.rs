@@ -528,6 +528,14 @@ fn bar(sk: &mut Sk, c: &Chrome<'_>) {
                 cell_bg(sk, rect, radius, hot, down, false);
                 icons::draw(sk, Icon::Long, rect.inflate(-7.0 * s), TEXT, 1.6);
             }
+            Act::Ocr => {
+                cell_bg(sk, rect, radius, hot, down, false);
+                icons::draw(sk, Icon::Scan, rect.inflate(-7.0 * s), TEXT, 1.6);
+            }
+            Act::Translate => {
+                cell_bg(sk, rect, radius, hot, down, false);
+                icons::draw(sk, Icon::Translate, rect.inflate(-7.0 * s), TEXT, 1.6);
+            }
             Act::Radius => {
                 let on = c.radius > 0.5;
                 cell_bg(sk, rect, radius, hot, down, on);

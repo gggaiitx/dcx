@@ -24,6 +24,20 @@ toml = "0.8"
 tiny-skia = "0.11"
 
 # Export encoders. `png` is already in the workspace lock via dcx-island;
-# `image` is reused with only its jpeg feature enabled.
+# `image` also decodes PNG in the `--ocr-test` / `--ocr-demo` diagnostics.
 png = "0.18"
-image = { version = "0.25", default-features = false, features = ["jpeg"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+
+# Plugin-style HTTP providers (OpenAI-compatible / LibreTranslate / custom).
+# WinHTTP itself is declared in `net.rs`, so no TLS crate is pulled in.
+serde_json = "1"
+base64 = "0.22"
+windows = { version = "0.62", features = [
+    "Media_Ocr",
+    "Graphics_Imaging",
+    "Storage_Streams",
+    "Globalization",
+    "Foundation",
+    "Foundation_Collections",
+    "Win32_System_WinRT",
+] }

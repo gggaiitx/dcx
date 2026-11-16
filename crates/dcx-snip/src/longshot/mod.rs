@@ -607,7 +607,7 @@ fn unregister_hotkeys(hwnd: HWND) {
 
 /// `UpdateLayeredWindow` with per-pixel alpha. The caller renders into a
 /// `Surface`, so the DIB is already the premultiplied BGRA the API wants.
-pub(super) unsafe fn present_layered(hwnd: HWND, surface: &Surface) {
+pub(crate) unsafe fn present_layered(hwnd: HWND, surface: &Surface) {
     let mut rect = RECT::default();
     if unsafe { dcx_win32::GetWindowRect(hwnd, &mut rect) } == 0 {
         return;

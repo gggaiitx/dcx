@@ -48,11 +48,29 @@ pub fn run() -> i32 {
     let started_ms = epoch_ms();
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--help" || a == "-h") {
-        log("dcx-snip: --probe | --bench [frames] | --demo-synth | --no-shot | --shot (default)");
+        log("dcx-snip: --probe | --bench [frames] | --demo-synth | --ocr-test <png> | --ocr-demo <png> | --no-shot | --shot (default)");
         return 0;
     }
     if args.iter().any(|a| a == "--probe") {
         return probe();
+    }
+    if let Some(i) = args
+        .iter()
+        .position(|a| a == "--ocr-test" || a == "--ocr-demo")
+    {
+        let show = args[i] == "--ocr-demo";
+        let path = args.get(i + 1).cloned().unwrap_or_default();
+        if path.is_empty() {
+            log("dcx-snip: --ocr-test/--ocr-demo needs a PNG path");
+            return 2;
+        }
+        return match crate::session::ocr_file(std::path::Path::new(&path), show) {
+            Ok(()) => 0,
+            Err(e) => {
+                log(&format!("ocr-file failed: {e}"));
+                1
+            }
+        };
     }
     if let Some(i) = args.iter().position(|a| a == "--demo-synth") {
         let out = args
